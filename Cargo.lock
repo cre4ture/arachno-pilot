@@ -67,6 +67,9 @@ dependencies = [
  "arachno-control",
  "arachno-core",
  "arachno-feetech-sts",
+ "arachno-hal",
+ "arachno-imu-host",
+ "arachno-msg",
  "clap",
  "toml",
 ]
@@ -116,6 +119,7 @@ dependencies = [
  "arachno-core",
  "arachno-feetech-sts",
  "arachno-hal",
+ "arachno-imu-host",
  "arachno-msg",
  "axum",
  "clap",

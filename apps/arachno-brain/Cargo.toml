@@ -10,5 +10,8 @@ arachno-camera = { path = "../../crates/arachno-camera" }
 arachno-control = { path = "../../crates/arachno-control" }
 arachno-core = { path = "../../crates/arachno-core" }
 arachno-feetech-sts = { path = "../../crates/arachno-feetech-sts" }
+arachno-hal = { path = "../../crates/arachno-hal" }
+arachno-imu-host = { path = "../../crates/arachno-imu-host" }
+arachno-msg = { path = "../../crates/arachno-msg" }
 clap.workspace = true
 toml.workspace = true

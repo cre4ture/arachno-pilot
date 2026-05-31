@@ -1,5 +1,6 @@
 use std::{
     collections::BTreeMap,
+    f32::consts::PI,
     fs,
     net::SocketAddr,
     path::PathBuf,
@@ -13,8 +14,9 @@ use anyhow::Context;
 use arachno_camera::RobotCamera;
 use arachno_core::{CameraBackend, RobotConfig};
 use arachno_feetech_sts::RealStsBus;
-use arachno_hal::{CameraSource, ServoBus};
-use arachno_msg::ServoTelemetry;
+use arachno_hal::{CameraSource, ImuSource, ServoBus};
+use arachno_imu_host::{DeviceInfoProbe, SensorKind, UsbImuBridge};
+use arachno_msg::{ImuTelemetry, ServoTelemetry};
 use axum::{
     Json, Router,
     body::Body,
@@ -54,6 +56,7 @@ struct DashboardState {
     updated_at_ms: u64,
     online_servo_count: usize,
     last_poll_error: Option<String>,
+    imu: Option<DashboardImuState>,
     servos: Vec<DashboardServoState>,
 }
 
@@ -67,6 +70,24 @@ struct DashboardServoState {
     position_deg: Option<f32>,
     position_percent: Option<f32>,
     speed_rpm: Option<f32>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct DashboardImuState {
+    enabled: bool,
+    mode: String,
+    device: Option<String>,
+    sensor_kind: Option<String>,
+    sample_hz: Option<u16>,
+    spi_mode: Option<u8>,
+    observed_who_am_i: Option<u8>,
+    description: Option<String>,
+    last_error: Option<String>,
+    telemetry: Option<ImuTelemetry>,
+    roll_deg: Option<f32>,
+    pitch_deg: Option<f32>,
+    accel_norm_mps2: Option<f32>,
+    gyro_norm_deg_s: Option<f32>,
 }
 
 impl DashboardState {
@@ -98,6 +119,7 @@ impl DashboardState {
             updated_at_ms: 0,
             online_servo_count: 0,
             last_poll_error: Some("poller not started yet".to_owned()),
+            imu: dashboard_imu_from_config(config),
             servos,
         }
     }
@@ -168,8 +190,28 @@ fn spawn_telemetry_worker(shared: Arc<RwLock<DashboardState>>, config: RobotConf
         let labels = servo_labels(&config);
         let servo_ids = config.all_servo_ids();
         let mut bus = None::<RealStsBus>;
+        let mut imu_bridge = None::<UsbImuBridge>;
+        let mut imu_state = dashboard_imu_from_config(&config);
 
         loop {
+            if let Some(state) = imu_state.as_mut().filter(|state| state.enabled) {
+                if imu_bridge.is_none() {
+                    match open_imu_bridge(state) {
+                        Ok(bridge) => imu_bridge = Some(bridge),
+                        Err(err) => {
+                            state.last_error = Some(format!("failed to open IMU bridge: {err}"));
+                        }
+                    }
+                }
+
+                if let Some(bridge) = imu_bridge.as_mut() {
+                    if let Err(err) = drain_imu_bridge(bridge, state) {
+                        state.last_error = Some(format!("IMU read failed: {err}"));
+                        imu_bridge = None;
+                    }
+                }
+            }
+
             if bus.is_none() {
                 match RealStsBus::open(
                     config.bus.feetech.port.clone(),
@@ -185,6 +227,7 @@ fn spawn_telemetry_worker(shared: Arc<RwLock<DashboardState>>, config: RobotConf
                                 &labels,
                                 &servo_ids,
                                 format!("failed to open servo bus: {err}"),
+                                imu_state.clone(),
                             ),
                         );
                         thread::sleep(Duration::from_millis(1000));
@@ -239,21 +282,13 @@ fn spawn_telemetry_worker(shared: Arc<RwLock<DashboardState>>, config: RobotConf
 
             write_state(
                 &shared,
-                DashboardState {
-                    robot_name: config.robot.name.clone(),
-                    deployment_profile: config.deployment.profile.clone(),
-                    compute_target: config.deployment.compute.clone(),
-                    serial_port: config.bus.feetech.port.clone(),
-                    camera_backend: config.camera.backend,
-                    camera_device: config.camera.device.clone(),
-                    camera_pipeline: RobotCamera::new(config.camera.clone())
-                        .pipeline_description()
-                        .to_owned(),
-                    updated_at_ms: now_ms(),
+                build_live_state(
+                    &config,
                     online_servo_count,
                     last_poll_error,
-                    servos: next_servos,
-                },
+                    imu_state.clone(),
+                    next_servos,
+                ),
             );
 
             if should_reopen_bus {
@@ -270,6 +305,7 @@ fn build_offline_state(
     labels: &BTreeMap<u8, String>,
     servo_ids: &[u8],
     message: String,
+    imu: Option<DashboardImuState>,
 ) -> DashboardState {
     DashboardState {
         robot_name: config.robot.name.clone(),
@@ -284,6 +320,7 @@ fn build_offline_state(
         updated_at_ms: now_ms(),
         online_servo_count: 0,
         last_poll_error: Some(message.clone()),
+        imu,
         servos: servo_ids
             .iter()
             .map(|servo_id| {
@@ -294,6 +331,31 @@ fn build_offline_state(
                 DashboardServoState::offline(*servo_id, label, message.clone())
             })
             .collect(),
+    }
+}
+
+fn build_live_state(
+    config: &RobotConfig,
+    online_servo_count: usize,
+    last_poll_error: Option<String>,
+    imu: Option<DashboardImuState>,
+    servos: Vec<DashboardServoState>,
+) -> DashboardState {
+    DashboardState {
+        robot_name: config.robot.name.clone(),
+        deployment_profile: config.deployment.profile.clone(),
+        compute_target: config.deployment.compute.clone(),
+        serial_port: config.bus.feetech.port.clone(),
+        camera_backend: config.camera.backend,
+        camera_device: config.camera.device.clone(),
+        camera_pipeline: RobotCamera::new(config.camera.clone())
+            .pipeline_description()
+            .to_owned(),
+        updated_at_ms: now_ms(),
+        online_servo_count,
+        last_poll_error,
+        imu,
+        servos,
     }
 }
 
@@ -420,6 +482,122 @@ fn servo_labels(config: &RobotConfig) -> BTreeMap<u8, String> {
         labels.insert(leg.tibia_servo_id, format!("{} / tibia", leg.name));
     }
     labels
+}
+
+fn dashboard_imu_from_config(config: &RobotConfig) -> Option<DashboardImuState> {
+    let imu = config.imu.as_ref()?;
+    Some(DashboardImuState {
+        enabled: imu.enabled,
+        mode: imu.mode.clone(),
+        device: imu.device.clone(),
+        sensor_kind: None,
+        sample_hz: Some(imu.sample_hz),
+        spi_mode: None,
+        observed_who_am_i: None,
+        description: None,
+        last_error: if imu.enabled {
+            Some("waiting for IMU bridge".to_owned())
+        } else {
+            Some("disabled in config".to_owned())
+        },
+        telemetry: None,
+        roll_deg: None,
+        pitch_deg: None,
+        accel_norm_mps2: None,
+        gyro_norm_deg_s: None,
+    })
+}
+
+fn open_imu_bridge(state: &mut DashboardImuState) -> anyhow::Result<UsbImuBridge> {
+    let device = state
+        .device
+        .clone()
+        .context("IMU is enabled, but no device is configured")?;
+    let mut bridge = UsbImuBridge::open(&device, 115_200)
+        .with_context(|| format!("failed to open {device}"))?;
+
+    state.description = Some(bridge.description().to_owned());
+    match bridge.probe_device_info(Duration::from_millis(1_000))? {
+        DeviceInfoProbe::Info(info) => {
+            state.sensor_kind = Some(sensor_kind_label(info.sensor_kind).to_owned());
+            state.sample_hz = Some(info.sample_hz);
+            state.spi_mode = (info.spi_mode != arachno_imu_host::SPI_MODE_UNKNOWN)
+                .then_some(info.spi_mode);
+            state.observed_who_am_i = (info.observed_who_am_i != 0).then_some(info.observed_who_am_i);
+            state.last_error = (info.fault_code != arachno_imu_host::SENSOR_FAULT_NONE)
+                .then(|| format!("backend fault: {}", imu_fault_label(info.fault_code)));
+        }
+        DeviceInfoProbe::StreamingWithoutInfo => {
+            state.last_error = Some("IMU samples are streaming, but firmware info was not seen".to_owned());
+        }
+        DeviceInfoProbe::Silent => {
+            state.last_error = Some("timed out waiting for IMU firmware info".to_owned());
+        }
+    }
+    bridge.start()?;
+    Ok(bridge)
+}
+
+fn drain_imu_bridge(bridge: &mut UsbImuBridge, state: &mut DashboardImuState) -> anyhow::Result<()> {
+    let mut latest = state.telemetry.clone();
+    let mut received_sample = false;
+
+    for _ in 0..16 {
+        match bridge.next_sample()? {
+            Some(sample) => {
+                received_sample = true;
+                latest = Some(sample);
+            }
+            None => break,
+        }
+    }
+
+    if let Some(sample) = latest {
+        let (roll_deg, pitch_deg) = estimate_roll_pitch_deg(sample.accel_mps2);
+        state.accel_norm_mps2 = Some(vector_norm3(sample.accel_mps2));
+        state.gyro_norm_deg_s = Some(vector_norm3(sample.gyro_rad_s) * 180.0 / PI);
+        state.roll_deg = Some(roll_deg);
+        state.pitch_deg = Some(pitch_deg);
+        state.telemetry = Some(sample);
+        if received_sample {
+            state.last_error = None;
+        }
+    }
+
+    Ok(())
+}
+
+fn sensor_kind_label(kind: SensorKind) -> &'static str {
+    match kind {
+        SensorKind::Unknown => "unknown",
+        SensorKind::Mock => "mock",
+        SensorKind::Mpu9250 => "mpu9250",
+        SensorKind::Mpu6500 => "mpu6500-compatible",
+        SensorKind::Faulted => "faulted",
+    }
+}
+
+fn imu_fault_label(code: u8) -> &'static str {
+    match code {
+        arachno_imu_host::SENSOR_FAULT_NONE => "none",
+        arachno_imu_host::SENSOR_FAULT_PROBE_NO_RESPONSE => "probe_no_response",
+        arachno_imu_host::SENSOR_FAULT_UNEXPECTED_WHO_AM_I => "unexpected_who_am_i",
+        arachno_imu_host::SENSOR_FAULT_READ => "read_fault",
+        _ => "unknown",
+    }
+}
+
+fn estimate_roll_pitch_deg(accel_mps2: [f32; 3]) -> (f32, f32) {
+    let ax = accel_mps2[0];
+    let ay = accel_mps2[1];
+    let az = accel_mps2[2];
+    let roll = ay.atan2(az).to_degrees();
+    let pitch = (-ax).atan2((ay * ay + az * az).sqrt()).to_degrees();
+    (roll, pitch)
+}
+
+fn vector_norm3(values: [f32; 3]) -> f32 {
+    (values[0] * values[0] + values[1] * values[1] + values[2] * values[2]).sqrt()
 }
 
 fn ticks_to_deg(ticks: u16) -> f32 {
@@ -896,7 +1074,7 @@ const DASHBOARD_HTML: &str = r#"<!doctype html>
     <section class="hero">
       <div>
         <h1>Arachno Debug Dashboard</h1>
-        <div class="subtitle">Live visibility into the tethered robot setup: servo feedback, fault states, and the current camera feed.</div>
+        <div class="subtitle">Live visibility into the tethered robot setup: servo feedback, body motion from the IMU bridge, fault states, and the current camera feed.</div>
       </div>
       <div id="status-badge" class="badge">waiting for telemetry</div>
     </section>
@@ -942,6 +1120,37 @@ const DASHBOARD_HTML: &str = r#"<!doctype html>
               <div class="stat-value" id="camera-backend">-</div>
               <div class="stat-note" id="camera-note">-</div>
             </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" style="margin-top: 18px;">
+      <div class="panel-header">
+        <h2>IMU</h2>
+        <div class="muted" id="imu-summary">waiting for IMU state</div>
+      </div>
+      <div class="panel-body">
+        <div class="stats">
+          <div class="stat">
+            <div class="stat-label">Bridge</div>
+            <div class="stat-value" id="imu-mode">-</div>
+            <div class="stat-note" id="imu-device">-</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">Sensor</div>
+            <div class="stat-value" id="imu-sensor-kind">-</div>
+            <div class="stat-note" id="imu-sensor-note">-</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">Attitude</div>
+            <div class="stat-value" id="imu-attitude">-</div>
+            <div class="stat-note" id="imu-accel-note">-</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">Motion</div>
+            <div class="stat-value" id="imu-motion">-</div>
+            <div class="stat-note" id="imu-health-note">-</div>
           </div>
         </div>
       </div>
@@ -1030,6 +1239,58 @@ const DASHBOARD_HTML: &str = r#"<!doctype html>
       if (lower.includes("resource busy")) return "busy";
       if (lower.includes("failed to open")) return "bus open failed";
       return message.replace(/^communication failure:\s*/i, "");
+    }
+
+    function hexByte(value) {
+      return Number.isInteger(value) ? `0x${value.toString(16).padStart(2, "0")}` : "n/a";
+    }
+
+    function updateImuPanel(imu) {
+      if (!imu) {
+        document.getElementById("imu-summary").textContent = "IMU disabled";
+        document.getElementById("imu-mode").textContent = "disabled";
+        document.getElementById("imu-device").textContent = "No IMU section is configured for this profile.";
+        document.getElementById("imu-sensor-kind").textContent = "-";
+        document.getElementById("imu-sensor-note").textContent = "-";
+        document.getElementById("imu-attitude").textContent = "-";
+        document.getElementById("imu-accel-note").textContent = "-";
+        document.getElementById("imu-motion").textContent = "-";
+        document.getElementById("imu-health-note").textContent = "-";
+        return;
+      }
+
+      const sensorKind = imu.sensor_kind ?? (imu.enabled ? "probing..." : "disabled");
+      const sensorNote = [
+        imu.sample_hz ? `${imu.sample_hz} Hz` : null,
+        imu.spi_mode != null ? `SPI mode ${imu.spi_mode}` : null,
+        imu.observed_who_am_i != null ? `WHO_AM_I ${hexByte(imu.observed_who_am_i)}` : null,
+      ].filter(Boolean).join(" | ") || "Waiting for firmware info.";
+
+      const attitude = imu.roll_deg != null && imu.pitch_deg != null
+        ? `roll ${fmt(imu.roll_deg, 1)}° / pitch ${fmt(imu.pitch_deg, 1)}°`
+        : "waiting for sample";
+      const accelNote = imu.accel_norm_mps2 != null
+        ? `|a| ${fmt(imu.accel_norm_mps2, 2)} m/s²`
+        : "No accelerometer sample yet.";
+      const motion = imu.gyro_norm_deg_s != null
+        ? `${fmt(imu.gyro_norm_deg_s, 1)} °/s`
+        : "waiting for sample";
+      const faults = imu.telemetry?.faults?.length ? imu.telemetry.faults.join(", ") : "ok";
+      const healthBits = [
+        imu.telemetry?.temperature_c != null ? `temp ${fmt(imu.telemetry.temperature_c, 1)} °C` : null,
+        `faults ${faults}`,
+        imu.last_error ? compactError(imu.last_error) : null,
+      ].filter(Boolean).join(" | ");
+
+      document.getElementById("imu-summary").textContent = imu.last_error ?? `${sensorKind} streaming`;
+      document.getElementById("imu-mode").textContent = imu.enabled ? imu.mode : "disabled";
+      document.getElementById("imu-device").textContent = imu.device ?? imu.description ?? "No device path";
+      document.getElementById("imu-sensor-kind").textContent = sensorKind;
+      document.getElementById("imu-sensor-note").textContent = sensorNote;
+      document.getElementById("imu-attitude").textContent = attitude;
+      document.getElementById("imu-accel-note").textContent = accelNote;
+      document.getElementById("imu-motion").textContent = motion;
+      document.getElementById("imu-health-note").textContent = healthBits || "No telemetry yet.";
     }
 
     function renderServoNode(servo) {
@@ -1123,6 +1384,7 @@ const DASHBOARD_HTML: &str = r#"<!doctype html>
         document.getElementById("camera-note").textContent = state.camera_device ?? state.camera_pipeline;
         document.getElementById("camera-meta").textContent = state.camera_pipeline;
         document.getElementById("updated-at").textContent = state.updated_at_ms ? new Date(state.updated_at_ms).toLocaleTimeString() : "never";
+        updateImuPanel(state.imu);
 
         const faulted = state.servos.filter((servo) => servo.telemetry && servo.telemetry.faults.length > 0).length;
         document.getElementById("fault-summary").textContent = `${faulted} servo(s) reporting status flags`;

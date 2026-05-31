@@ -23,7 +23,7 @@ fov_deg = 60.0
 pixel_format = "MJPG"
 
 [imu]
-enabled = false
+enabled = true
 mode = "usb_bridge"
 device = "/dev/serial/by-id/usb-arachno-pilot_RP2040_IMU_bridge_arachno-imu-bridge-0001-if00"
 sample_hz = 200

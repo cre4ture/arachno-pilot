@@ -10,6 +10,7 @@ arachno-camera = { path = "../../crates/arachno-camera" }
 arachno-core = { path = "../../crates/arachno-core" }
 arachno-feetech-sts = { path = "../../crates/arachno-feetech-sts" }
 arachno-hal = { path = "../../crates/arachno-hal" }
+arachno-imu-host = { path = "../../crates/arachno-imu-host" }
 arachno-msg = { path = "../../crates/arachno-msg" }
 axum.workspace = true
 clap.workspace = true

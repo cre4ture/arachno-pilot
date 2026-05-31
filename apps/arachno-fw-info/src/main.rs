@@ -3,7 +3,9 @@ use std::{fs, path::PathBuf, time::Duration};
 use anyhow::{Context, bail};
 use arachno_core::RobotConfig;
 use arachno_imu_host::{
-    CAP_ACCEL, CAP_GYRO, CAP_MAG, CAP_TEMP, DeviceInfoProbe, SensorKind, UsbImuBridge,
+    CAP_ACCEL, CAP_GYRO, CAP_MAG, CAP_TEMP, DeviceInfoProbe, SPI_MODE_UNKNOWN,
+    SENSOR_FAULT_NONE, SENSOR_FAULT_PROBE_NO_RESPONSE, SENSOR_FAULT_READ,
+    SENSOR_FAULT_UNEXPECTED_WHO_AM_I, SensorKind, UsbImuBridge,
 };
 use clap::Parser;
 
@@ -52,9 +54,21 @@ fn main() -> anyhow::Result<()> {
     println!("sensor_kind: {}", sensor_kind_label(info.sensor_kind));
     println!("sample_hz: {}", info.sample_hz);
     println!("capabilities: {}", capability_labels(info.capabilities));
+    if info.spi_mode != SPI_MODE_UNKNOWN {
+        println!("spi_mode: {}", info.spi_mode);
+    }
+    if info.observed_who_am_i != 0 {
+        println!("observed_who_am_i: 0x{:02x}", info.observed_who_am_i);
+    }
+    if info.fault_code != SENSOR_FAULT_NONE {
+        println!("backend_fault: {}", fault_code_label(info.fault_code));
+    }
 
     if info.sensor_kind == SensorKind::Faulted {
-        bail!("firmware is running, but the IMU backend is faulted");
+        bail!(
+            "firmware is running, but the IMU backend is faulted ({})",
+            fault_code_label(info.fault_code)
+        );
     }
 
     Ok(())
@@ -65,7 +79,18 @@ fn sensor_kind_label(kind: SensorKind) -> &'static str {
         SensorKind::Unknown => "unknown",
         SensorKind::Mock => "mock",
         SensorKind::Mpu9250 => "mpu9250",
+        SensorKind::Mpu6500 => "mpu6500-compatible",
         SensorKind::Faulted => "faulted",
+    }
+}
+
+fn fault_code_label(code: u8) -> &'static str {
+    match code {
+        SENSOR_FAULT_NONE => "none",
+        SENSOR_FAULT_PROBE_NO_RESPONSE => "probe_no_response",
+        SENSOR_FAULT_UNEXPECTED_WHO_AM_I => "unexpected_who_am_i",
+        SENSOR_FAULT_READ => "read_fault",
+        _ => "unknown",
     }
 }
 

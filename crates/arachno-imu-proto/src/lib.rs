@@ -7,13 +7,19 @@ pub const SYNC_1: u8 = 0x5A;
 pub const PROTOCOL_VERSION: u8 = 1;
 pub const HEADER_LEN: usize = 6;
 pub const CRC_LEN: usize = 2;
-pub const DEVICE_INFO_PAYLOAD_LEN: usize = 8;
+pub const DEVICE_INFO_PAYLOAD_LEN_V1: usize = 8;
+pub const DEVICE_INFO_PAYLOAD_LEN: usize = 12;
 pub const IMU_SAMPLE_PAYLOAD_LEN: usize = 26;
 pub const MAX_FRAME_LEN: usize = HEADER_LEN + IMU_SAMPLE_PAYLOAD_LEN + CRC_LEN;
 pub const CAP_ACCEL: u16 = 1 << 0;
 pub const CAP_GYRO: u16 = 1 << 1;
 pub const CAP_TEMP: u16 = 1 << 2;
 pub const CAP_MAG: u16 = 1 << 3;
+pub const SENSOR_FAULT_NONE: u8 = 0;
+pub const SENSOR_FAULT_PROBE_NO_RESPONSE: u8 = 1;
+pub const SENSOR_FAULT_UNEXPECTED_WHO_AM_I: u8 = 2;
+pub const SENSOR_FAULT_READ: u8 = 3;
+pub const SPI_MODE_UNKNOWN: u8 = 0xFF;
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,6 +49,7 @@ pub enum SensorKind {
     Unknown = 0,
     Mock = 1,
     Mpu9250 = 2,
+    Mpu6500 = 3,
     Faulted = 255,
 }
 
@@ -54,6 +61,7 @@ impl TryFrom<u8> for SensorKind {
             0 => Ok(Self::Unknown),
             1 => Ok(Self::Mock),
             2 => Ok(Self::Mpu9250),
+            3 => Ok(Self::Mpu6500),
             255 => Ok(Self::Faulted),
             _ => Err(DecodeError::UnknownSensorKind(value)),
         }
@@ -67,6 +75,10 @@ pub struct DeviceInfo {
     pub sensor_kind: SensorKind,
     pub sample_hz: u16,
     pub capabilities: u16,
+    pub fault_code: u8,
+    pub observed_who_am_i: u8,
+    pub spi_mode: u8,
+    pub reserved: u8,
 }
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -210,8 +222,7 @@ impl FrameParser {
                 return Err(DecodeError::FrameTooLong(expected_len));
             }
 
-            let required_payload_len = expected_payload_len(kind);
-            if payload_len != required_payload_len {
+            if !is_valid_payload_len(kind, payload_len) {
                 self.reset();
                 return Err(DecodeError::PayloadLengthMismatch {
                     kind,
@@ -309,6 +320,14 @@ pub fn encode_device_info_frame(
     cursor += 1;
     cursor = write_u16(out, cursor, info.sample_hz);
     cursor = write_u16(out, cursor, info.capabilities);
+    out[cursor] = info.fault_code;
+    cursor += 1;
+    out[cursor] = info.observed_who_am_i;
+    cursor += 1;
+    out[cursor] = info.spi_mode;
+    cursor += 1;
+    out[cursor] = info.reserved;
+    cursor += 1;
 
     let crc = crc16_ccitt(&out[..cursor]);
     let [crc_low, crc_high] = crc.to_le_bytes();
@@ -353,7 +372,7 @@ pub fn decode_frame(bytes: &[u8]) -> Result<Frame, DecodeError> {
 
     match kind {
         FrameKind::DeviceInfo => {
-            if payload_len != DEVICE_INFO_PAYLOAD_LEN {
+            if !is_valid_payload_len(kind, payload_len) {
                 return Err(DecodeError::PayloadLengthMismatch {
                     kind,
                     length: payload_len,
@@ -367,6 +386,10 @@ pub fn decode_frame(bytes: &[u8]) -> Result<Frame, DecodeError> {
                 sensor_kind: SensorKind::try_from(payload[3])?,
                 sample_hz: u16::from_le_bytes([payload[4], payload[5]]),
                 capabilities: u16::from_le_bytes([payload[6], payload[7]]),
+                fault_code: payload.get(8).copied().unwrap_or(SENSOR_FAULT_NONE),
+                observed_who_am_i: payload.get(9).copied().unwrap_or(0),
+                spi_mode: payload.get(10).copied().unwrap_or(SPI_MODE_UNKNOWN),
+                reserved: payload.get(11).copied().unwrap_or(0),
             };
 
             Ok(Frame::DeviceInfo { sequence, info })
@@ -432,10 +455,12 @@ const fn frame_len(payload_len: usize) -> usize {
     HEADER_LEN + payload_len + CRC_LEN
 }
 
-const fn expected_payload_len(kind: FrameKind) -> usize {
+const fn is_valid_payload_len(kind: FrameKind, payload_len: usize) -> bool {
     match kind {
-        FrameKind::DeviceInfo => DEVICE_INFO_PAYLOAD_LEN,
-        FrameKind::ImuSample => IMU_SAMPLE_PAYLOAD_LEN,
+        FrameKind::DeviceInfo => {
+            payload_len == DEVICE_INFO_PAYLOAD_LEN_V1 || payload_len == DEVICE_INFO_PAYLOAD_LEN
+        }
+        FrameKind::ImuSample => payload_len == IMU_SAMPLE_PAYLOAD_LEN,
     }
 }
 
@@ -530,12 +555,56 @@ mod tests {
             sensor_kind: SensorKind::Mpu9250,
             sample_hz: 200,
             capabilities: CAP_ACCEL | CAP_GYRO | CAP_TEMP,
+            fault_code: SENSOR_FAULT_NONE,
+            observed_who_am_i: 0x71,
+            spi_mode: 3,
+            reserved: 0,
         };
         let mut buf = [0u8; MAX_FRAME_LEN];
         let written = encode_device_info_frame(3, &info, &mut buf).unwrap();
         let frame = decode_frame(&buf[..written]).unwrap();
 
         assert_eq!(frame, Frame::DeviceInfo { sequence: 3, info });
+    }
+
+    #[test]
+    fn device_info_v1_frame_decodes_with_default_diagnostics() {
+        let mut buf = [0u8; HEADER_LEN + DEVICE_INFO_PAYLOAD_LEN_V1 + CRC_LEN];
+        buf[0] = SYNC_0;
+        buf[1] = SYNC_1;
+        buf[2] = PROTOCOL_VERSION;
+        buf[3] = FrameKind::DeviceInfo as u8;
+        buf[4] = DEVICE_INFO_PAYLOAD_LEN_V1 as u8;
+        buf[5] = 9;
+        buf[6] = 1;
+        buf[7] = 2;
+        buf[8] = 3;
+        buf[9] = SensorKind::Mpu9250 as u8;
+        buf[10..12].copy_from_slice(&200u16.to_le_bytes());
+        buf[12..14].copy_from_slice(&(CAP_ACCEL | CAP_GYRO).to_le_bytes());
+        let crc = crc16_ccitt(&buf[..buf.len() - CRC_LEN]);
+        let [crc_low, crc_high] = crc.to_le_bytes();
+        let len = buf.len();
+        buf[len - 2] = crc_low;
+        buf[len - 1] = crc_high;
+
+        let frame = decode_frame(&buf).unwrap();
+        assert_eq!(
+            frame,
+            Frame::DeviceInfo {
+                sequence: 9,
+                info: DeviceInfo {
+                    firmware_version: [1, 2, 3],
+                    sensor_kind: SensorKind::Mpu9250,
+                    sample_hz: 200,
+                    capabilities: CAP_ACCEL | CAP_GYRO,
+                    fault_code: SENSOR_FAULT_NONE,
+                    observed_who_am_i: 0,
+                    spi_mode: SPI_MODE_UNKNOWN,
+                    reserved: 0,
+                },
+            }
+        );
     }
 
     #[test]

@@ -38,9 +38,9 @@ Rust-first starter workspace for a hexapod that can run either on a tethered Lin
 ## Suggested next steps
 
 1. Wire the real STS bus into `apps/arachno-brain` once you want motion commands to leave the mock path.
-2. Replace the RP2040 bridge's mock IMU stream with a real `MPU-9250` or `ICM-42688-P` backend.
-3. Fuse the resulting IMU stream into `arachno-control`.
-4. Add a Jetson-native live camera backend for the onboard `argus` profile.
+2. Add IMU-assisted safety checks and posture stabilization on top of the new live USB bridge path.
+3. Add a Jetson-native live camera backend for the onboard `argus` profile.
+4. Start logging synchronized servo + IMU + camera metadata for gait tuning and learning.
 5. Keep learning and heavy model tooling in `python/`, then export deployable artifacts back to Rust.
 
 ## Debug dashboard
@@ -54,6 +54,7 @@ just dashboard
 It currently provides:
 
 - live servo polling through the real Feetech bus path
+- live RP2040 IMU bridge state with roll/pitch sanity estimates and raw motion health
 - fault-tolerant telemetry cards per configured servo
 - a browser camera stream for the USB V4L2 camera path
 
@@ -65,9 +66,9 @@ The repo now includes a Rust-to-Rust IMU bridge path:
 
 - `firmware/rp2040-imu-bridge`: Embassy-based RP2040 USB CDC firmware
 - `crates/arachno-imu-proto`: binary framing shared with the host
-- `crates/arachno-imu-host`: Linux reader that will plug into `arachno-brain`
+- `crates/arachno-imu-host`: Linux reader used by both `arachno-brain` and the dashboard
 
-The firmware currently streams a mock IMU payload so the USB link and framing can be validated before the real sensor backend is attached.
+The firmware now probes a real `MPU-9250`-class sensor over `SPI`, supports common `MPU-6500`-compatible IDs during bring-up, and reports the selected `SPI` mode plus observed `WHO_AM_I` value through `fw-version`. The host USB and current default profiles ship with the IMU bridge enabled.
 
 Build helpers:
 
@@ -89,3 +90,5 @@ cargo run -p arachno-brain -- --config config/robot/host-usb.toml
 cargo run -p arachno-brain -- --config config/robot/jetson-onboard.toml
 cargo check --manifest-path firmware/Cargo.toml -p rp2040-imu-bridge --target thumbv6m-none-eabi
 ```
+
+`arachno-brain` now runs as a live loop until you stop it with `Ctrl-C`, and prints compact IMU roll/pitch summaries alongside the current camera/telemetry state.

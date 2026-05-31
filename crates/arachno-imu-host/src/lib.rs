@@ -5,7 +5,11 @@ use std::{
 };
 
 use arachno_hal::{HalError, HalResult, ImuSource};
-pub use arachno_imu_proto::{CAP_ACCEL, CAP_GYRO, CAP_MAG, CAP_TEMP, DeviceInfo, SensorKind};
+pub use arachno_imu_proto::{
+    CAP_ACCEL, CAP_GYRO, CAP_MAG, CAP_TEMP, DeviceInfo, SPI_MODE_UNKNOWN, SENSOR_FAULT_NONE,
+    SENSOR_FAULT_PROBE_NO_RESPONSE, SENSOR_FAULT_READ, SENSOR_FAULT_UNEXPECTED_WHO_AM_I,
+    SensorKind,
+};
 use arachno_imu_proto::{Frame, FrameParser, ImuSample};
 use arachno_msg::ImuTelemetry;
 use serialport::SerialPort;
