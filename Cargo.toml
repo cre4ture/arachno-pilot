@@ -3,6 +3,7 @@ members = [
     "apps/arachno-brain",
     "apps/arachno-calibrate",
     "apps/arachno-dashboard",
+    "apps/arachno-fw-info",
     "apps/arachno-probe",
     "crates/arachno-camera",
     "crates/arachno-control",

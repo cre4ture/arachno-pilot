@@ -13,6 +13,7 @@ Rust-first starter workspace for a hexapod that can run either on a tethered Lin
 - `apps/arachno-brain`: main runtime entrypoint for the robot.
 - `apps/arachno-calibrate`: servo ID, zero-point, and home-pose tooling.
 - `apps/arachno-dashboard`: browser-based debug dashboard for live servo telemetry and camera streaming.
+- `apps/arachno-fw-info`: host-side firmware version and capability query for the RP2040 IMU bridge.
 - `apps/arachno-probe`: host-device reachability checks for configured camera and servo bridge paths.
 - `crates/arachno-core`: robot config, gait primitives, and shared domain logic.
 - `crates/arachno-hal`: hardware traits for servo buses, cameras, and future devices.
@@ -70,6 +71,7 @@ The firmware currently streams a mock IMU payload so the USB link and framing ca
 
 Build helpers:
 
+- `just fw-version`
 - `just firmware-check`
 - `just firmware-build`
 - `just firmware-build-release`

@@ -24,6 +24,9 @@ probe:
 dashboard:
     cargo run -p arachno-dashboard -- --config config/robot/host-usb.toml --listen 127.0.0.1:3000
 
+fw-version:
+    cargo run -p arachno-fw-info -- --config config/robot/default.toml
+
 firmware-check:
     cargo check --manifest-path firmware/Cargo.toml -p rp2040-imu-bridge --target thumbv6m-none-eabi
 

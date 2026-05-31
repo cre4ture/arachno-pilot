@@ -25,7 +25,7 @@ pixel_format = "NV12"
 [imu]
 enabled = false
 mode = "usb_bridge"
-device = "/dev/serial/by-id/usb-Arachno_RP2040_IMU_Bridge_0001-if00"
+device = "/dev/serial/by-id/usb-arachno-pilot_RP2040_IMU_bridge_arachno-imu-bridge-0001-if00"
 sample_hz = 200
 protocol = "arachno_imu_v1"
 

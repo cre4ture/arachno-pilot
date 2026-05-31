@@ -7,14 +7,20 @@ pub const SYNC_1: u8 = 0x5A;
 pub const PROTOCOL_VERSION: u8 = 1;
 pub const HEADER_LEN: usize = 6;
 pub const CRC_LEN: usize = 2;
+pub const DEVICE_INFO_PAYLOAD_LEN: usize = 8;
 pub const IMU_SAMPLE_PAYLOAD_LEN: usize = 26;
 pub const MAX_FRAME_LEN: usize = HEADER_LEN + IMU_SAMPLE_PAYLOAD_LEN + CRC_LEN;
+pub const CAP_ACCEL: u16 = 1 << 0;
+pub const CAP_GYRO: u16 = 1 << 1;
+pub const CAP_TEMP: u16 = 1 << 2;
+pub const CAP_MAG: u16 = 1 << 3;
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum FrameKind {
     ImuSample = 0x01,
+    DeviceInfo = 0x02,
 }
 
 impl TryFrom<u8> for FrameKind {
@@ -23,9 +29,44 @@ impl TryFrom<u8> for FrameKind {
     fn try_from(value: u8) -> Result<Self, Self::Error> {
         match value {
             0x01 => Ok(Self::ImuSample),
+            0x02 => Ok(Self::DeviceInfo),
             _ => Err(DecodeError::UnknownFrameKind(value)),
         }
     }
+}
+
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[repr(u8)]
+pub enum SensorKind {
+    #[default]
+    Unknown = 0,
+    Mock = 1,
+    Mpu9250 = 2,
+    Faulted = 255,
+}
+
+impl TryFrom<u8> for SensorKind {
+    type Error = DecodeError;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::Unknown),
+            1 => Ok(Self::Mock),
+            2 => Ok(Self::Mpu9250),
+            255 => Ok(Self::Faulted),
+            _ => Err(DecodeError::UnknownSensorKind(value)),
+        }
+    }
+}
+
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct DeviceInfo {
+    pub firmware_version: [u8; 3],
+    pub sensor_kind: SensorKind,
+    pub sample_hz: u16,
+    pub capabilities: u16,
 }
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -41,6 +82,7 @@ pub struct ImuSample {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Frame {
+    DeviceInfo { sequence: u8, info: DeviceInfo },
     ImuSample { sequence: u8, sample: ImuSample },
 }
 
@@ -63,6 +105,7 @@ pub enum DecodeError {
     InvalidSync,
     InvalidVersion(u8),
     UnknownFrameKind(u8),
+    UnknownSensorKind(u8),
     InvalidLength { expected: usize, actual: usize },
     PayloadLengthMismatch { kind: FrameKind, length: usize },
     CrcMismatch { expected: u16, actual: u16 },
@@ -76,6 +119,7 @@ impl fmt::Display for DecodeError {
             Self::InvalidSync => f.write_str("invalid sync bytes"),
             Self::InvalidVersion(version) => write!(f, "unsupported protocol version {version}"),
             Self::UnknownFrameKind(kind) => write!(f, "unknown frame kind 0x{kind:02x}"),
+            Self::UnknownSensorKind(kind) => write!(f, "unknown sensor kind 0x{kind:02x}"),
             Self::InvalidLength { expected, actual } => {
                 write!(f, "invalid frame length: expected {expected}, got {actual}")
             }
@@ -203,7 +247,7 @@ pub fn encode_sample_frame(
     sample: &ImuSample,
     out: &mut [u8],
 ) -> Result<usize, EncodeError> {
-    let frame_len = MAX_FRAME_LEN;
+    let frame_len = frame_len(IMU_SAMPLE_PAYLOAD_LEN);
     if out.len() < frame_len {
         return Err(EncodeError::OutputTooSmall);
     }
@@ -228,6 +272,43 @@ pub fn encode_sample_frame(
 
     cursor = write_i16(out, cursor, sample.temperature_centi_c);
     cursor = write_u16(out, cursor, sample.status);
+
+    let crc = crc16_ccitt(&out[..cursor]);
+    let [crc_low, crc_high] = crc.to_le_bytes();
+    out[cursor] = crc_low;
+    out[cursor + 1] = crc_high;
+
+    Ok(frame_len)
+}
+
+pub fn encode_device_info_frame(
+    sequence: u8,
+    info: &DeviceInfo,
+    out: &mut [u8],
+) -> Result<usize, EncodeError> {
+    let frame_len = frame_len(DEVICE_INFO_PAYLOAD_LEN);
+    if out.len() < frame_len {
+        return Err(EncodeError::OutputTooSmall);
+    }
+
+    out[0] = SYNC_0;
+    out[1] = SYNC_1;
+    out[2] = PROTOCOL_VERSION;
+    out[3] = FrameKind::DeviceInfo as u8;
+    out[4] = DEVICE_INFO_PAYLOAD_LEN as u8;
+    out[5] = sequence;
+
+    let mut cursor = HEADER_LEN;
+    out[cursor] = info.firmware_version[0];
+    cursor += 1;
+    out[cursor] = info.firmware_version[1];
+    cursor += 1;
+    out[cursor] = info.firmware_version[2];
+    cursor += 1;
+    out[cursor] = info.sensor_kind as u8;
+    cursor += 1;
+    cursor = write_u16(out, cursor, info.sample_hz);
+    cursor = write_u16(out, cursor, info.capabilities);
 
     let crc = crc16_ccitt(&out[..cursor]);
     let [crc_low, crc_high] = crc.to_le_bytes();
@@ -271,6 +352,25 @@ pub fn decode_frame(bytes: &[u8]) -> Result<Frame, DecodeError> {
     }
 
     match kind {
+        FrameKind::DeviceInfo => {
+            if payload_len != DEVICE_INFO_PAYLOAD_LEN {
+                return Err(DecodeError::PayloadLengthMismatch {
+                    kind,
+                    length: payload_len,
+                });
+            }
+
+            let sequence = bytes[5];
+            let payload = &bytes[HEADER_LEN..bytes.len() - CRC_LEN];
+            let info = DeviceInfo {
+                firmware_version: [payload[0], payload[1], payload[2]],
+                sensor_kind: SensorKind::try_from(payload[3])?,
+                sample_hz: u16::from_le_bytes([payload[4], payload[5]]),
+                capabilities: u16::from_le_bytes([payload[6], payload[7]]),
+            };
+
+            Ok(Frame::DeviceInfo { sequence, info })
+        }
         FrameKind::ImuSample => {
             if payload_len != IMU_SAMPLE_PAYLOAD_LEN {
                 return Err(DecodeError::PayloadLengthMismatch {
@@ -334,6 +434,7 @@ const fn frame_len(payload_len: usize) -> usize {
 
 const fn expected_payload_len(kind: FrameKind) -> usize {
     match kind {
+        FrameKind::DeviceInfo => DEVICE_INFO_PAYLOAD_LEN,
         FrameKind::ImuSample => IMU_SAMPLE_PAYLOAD_LEN,
     }
 }
@@ -420,6 +521,21 @@ mod tests {
                 sample,
             }
         );
+    }
+
+    #[test]
+    fn device_info_frame_roundtrips() {
+        let info = DeviceInfo {
+            firmware_version: [0, 1, 2],
+            sensor_kind: SensorKind::Mpu9250,
+            sample_hz: 200,
+            capabilities: CAP_ACCEL | CAP_GYRO | CAP_TEMP,
+        };
+        let mut buf = [0u8; MAX_FRAME_LEN];
+        let written = encode_device_info_frame(3, &info, &mut buf).unwrap();
+        let frame = decode_frame(&buf[..written]).unwrap();
+
+        assert_eq!(frame, Frame::DeviceInfo { sequence: 3, info });
     }
 
     #[test]

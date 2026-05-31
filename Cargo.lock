@@ -135,6 +135,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "arachno-fw-info"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "arachno-core",
+ "arachno-imu-host",
+ "clap",
+ "toml",
+]
+
+[[package]]
 name = "arachno-hal"
 version = "0.1.0"
 dependencies = [

@@ -6,7 +6,57 @@ This workspace contains embedded Rust firmware that complements the Linux-side `
 
 - `rp2040-imu-bridge`: USB CDC IMU bridge for the Waveshare `RP2040-ETH` board
 
-The current scaffold intentionally starts with a `mock IMU stream` so the USB transport, packet format, and host integration can be validated before a concrete `MPU-9250` or `ICM-42688-P` driver is wired in.
+The firmware now targets a real `MPU-9250`-class IMU over `SPI` and streams:
+
+- accelerometer
+- gyroscope
+- temperature
+
+The magnetometer is intentionally not used yet.
+
+During bring-up, the firmware now probes all four SPI modes at a conservative clock rate and accepts both:
+
+- `0x71` -> `MPU-9250`
+- `0x70` -> `MPU-6500 compatible`
+
+That makes the bridge more tolerant of clone or relabeled breakout boards that are sold as `GY-9250`.
+
+On each USB connection, the firmware now emits a compact device-info frame before live IMU samples and repeats it periodically so the host can verify:
+
+- firmware semantic version
+- sensor backend kind
+- sample rate
+- reported capabilities
+- selected SPI mode
+- observed `WHO_AM_I`
+- backend fault reason if bring-up fails
+
+## Wiring
+
+Recommended wiring for the Waveshare `RP2040-ETH` and a `GY-9250 / MPU-9250` breakout that exposes `SPI` pins:
+
+| RP2040-ETH | MPU-9250 breakout | Notes |
+| --- | --- | --- |
+| `3V3` | `VCC` | Power the module at `3.3 V` |
+| `GND` | `GND` | Common ground |
+| `GPIO2` | `SCL` / `SCLK` | `SPI0 SCK` |
+| `GPIO3` | `SDA` / `SDI` | `SPI0 MOSI` |
+| `GPIO4` | `AD0` / `SDO` | `SPI0 MISO` in SPI mode |
+| `GPIO5` | `NCS` / `CS` | Chip select, active low |
+| `GPIO6` | `INT` | Optional, not used by current firmware |
+
+Leave these unconnected for the current firmware:
+
+- `EDA`
+- `ECL`
+- `FSYNC`
+
+Important notes:
+
+- This firmware assumes your breakout exposes `NCS` or `CS`. If your module only exposes `I2C` pins and has no selectable `SPI` chip-select pin, this firmware will not talk to it.
+- Even if the board is marketed as `3-5 V compatible`, the safe target for the RP2040 side is still `3.3 V`.
+- `GPIO17` to `GPIO21` are already tied into the onboard `CH9120` Ethernet side functions on the RP2040-ETH, so the firmware avoids them.
+- In `SPI` mode, `AD0` is used as `SDO/MISO`, not just as an `I2C` address strap.
 
 ## Build
 
@@ -61,11 +111,39 @@ Recommended options:
 
 For `BOOTSEL + UF2`, hold `BOOT`, plug in the board, then copy the `.uf2` file onto the mounted `RPI-RP2` drive.
 
-## Next wiring step
+## Verify
 
-Replace `MockImuSensor` in `rp2040-imu-bridge/src/main.rs` with a real sensor backend:
+After reconnecting the board over USB, check the firmware and bring-up result from the repo root:
 
-- `MPU-9250` over `SPI` for immediate bring-up with the hardware you already own
-- `ICM-42688-P` over `SPI` for the longer-term robot build
+```bash
+just fw-version
+```
 
-Keep the USB packet format stable while swapping the sensor backend underneath it.
+Typical healthy output looks like:
+
+```text
+device: /dev/serial/by-id/...
+firmware_version: 0.1.1
+sensor_kind: mpu9250
+sample_hz: 200
+capabilities: accel,gyro,temp
+spi_mode: 3
+observed_who_am_i: 0x71
+```
+
+If the board is alive but the IMU still is not, `fw-version` now prints the fault detail too, for example:
+
+```text
+sensor_kind: faulted
+backend_fault: unexpected_who_am_i
+spi_mode: 1
+observed_who_am_i: 0x73
+```
+
+## Next firmware step
+
+After basic bring-up with the `MPU-9250`, the best follow-up is:
+
+- add startup bias calibration for gyro zero-rate offset
+- optionally move to data-ready interrupt handling on `INT`
+- optionally swap in an `ICM-42688-P` later while keeping the same USB packet format

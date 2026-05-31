@@ -1,10 +1,11 @@
 use std::{
     f32::consts::PI,
     io::{self, Read},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use arachno_hal::{HalError, HalResult, ImuSource};
+pub use arachno_imu_proto::{CAP_ACCEL, CAP_GYRO, CAP_MAG, CAP_TEMP, DeviceInfo, SensorKind};
 use arachno_imu_proto::{Frame, FrameParser, ImuSample};
 use arachno_msg::ImuTelemetry;
 use serialport::SerialPort;
@@ -12,6 +13,13 @@ use serialport::SerialPort;
 const DEFAULT_TIMEOUT_MS: u64 = 20;
 const ACCEL_MG_TO_MPS2: f32 = 9.80665 / 1000.0;
 const MDPS_TO_RAD_S: f32 = PI / 180_000.0;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeviceInfoProbe {
+    Info(DeviceInfo),
+    StreamingWithoutInfo,
+    Silent,
+}
 
 pub struct UsbImuBridge {
     port_path: String,
@@ -31,6 +39,9 @@ impl UsbImuBridge {
             .map_err(|err| {
                 HalError::Communication(format!("failed to open IMU bridge {}: {err}", port_path))
             })?;
+        let mut port = port;
+        let _ = port.write_data_terminal_ready(true);
+        let _ = port.write_request_to_send(true);
 
         Ok(Self {
             description: format!("RP2040 USB IMU bridge on {port_path}"),
@@ -50,7 +61,7 @@ impl UsbImuBridge {
         self.baud_rate
     }
 
-    fn read_frame(&mut self) -> HalResult<Option<Frame>> {
+    pub fn next_frame(&mut self) -> HalResult<Option<Frame>> {
         match self.port.read(&mut self.read_buf) {
             Ok(0) => Ok(None),
             Ok(read) => {
@@ -72,6 +83,25 @@ impl UsbImuBridge {
             ))),
         }
     }
+
+    pub fn probe_device_info(&mut self, timeout: Duration) -> HalResult<DeviceInfoProbe> {
+        let deadline = Instant::now() + timeout;
+        let mut saw_sample = false;
+
+        while Instant::now() < deadline {
+            match self.next_frame()? {
+                Some(Frame::DeviceInfo { info, .. }) => return Ok(DeviceInfoProbe::Info(info)),
+                Some(Frame::ImuSample { .. }) => saw_sample = true,
+                None => {}
+            }
+        }
+
+        if saw_sample {
+            Ok(DeviceInfoProbe::StreamingWithoutInfo)
+        } else {
+            Ok(DeviceInfoProbe::Silent)
+        }
+    }
 }
 
 impl ImuSource for UsbImuBridge {
@@ -81,12 +111,15 @@ impl ImuSource for UsbImuBridge {
     }
 
     fn next_sample(&mut self) -> HalResult<Option<ImuTelemetry>> {
-        let Some(frame) = self.read_frame()? else {
-            return Ok(None);
-        };
+        loop {
+            let Some(frame) = self.next_frame()? else {
+                return Ok(None);
+            };
 
-        match frame {
-            Frame::ImuSample { sample, .. } => Ok(Some(convert_sample(sample))),
+            match frame {
+                Frame::DeviceInfo { .. } => continue,
+                Frame::ImuSample { sample, .. } => return Ok(Some(convert_sample(sample))),
+            }
         }
     }
 
