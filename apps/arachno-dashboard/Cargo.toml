@@ -1,0 +1,19 @@
+[package]
+name = "arachno-dashboard"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+arachno-camera = { path = "../../crates/arachno-camera" }
+arachno-core = { path = "../../crates/arachno-core" }
+arachno-feetech-sts = { path = "../../crates/arachno-feetech-sts" }
+arachno-hal = { path = "../../crates/arachno-hal" }
+arachno-msg = { path = "../../crates/arachno-msg" }
+axum.workspace = true
+clap.workspace = true
+serde.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+toml.workspace = true

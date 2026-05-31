@@ -1,0 +1,10 @@
+[package]
+name = "arachno-control"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+arachno-core = { path = "../arachno-core" }
+arachno-hal = { path = "../arachno-hal" }
+arachno-msg = { path = "../arachno-msg" }
