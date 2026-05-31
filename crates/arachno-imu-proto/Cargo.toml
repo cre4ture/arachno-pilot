@@ -1,0 +1,12 @@
+[package]
+name = "arachno-imu-proto"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+serde = ["dep:serde"]
+
+[dependencies]
+serde = { version = "1.0", default-features = false, features = ["derive"], optional = true }

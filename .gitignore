@@ -1,5 +1,7 @@
 /target
+/firmware/target
 /.venv
 .vscode/
 __pycache__/
 *.pyc
+*.uf2

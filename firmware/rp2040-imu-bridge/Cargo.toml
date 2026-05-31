@@ -1,0 +1,16 @@
+[package]
+name = "rp2040-imu-bridge"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+arachno-imu-proto.workspace = true
+cortex-m-rt.workspace = true
+defmt.workspace = true
+defmt-rtt.workspace = true
+embassy-executor.workspace = true
+embassy-rp.workspace = true
+embassy-time.workspace = true
+embassy-usb.workspace = true
+panic-probe.workspace = true

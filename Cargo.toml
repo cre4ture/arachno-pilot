@@ -9,8 +9,11 @@ members = [
     "crates/arachno-core",
     "crates/arachno-feetech-sts",
     "crates/arachno-hal",
+    "crates/arachno-imu-host",
+    "crates/arachno-imu-proto",
     "crates/arachno-msg",
 ]
+exclude = ["firmware"]
 resolver = "2"
 
 [workspace.package]

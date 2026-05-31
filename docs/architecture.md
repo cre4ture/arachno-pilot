@@ -24,6 +24,7 @@ Use this mode when the robot is controlled by a regular Linux PC over cables:
 
 - servo bridge reaches the robot over USB
 - camera is a USB UVC device
+- optional IMU reaches the host through a USB CDC bridge on the RP2040
 - good for bring-up, debugging, calibration, and early walking experiments
 
 ### Jetson onboard
@@ -66,7 +67,8 @@ Stable hardware-facing traits:
 
 - servo bus
 - camera source
-- future IMU, range finder, foot contact, battery monitor
+- IMU source
+- future range finder, foot contact, battery monitor
 
 The rest of the code should depend on these traits, not on concrete devices.
 
@@ -87,6 +89,22 @@ Camera entrypoint:
 - build the `nvarguscamerasrc` or `v4l2src` pipeline string
 - later own the `gstreamer-rs` `appsink` consumer for both modes
 - lens profile and calibration metadata
+
+### `crates/arachno-imu-proto`
+
+Shared bridge framing:
+
+- no-std packet encoder/decoder
+- resynchronizing frame parser
+- shared sample format for RP2040 firmware and Linux host
+
+### `crates/arachno-imu-host`
+
+USB CDC bridge adapter:
+
+- opens the RP2040 bridge as a serial device on Linux
+- parses `arachno-imu-proto` frames
+- converts raw sensor units into robot-facing telemetry
 
 ### `crates/arachno-control`
 
@@ -139,3 +157,11 @@ Add new hardware by implementing `arachno-hal` traits in new crates:
 - `crates/arachno-foot-contact`
 
 That keeps extensions additive instead of forcing rewrites across the whole project.
+
+## RP2040 bridge firmware
+
+Keep microcontroller firmware in the separate `firmware/` workspace:
+
+- host-side `cargo check --workspace` stays focused on Linux binaries
+- RP2040 firmware can use its own target, linker, and flash workflow
+- shared protocol crates still live in `crates/` so the firmware and host stay aligned

@@ -46,6 +46,7 @@ where
             body_mode: "home".to_owned(),
             telemetry,
             camera,
+            imu: None,
         })
     }
 

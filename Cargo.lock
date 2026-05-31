@@ -143,6 +143,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "arachno-imu-host"
+version = "0.1.0"
+dependencies = [
+ "arachno-hal",
+ "arachno-imu-proto",
+ "arachno-msg",
+ "serialport",
+]
+
+[[package]]
+name = "arachno-imu-proto"
+version = "0.1.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "arachno-msg"
 version = "0.1.0"
 dependencies = [

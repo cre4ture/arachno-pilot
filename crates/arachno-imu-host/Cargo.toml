@@ -1,0 +1,11 @@
+[package]
+name = "arachno-imu-host"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+arachno-hal = { path = "../arachno-hal" }
+arachno-imu-proto = { path = "../arachno-imu-proto", features = ["serde"] }
+arachno-msg = { path = "../arachno-msg" }
+serialport.workspace = true

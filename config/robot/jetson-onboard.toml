@@ -22,6 +22,13 @@ fps = 30
 fov_deg = 162.4
 pixel_format = "NV12"
 
+[imu]
+enabled = false
+mode = "usb_bridge"
+device = "/dev/serial/by-id/usb-Arachno_RP2040_IMU_Bridge_0001-if00"
+sample_hz = 200
+protocol = "arachno_imu_v1"
+
 [safety]
 max_body_pitch_deg = 20.0
 max_body_roll_deg = 20.0

@@ -1,4 +1,4 @@
-use arachno_msg::{CameraFrameMeta, JointCommand, ServoTelemetry};
+use arachno_msg::{CameraFrameMeta, ImuTelemetry, JointCommand, ServoTelemetry};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -24,6 +24,12 @@ pub trait CameraSource {
     fn start(&mut self) -> HalResult<()>;
     fn next_frame(&mut self) -> HalResult<Option<CameraFrameMeta>>;
     fn pipeline_description(&self) -> &str;
+}
+
+pub trait ImuSource {
+    fn start(&mut self) -> HalResult<()>;
+    fn next_sample(&mut self) -> HalResult<Option<ImuTelemetry>>;
+    fn description(&self) -> &str;
 }
 
 pub trait ExtensionDevice {

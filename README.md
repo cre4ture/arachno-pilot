@@ -17,11 +17,14 @@ Rust-first starter workspace for a hexapod that can run either on a tethered Lin
 - `crates/arachno-core`: robot config, gait primitives, and shared domain logic.
 - `crates/arachno-hal`: hardware traits for servo buses, cameras, and future devices.
 - `crates/arachno-feetech-sts`: STS/TTL bus implementation area.
+- `crates/arachno-imu-proto`: shared no-std IMU packet format for the host and RP2040 bridge.
+- `crates/arachno-imu-host`: Linux-side USB CDC reader for the RP2040 IMU bridge.
 - `crates/arachno-camera`: camera pipeline builder and camera-facing code for both `argus` and `v4l2`.
 - `crates/arachno-control`: loop orchestration and safety boundaries.
 - `crates/arachno-msg`: message and telemetry types shared across crates.
 - `python/`: training, evaluation, and experiment scripts.
 - `native/`: narrow C++ bridge area for TensorRT, Argus, or vendor SDK shims.
+- `firmware/`: embedded Rust workspace for microcontroller-side bridge firmware.
 - `config/robot`: robot and hardware configuration files.
 - `docs/architecture.md`: the recommended runtime and integration model.
 
@@ -34,9 +37,10 @@ Rust-first starter workspace for a hexapod that can run either on a tethered Lin
 ## Suggested next steps
 
 1. Wire the real STS bus into `apps/arachno-brain` once you want motion commands to leave the mock path.
-2. Add an IMU driver crate and fuse it into `arachno-control`.
-3. Add a Jetson-native live camera backend for the onboard `argus` profile.
-4. Keep learning and heavy model tooling in `python/`, then export deployable artifacts back to Rust.
+2. Replace the RP2040 bridge's mock IMU stream with a real `MPU-9250` or `ICM-42688-P` backend.
+3. Fuse the resulting IMU stream into `arachno-control`.
+4. Add a Jetson-native live camera backend for the onboard `argus` profile.
+5. Keep learning and heavy model tooling in `python/`, then export deployable artifacts back to Rust.
 
 ## Debug dashboard
 
@@ -54,6 +58,23 @@ It currently provides:
 
 The dashboard is intentionally tolerant of partial hardware bring-up. If only one servo replies or a servo reports fault flags, that state is shown directly instead of being hidden behind a generic failure.
 
+## IMU bridge
+
+The repo now includes a Rust-to-Rust IMU bridge path:
+
+- `firmware/rp2040-imu-bridge`: Embassy-based RP2040 USB CDC firmware
+- `crates/arachno-imu-proto`: binary framing shared with the host
+- `crates/arachno-imu-host`: Linux reader that will plug into `arachno-brain`
+
+The firmware currently streams a mock IMU payload so the USB link and framing can be validated before the real sensor backend is attached.
+
+Build helpers:
+
+- `just firmware-check`
+- `just firmware-build`
+- `just firmware-build-release`
+- `just firmware-uf2`
+
 ## Quick start
 
 ```bash
@@ -64,4 +85,5 @@ cargo run -p arachno-dashboard -- --config config/robot/host-usb.toml --listen 1
 
 cargo run -p arachno-brain -- --config config/robot/host-usb.toml
 cargo run -p arachno-brain -- --config config/robot/jetson-onboard.toml
+cargo check --manifest-path firmware/Cargo.toml -p rp2040-imu-bridge --target thumbv6m-none-eabi
 ```

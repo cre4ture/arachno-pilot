@@ -631,95 +631,244 @@ const DASHBOARD_HTML: &str = r#"<!doctype html>
       line-height: 1.4;
     }
 
-    .servos {
+    .servo-layout {
       margin-top: 18px;
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-      gap: 14px;
+      gap: 12px;
     }
 
-    .servo {
-      padding: 16px;
-      border-radius: 18px;
-      background: linear-gradient(180deg, rgba(255,255,255,0.03), rgba(0,0,0,0.22));
+    .servo-map-shell {
+      overflow-x: auto;
+      padding-bottom: 6px;
+    }
+
+    .servo-map {
+      position: relative;
+      min-width: 980px;
+      min-height: 760px;
+      padding: 28px;
+      border-radius: 22px;
+      background:
+        radial-gradient(circle at 50% 50%, rgba(255, 146, 84, 0.08), transparent 20rem),
+        linear-gradient(180deg, rgba(255,255,255,0.03), rgba(0,0,0,0.22));
+      border: 1px solid rgba(255,255,255,0.06);
+    }
+
+    .servo-orientation {
+      color: var(--muted);
+      font-size: 0.95rem;
+      line-height: 1.5;
+    }
+
+    .axis-label {
+      position: absolute;
+      color: rgba(255,255,255,0.4);
+      font-size: 0.78rem;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+    }
+
+    .axis-front { top: 16px; left: 50%; transform: translateX(-50%); }
+    .axis-rear { bottom: 16px; left: 50%; transform: translateX(-50%); }
+    .axis-left {
+      top: 50%;
+      left: 16px;
+      transform: translateY(-50%) rotate(-90deg);
+      transform-origin: left top;
+    }
+    .axis-right {
+      top: 50%;
+      right: 16px;
+      transform: translateY(-50%) rotate(90deg);
+      transform-origin: right top;
+    }
+
+    .robot-body {
+      position: absolute;
+      inset: 50% auto auto 50%;
+      transform: translate(-50%, -50%);
+      width: 18rem;
+      height: 25rem;
+      display: grid;
+      place-items: center;
+      clip-path: polygon(18% 0%, 82% 0%, 100% 24%, 100% 76%, 82% 100%, 18% 100%, 0% 76%, 0% 24%);
+      background:
+        linear-gradient(160deg, rgba(255, 146, 84, 0.32), rgba(255, 146, 84, 0.08)),
+        linear-gradient(180deg, rgba(255,255,255,0.08), rgba(0,0,0,0.24));
+      border: 1px solid rgba(255,255,255,0.14);
+      box-shadow:
+        inset 0 1px 0 rgba(255,255,255,0.12),
+        0 24px 44px rgba(0,0,0,0.28);
+    }
+
+    .robot-body::before {
+      content: "";
+      position: absolute;
+      inset: 1.1rem;
+      clip-path: inherit;
+      background:
+        radial-gradient(circle at top, rgba(255,255,255,0.08), transparent 58%),
+        linear-gradient(180deg, rgba(0,0,0,0.1), rgba(0,0,0,0.3));
       border: 1px solid rgba(255,255,255,0.08);
     }
 
-    .servo.online { border-color: rgba(101, 214, 164, 0.25); }
-    .servo.fault { border-color: rgba(255, 111, 97, 0.35); }
+    .robot-body-core {
+      position: relative;
+      z-index: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      align-items: center;
+      text-align: center;
+      padding: 0 1.4rem;
+    }
 
-    .servo-top {
+    .robot-body-title {
+      font-size: 1.5rem;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+    }
+
+    .robot-body-note {
+      color: rgba(255,255,255,0.68);
+      font-size: 0.94rem;
+      line-height: 1.45;
+    }
+
+    .leg-cluster {
+      position: absolute;
+      width: 20rem;
+    }
+
+    .leg-cluster::after {
+      content: "";
+      position: absolute;
+      top: 50%;
+      height: 2px;
+      background: linear-gradient(90deg, rgba(255,255,255,0.08), rgba(255, 146, 84, 0.3));
+    }
+
+    .leg-cluster.left::after {
+      right: -2.2rem;
+      width: 2.2rem;
+    }
+
+    .leg-cluster.right::after {
+      left: -2.2rem;
+      width: 2.2rem;
+      background: linear-gradient(90deg, rgba(255, 146, 84, 0.3), rgba(255,255,255,0.08));
+    }
+
+    .leg-cluster.front-left { top: 6%; left: 3%; }
+    .leg-cluster.middle-left { top: 50%; left: 1.4%; transform: translateY(-50%); }
+    .leg-cluster.rear-left { bottom: 6%; left: 3%; }
+    .leg-cluster.front-right { top: 6%; right: 3%; }
+    .leg-cluster.middle-right { top: 50%; right: 1.4%; transform: translateY(-50%); }
+    .leg-cluster.rear-right { bottom: 6%; right: 3%; }
+
+    .leg-name {
+      margin-bottom: 10px;
+      font-size: 0.78rem;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: rgba(255,255,255,0.54);
+    }
+
+    .leg-chain {
+      display: flex;
+      gap: 10px;
+      align-items: stretch;
+    }
+
+    .leg-chain.reverse {
+      flex-direction: row-reverse;
+    }
+
+    .servo-node {
+      flex: 1 1 0;
+      min-width: 0;
+      min-height: 166px;
+      padding: 12px 10px;
+      border-radius: 16px;
+      background: linear-gradient(180deg, rgba(255,255,255,0.05), rgba(0,0,0,0.24));
+      border: 1px solid rgba(255,255,255,0.08);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
+    }
+
+    .servo-node.online { border-color: rgba(101, 214, 164, 0.25); }
+    .servo-node.fault { border-color: rgba(255, 111, 97, 0.32); }
+    .servo-node.offline {
+      border-color: rgba(255,255,255,0.08);
+      opacity: 0.78;
+    }
+
+    .servo-node-top {
       display: flex;
       justify-content: space-between;
-      gap: 12px;
+      gap: 8px;
       align-items: start;
-      margin-bottom: 12px;
+      margin-bottom: 10px;
     }
 
-    .servo-title {
-      font-size: 1rem;
-      font-weight: 700;
-      margin: 0 0 4px;
-    }
-
-    .servo-subtitle {
+    .joint-name {
+      font-size: 0.72rem;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
       color: var(--muted);
-      font-size: 0.92rem;
-      margin: 0;
     }
 
-    .servo-tag {
-      font-size: 0.78rem;
-      padding: 6px 10px;
+    .servo-mini-state {
+      padding: 5px 8px;
       border-radius: 999px;
+      font-size: 0.72rem;
       background: rgba(255,255,255,0.06);
-      color: var(--muted);
+      color: rgba(255,255,255,0.7);
       white-space: nowrap;
     }
 
-    .track {
-      height: 9px;
-      border-radius: 999px;
-      background: rgba(255,255,255,0.08);
-      overflow: hidden;
-      margin: 12px 0 14px;
+    .servo-node-id {
+      font-size: 1.28rem;
+      font-weight: 700;
+      line-height: 1;
+      margin-bottom: 6px;
     }
 
-    .fill {
-      height: 100%;
-      width: 0%;
-      border-radius: inherit;
-      background: linear-gradient(90deg, #ffb067, var(--accent));
-      box-shadow: 0 0 18px rgba(255, 146, 84, 0.4);
+    .servo-node-pos {
+      font-size: 0.96rem;
+      color: rgba(255,255,255,0.84);
     }
 
-    .servo-grid {
+    .servo-mini-grid {
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 10px 14px;
-      font-size: 0.95rem;
+      gap: 8px 10px;
+      margin-top: 12px;
     }
 
-    .servo-grid strong {
+    .servo-mini-grid strong {
       display: block;
       color: var(--muted);
-      font-size: 0.75rem;
+      font-size: 0.68rem;
       text-transform: uppercase;
-      letter-spacing: 0.06em;
-      margin-bottom: 3px;
+      letter-spacing: 0.08em;
+      margin-bottom: 2px;
     }
 
-    .faults {
+    .servo-mini-grid span {
+      display: block;
+      font-size: 0.84rem;
+      color: rgba(255,255,255,0.86);
+      line-height: 1.25;
+    }
+
+    .servo-node-error {
       margin-top: 12px;
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-    }
-
-    .fault-pill {
-      padding: 6px 10px;
+      display: inline-flex;
+      max-width: 100%;
+      padding: 5px 8px;
       border-radius: 999px;
-      font-size: 0.82rem;
+      font-size: 0.78rem;
+      line-height: 1.25;
       background: rgba(255, 111, 97, 0.14);
       color: #ffb7ae;
       border: 1px solid rgba(255, 111, 97, 0.24);
@@ -732,6 +881,7 @@ const DASHBOARD_HTML: &str = r#"<!doctype html>
     @media (max-width: 980px) {
       .layout { grid-template-columns: 1fr; }
       .stats { grid-template-columns: 1fr; }
+      .page { padding: 18px; }
     }
 
     @keyframes pulse {
@@ -803,7 +953,26 @@ const DASHBOARD_HTML: &str = r#"<!doctype html>
         <div class="muted" id="fault-summary">No servo data yet</div>
       </div>
       <div class="panel-body">
-        <div id="servos" class="servos"></div>
+        <div class="servo-layout">
+          <div class="servo-map-shell">
+            <div class="servo-map">
+              <div class="axis-label axis-front">Front</div>
+              <div class="axis-label axis-left">Left</div>
+              <div class="axis-label axis-right">Right</div>
+              <div class="axis-label axis-rear">Rear</div>
+              <div class="robot-body">
+                <div class="robot-body-core">
+                  <div class="robot-body-title">Hexapod Layout</div>
+                  <div class="robot-body-note" id="robot-note">Coxa, femur, tibia are drawn from the body outward.</div>
+                </div>
+              </div>
+              <div id="servo-map-legs"></div>
+            </div>
+          </div>
+          <div class="servo-orientation">
+            The map follows the robot's physical layout. Left legs are arms 1-3 from front to back, right legs are arms 4-6, and each leg is drawn from inside to outside as coxa, femur, tibia.
+          </div>
+        </div>
       </div>
     </section>
   </div>
@@ -812,49 +981,124 @@ const DASHBOARD_HTML: &str = r#"<!doctype html>
     const stateUrl = "/api/state";
     const cameraUrl = "/camera.mjpg";
     let streamStarted = false;
+    const LEG_ORDER = [
+      "front_left",
+      "middle_left",
+      "rear_left",
+      "front_right",
+      "middle_right",
+      "rear_right",
+    ];
+    const LEG_META = {
+      front_left: { label: "Front left", placement: "front-left left", side: "left" },
+      middle_left: { label: "Middle left", placement: "middle-left left", side: "left" },
+      rear_left: { label: "Rear left", placement: "rear-left left", side: "left" },
+      front_right: { label: "Front right", placement: "front-right right", side: "right" },
+      middle_right: { label: "Middle right", placement: "middle-right right", side: "right" },
+      rear_right: { label: "Rear right", placement: "rear-right right", side: "right" },
+    };
+    const ARM_TO_LEG = {
+      1: "front_left",
+      2: "middle_left",
+      3: "rear_left",
+      4: "front_right",
+      5: "middle_right",
+      6: "rear_right",
+    };
+    const JOINT_LABEL = {
+      1: "coxa",
+      2: "femur",
+      3: "tibia",
+    };
 
     function fmt(value, digits = 1) {
       return Number.isFinite(value) ? value.toFixed(digits) : "n/a";
     }
 
-    function renderServo(servo) {
+    function legKeyForServo(servo) {
+      return ARM_TO_LEG[Math.floor(servo.servo_id / 10)] ?? null;
+    }
+
+    function jointIndexForServo(servo) {
+      return servo.servo_id % 10;
+    }
+
+    function compactError(message) {
+      if (!message) return "";
+      const lower = message.toLowerCase();
+      if (lower.includes("timed out")) return "timeout";
+      if (lower.includes("resource busy")) return "busy";
+      if (lower.includes("failed to open")) return "bus open failed";
+      return message.replace(/^communication failure:\s*/i, "");
+    }
+
+    function renderServoNode(servo) {
       const telemetry = servo.telemetry;
       const faults = telemetry?.faults ?? [];
-      const classes = ["servo"];
-      if (servo.online) classes.push("online");
-      if (faults.length) classes.push("fault");
+      const classes = ["servo-node"];
+      if (!servo.online) {
+        classes.push("offline");
+      } else if (faults.length) {
+        classes.push("fault");
+      } else {
+        classes.push("online");
+      }
 
+      const jointIndex = jointIndexForServo(servo);
+      const jointLabel = JOINT_LABEL[jointIndex] ?? "joint";
       const load = telemetry ? `${fmt(telemetry.present_load_pct)}%` : "n/a";
-      const voltage = telemetry ? `${fmt(telemetry.present_voltage_v)} V` : "n/a";
+      const voltage = telemetry ? `${fmt(telemetry.present_voltage_v, 1)} V` : "n/a";
       const current = telemetry?.present_current_ma != null ? `${telemetry.present_current_ma} mA` : "n/a";
       const temp = telemetry?.present_temperature_c != null ? `${telemetry.present_temperature_c} °C` : "n/a";
-      const moving = telemetry ? (telemetry.moving ? "moving" : "idle") : "offline";
-      const status = telemetry?.status_bits != null ? `0x${telemetry.status_bits.toString(16).padStart(2, "0")}` : "n/a";
-      const fill = servo.position_percent != null ? `style="width:${Math.max(0, Math.min(100, servo.position_percent))}%;"` : "";
+      const stateLabel = telemetry ? (telemetry.moving ? "moving" : "ready") : "offline";
+      const errorText = compactError(servo.error);
 
       return `
         <article class="${classes.join(" ")}">
-          <div class="servo-top">
+          <div class="servo-node-top">
             <div>
-              <p class="servo-title">${servo.label}</p>
-              <p class="servo-subtitle">Servo ID ${servo.servo_id}</p>
+              <div class="joint-name">${jointLabel}</div>
+              <div class="servo-node-id">${servo.servo_id}</div>
+              <div class="servo-node-pos">${servo.position_deg != null ? `${fmt(servo.position_deg, 1)}°` : "n/a"}</div>
             </div>
-            <div class="servo-tag">${moving}</div>
+            <div class="servo-mini-state">${stateLabel}</div>
           </div>
-          <div class="track"><div class="fill" ${fill}></div></div>
-          <div class="servo-grid">
-            <div><strong>Position</strong>${servo.position_deg != null ? `${fmt(servo.position_deg, 2)}°` : "n/a"}</div>
-            <div><strong>Ticks</strong>${telemetry ? telemetry.present_position_ticks : "n/a"}</div>
-            <div><strong>Speed</strong>${servo.speed_rpm != null ? `${fmt(servo.speed_rpm, 2)} rpm` : "n/a"}</div>
-            <div><strong>Load</strong>${load}</div>
-            <div><strong>Voltage</strong>${voltage}</div>
-            <div><strong>Current</strong>${current}</div>
-            <div><strong>Temp</strong>${temp}</div>
-            <div><strong>Status</strong>${status}</div>
+          <div class="servo-mini-grid">
+            <div><strong>Load</strong><span>${load}</span></div>
+            <div><strong>Volt</strong><span>${voltage}</span></div>
+            <div><strong>Temp</strong><span>${temp}</span></div>
+            <div><strong>Current</strong><span>${current}</span></div>
           </div>
-          ${servo.error ? `<div class="faults"><span class="fault-pill">${servo.error}</span></div>` : ""}
+          ${errorText ? `<div class="servo-node-error">${errorText}</div>` : ""}
         </article>
       `;
+    }
+
+    function renderLegCluster(legKey, servos) {
+      const meta = LEG_META[legKey];
+      const sorted = [...servos].sort((left, right) => jointIndexForServo(left) - jointIndexForServo(right));
+      const chainClass = meta.side === "left" ? "leg-chain reverse" : "leg-chain";
+
+      return `
+        <section class="leg-cluster ${meta.placement}">
+          <div class="leg-name">${meta.label}</div>
+          <div class="${chainClass}">
+            ${sorted.map(renderServoNode).join("")}
+          </div>
+        </section>
+      `;
+    }
+
+    function renderServoMap(servos) {
+      const grouped = Object.fromEntries(LEG_ORDER.map((key) => [key, []]));
+      for (const servo of servos) {
+        const legKey = legKeyForServo(servo);
+        if (legKey && grouped[legKey]) {
+          grouped[legKey].push(servo);
+        }
+      }
+
+      return LEG_ORDER.map((legKey) => renderLegCluster(legKey, grouped[legKey])).join("");
     }
 
     function updateBadge(ok, text) {
@@ -882,7 +1126,9 @@ const DASHBOARD_HTML: &str = r#"<!doctype html>
 
         const faulted = state.servos.filter((servo) => servo.telemetry && servo.telemetry.faults.length > 0).length;
         document.getElementById("fault-summary").textContent = `${faulted} servo(s) reporting status flags`;
-        document.getElementById("servos").innerHTML = state.servos.map(renderServo).join("");
+        document.getElementById("robot-note").textContent =
+          `${state.online_servo_count}/${state.servos.length} joints responding. Chains run from body outward as coxa, femur, tibia.`;
+        document.getElementById("servo-map-legs").innerHTML = renderServoMap(state.servos);
 
         updateBadge(state.online_servo_count > 0, `${state.robot_name}: ${state.online_servo_count}/${state.servos.length} online`);
 

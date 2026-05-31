@@ -33,6 +33,16 @@ fn main() -> anyhow::Result<()> {
     println!("control_hz: {}", config.robot.control_hz);
     println!("camera_pipeline: {}", controller.camera_pipeline());
     println!("telemetry_samples: {}", snapshot.telemetry.len());
+    if let Some(imu) = &config.imu {
+        println!(
+            "imu: enabled={} mode={} device={}",
+            imu.enabled,
+            imu.mode,
+            imu.device.as_deref().unwrap_or("n/a")
+        );
+    } else {
+        println!("imu: disabled");
+    }
     println!("learning_mode: {}", config.learning.mode);
 
     Ok(())

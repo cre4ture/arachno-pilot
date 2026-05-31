@@ -7,6 +7,8 @@ pub struct RobotConfig {
     pub robot: RobotMeta,
     pub bus: BusConfig,
     pub camera: CameraConfig,
+    #[serde(default)]
+    pub imu: Option<ImuConfig>,
     pub safety: SafetyConfig,
     pub learning: LearningConfig,
     pub legs: Vec<LegConfig>,
@@ -48,6 +50,15 @@ pub struct CameraConfig {
     pub fps: u32,
     pub fov_deg: f32,
     pub pixel_format: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImuConfig {
+    pub enabled: bool,
+    pub mode: String,
+    pub device: Option<String>,
+    pub sample_hz: u16,
+    pub protocol: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -31,9 +31,20 @@ pub struct CameraFrameMeta {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ImuTelemetry {
+    pub timestamp_ms: u64,
+    pub accel_mps2: [f32; 3],
+    pub gyro_rad_s: [f32; 3],
+    pub temperature_c: Option<f32>,
+    pub status_bits: Option<u16>,
+    pub faults: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct RobotSnapshot {
     pub timestamp_ms: u64,
     pub body_mode: String,
     pub telemetry: Vec<ServoTelemetry>,
     pub camera: Option<CameraFrameMeta>,
+    pub imu: Option<ImuTelemetry>,
 }
