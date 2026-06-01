@@ -3,9 +3,9 @@ use std::{fs, path::PathBuf, time::Duration};
 use anyhow::{Context, bail};
 use arachno_core::RobotConfig;
 use arachno_imu_host::{
-    CAP_ACCEL, CAP_GYRO, CAP_MAG, CAP_TEMP, DeviceInfoProbe, SPI_MODE_UNKNOWN,
-    SENSOR_FAULT_NONE, SENSOR_FAULT_PROBE_NO_RESPONSE, SENSOR_FAULT_READ,
-    SENSOR_FAULT_UNEXPECTED_WHO_AM_I, SensorKind, UsbImuBridge,
+    CAP_ACCEL, CAP_GYRO, CAP_MAG, CAP_TEMP, DeviceInfoProbe, SENSOR_FAULT_NONE,
+    SENSOR_FAULT_PROBE_NO_RESPONSE, SENSOR_FAULT_READ, SENSOR_FAULT_UNEXPECTED_WHO_AM_I,
+    SPI_MODE_UNKNOWN, SensorKind, UsbImuBridge,
 };
 use clap::Parser;
 

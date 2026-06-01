@@ -10,9 +10,8 @@ Rust-first starter workspace for a hexapod that can run either on a tethered Lin
 
 ## Workspace map
 
-- `apps/arachno-brain`: main runtime entrypoint for the robot.
+- `apps/arachno-brain`: hardware-owning runtime that now serves telemetry, camera, dashboard, `stand`, and `slow_walk` from one process.
 - `apps/arachno-calibrate`: servo ID, zero-point, and home-pose tooling.
-- `apps/arachno-dashboard`: browser-based debug dashboard for live servo telemetry and camera streaming.
 - `apps/arachno-fw-info`: host-side firmware version and capability query for the RP2040 IMU bridge.
 - `apps/arachno-probe`: host-device reachability checks for configured camera and servo bridge paths.
 - `crates/arachno-core`: robot config, gait primitives, and shared domain logic.
@@ -28,6 +27,7 @@ Rust-first starter workspace for a hexapod that can run either on a tethered Lin
 - `firmware/`: embedded Rust workspace for microcontroller-side bridge firmware.
 - `config/robot`: robot and hardware configuration files.
 - `docs/architecture.md`: the recommended runtime and integration model.
+- `docs/roadmap.md`: staged locomotion and learning roadmap for the spider.
 
 ## Deployment profiles
 
@@ -35,17 +35,26 @@ Rust-first starter workspace for a hexapod that can run either on a tethered Lin
 - `config/robot/jetson-onboard.toml`: Jetson mounted on the robot, with the CSI camera connected locally.
 - `config/robot/default.toml`: current local-development default, aligned with the host USB setup for now.
 
-## Suggested next steps
+## Locomotion roadmap
 
-1. Wire the real STS bus into `apps/arachno-brain` once you want motion commands to leave the mock path.
-2. Add IMU-assisted safety checks and posture stabilization on top of the new live USB bridge path.
+The current development plan is documented in [docs/roadmap.md](/home/uli/rust-dev/arachno-pilot/docs/roadmap.md:1).
+
+Implemented now:
+
+- `stand`: holds the measured startup pose so the robot can stiffen safely before we trust a calibrated neutral pose
+- `slow_walk`: a cautious tripod gait that applies small offsets around that startup pose
+- shared hard safety checks for roll, pitch, bus voltage, and temperature, with servo load still exposed in telemetry
+
+Next up:
+
+1. Add synchronized servo + IMU logging.
+2. Add IMU-assisted posture stabilization on top of the hand-built gait.
 3. Add a Jetson-native live camera backend for the onboard `argus` profile.
-4. Start logging synchronized servo + IMU + camera metadata for gait tuning and learning.
-5. Keep learning and heavy model tooling in `python/`, then export deployable artifacts back to Rust.
+4. Keep training and policy tooling in `python/`, then export deployable artifacts back to Rust.
 
 ## Debug dashboard
 
-The host USB profile now includes a live dashboard:
+The host USB profile now uses a single hardware-owning process. The browser UI is optional and is served directly by `arachno-brain`:
 
 ```bash
 just dashboard
@@ -53,12 +62,14 @@ just dashboard
 
 It currently provides:
 
-- live servo polling through the real Feetech bus path
+- a single hardware owner in `arachno-brain` for the Feetech bridge, IMU bridge, camera route, and optional browser dashboard
+- live motion status for `telemetry`, `stand`, and `slow_walk`
+- live servo polling through the real Feetech bus path via the brain API
 - live RP2040 IMU bridge state with roll/pitch sanity estimates and raw motion health
 - fault-tolerant telemetry cards per configured servo
 - a browser camera stream for the USB V4L2 camera path
 
-The dashboard is intentionally tolerant of partial hardware bring-up. If only one servo replies or a servo reports fault flags, that state is shown directly instead of being hidden behind a generic failure.
+This removes the old serial-port ownership conflict where the brain and dashboard could not run together, because there is now only one process touching hardware. The dashboard is intentionally tolerant of partial hardware bring-up: if only one servo replies or a servo reports fault flags, that state is shown directly instead of being hidden behind a generic failure.
 
 ## IMU bridge
 
@@ -66,7 +77,7 @@ The repo now includes a Rust-to-Rust IMU bridge path:
 
 - `firmware/rp2040-imu-bridge`: Embassy-based RP2040 USB CDC firmware
 - `crates/arachno-imu-proto`: binary framing shared with the host
-- `crates/arachno-imu-host`: Linux reader used by both `arachno-brain` and the dashboard
+- `crates/arachno-imu-host`: Linux reader used by `arachno-brain`
 
 The firmware now probes a real `MPU-9250`-class sensor over `SPI`, supports common `MPU-6500`-compatible IDs during bring-up, and reports the selected `SPI` mode plus observed `WHO_AM_I` value through `fw-version`. The host USB and current default profiles ship with the IMU bridge enabled.
 
@@ -81,14 +92,15 @@ Build helpers:
 ## Quick start
 
 ```bash
-cargo run -p arachno-brain -- --config config/robot/default.toml
+cargo run -p arachno-brain -- --config config/robot/default.toml --listen 127.0.0.1:4000
 cargo run -p arachno-calibrate -- --config config/robot/default.toml
 cargo run -p arachno-probe -- --config config/robot/default.toml
-cargo run -p arachno-dashboard -- --config config/robot/host-usb.toml --listen 127.0.0.1:3000
-
-cargo run -p arachno-brain -- --config config/robot/host-usb.toml
-cargo run -p arachno-brain -- --config config/robot/jetson-onboard.toml
+cargo run -p arachno-brain -- --config config/robot/host-usb.toml --listen 127.0.0.1:4000
+cargo run -p arachno-brain -- --config config/robot/host-usb.toml --listen 127.0.0.1:4000 --dashboard
+cargo run -p arachno-brain -- --config config/robot/host-usb.toml --listen 127.0.0.1:4000 --mode stand --dashboard
+cargo run -p arachno-brain -- --config config/robot/host-usb.toml --listen 127.0.0.1:4000 --mode slow-walk --walk-seconds 8 --dashboard
+cargo run -p arachno-brain -- --config config/robot/jetson-onboard.toml --listen 127.0.0.1:4000
 cargo check --manifest-path firmware/Cargo.toml -p rp2040-imu-bridge --target thumbv6m-none-eabi
 ```
 
-`arachno-brain` now runs as a live loop until you stop it with `Ctrl-C`, and prints compact IMU roll/pitch summaries alongside the current camera/telemetry state.
+`arachno-brain` now owns the live hardware-facing telemetry API at `/api/state`, the camera route at `/camera.mjpg`, the rich dashboard UI at `/` and `/dashboard` when started with `--dashboard`, and the first hardware motion modes through `--mode telemetry`, `--mode stand`, and `--mode slow-walk`.

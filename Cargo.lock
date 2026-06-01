@@ -64,14 +64,18 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "arachno-camera",
- "arachno-control",
  "arachno-core",
  "arachno-feetech-sts",
  "arachno-hal",
  "arachno-imu-host",
  "arachno-msg",
+ "axum",
  "clap",
+ "serde",
+ "tokio",
+ "tokio-util",
  "toml",
+ "tower-http",
 ]
 
 [[package]]
@@ -108,25 +112,6 @@ version = "0.1.0"
 dependencies = [
  "arachno-msg",
  "serde",
-]
-
-[[package]]
-name = "arachno-dashboard"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "arachno-camera",
- "arachno-core",
- "arachno-feetech-sts",
- "arachno-hal",
- "arachno-imu-host",
- "arachno-msg",
- "axum",
- "clap",
- "serde",
- "tokio",
- "tokio-util",
- "toml",
 ]
 
 [[package]]
@@ -993,6 +978,20 @@ dependencies = [
  "tower-layer",
  "tower-service",
  "tracing",
+]
+
+[[package]]
+name = "tower-http"
+version = "0.6.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4cfcf7e2740e6fc6d4d688b4ef00650406bb94adf4731e43c096c3a19fe40840"
+dependencies = [
+ "bitflags 2.11.1",
+ "bytes",
+ "http",
+ "pin-project-lite",
+ "tower-layer",
+ "tower-service",
 ]
 
 [[package]]

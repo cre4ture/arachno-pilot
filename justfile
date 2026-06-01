@@ -13,7 +13,13 @@ clippy:
     cargo clippy --workspace --all-targets -- -D warnings
 
 brain:
-    cargo run -p arachno-brain -- --config config/robot/default.toml
+    cargo run -p arachno-brain -- --config config/robot/default.toml --listen 127.0.0.1:4000
+
+stand:
+    cargo run -p arachno-brain -- --config config/robot/host-usb.toml --listen 127.0.0.1:4000 --mode stand --dashboard
+
+slow-walk:
+    cargo run -p arachno-brain -- --config config/robot/host-usb.toml --listen 127.0.0.1:4000 --mode slow-walk --walk-seconds 8 --dashboard
 
 calibrate:
     cargo run -p arachno-calibrate -- --config config/robot/default.toml
@@ -22,7 +28,7 @@ probe:
     cargo run -p arachno-probe -- --config config/robot/default.toml
 
 dashboard:
-    cargo run -p arachno-dashboard -- --config config/robot/host-usb.toml --listen 127.0.0.1:3000
+    cargo run -p arachno-brain -- --config config/robot/host-usb.toml --listen 127.0.0.1:4000 --dashboard
 
 fw-version:
     cargo run -p arachno-fw-info -- --config config/robot/default.toml
