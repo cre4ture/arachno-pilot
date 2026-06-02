@@ -7,10 +7,8 @@ name = "arachno-pilot"
 control_hz = 150
 perception_hz = 20
 
-[bus.feetech]
-port = "/dev/serial/by-id/usb-1a86_USB_Single_Serial_5B79033507-if00"
-baud_rate = 1000000
-telemetry_stride = 6
+[servo_store]
+path = "servo-config.toml"
 
 [camera]
 name = "Waveshare IMX219-160 IR-CUT"
@@ -29,99 +27,7 @@ device = "/dev/serial/by-id/usb-arachno-pilot_RP2040_IMU_bridge_arachno-imu-brid
 sample_hz = 200
 protocol = "arachno_imu_v1"
 
-[safety]
-max_body_pitch_deg = 20.0
-max_body_roll_deg = 20.0
-max_servo_temp_c = 65
-min_bus_voltage_v = 6.4
-max_servo_load_pct = 82.0
-
 [learning]
 mode = "shadow"
 policy_transport = "unix-socket"
 policy_path = "artifacts/policies/latest.onnx"
-
-[locomotion]
-command_hz = 20
-
-[locomotion.stand]
-settle_seconds = 2.5
-
-[locomotion.tripod]
-settle_seconds = 2.5
-cycle_seconds = 5.0
-stride_ticks = 20
-femur_lift_ticks = 12
-tibia_lift_ticks = 18
-
-[[legs]]
-name = "front_left"
-coxa_servo_id = 11
-femur_servo_id = 12
-tibia_servo_id = 13
-coxa_home_ticks = 2048
-femur_home_ticks = 2150
-tibia_home_ticks = 1850
-coxa_forward_sign = 1
-femur_lift_sign = -1
-tibia_lift_sign = 1
-
-[[legs]]
-name = "middle_left"
-coxa_servo_id = 21
-femur_servo_id = 22
-tibia_servo_id = 23
-coxa_home_ticks = 2048
-femur_home_ticks = 2150
-tibia_home_ticks = 1850
-coxa_forward_sign = 1
-femur_lift_sign = -1
-tibia_lift_sign = 1
-
-[[legs]]
-name = "rear_left"
-coxa_servo_id = 31
-femur_servo_id = 32
-tibia_servo_id = 33
-coxa_home_ticks = 2048
-femur_home_ticks = 2150
-tibia_home_ticks = 1850
-coxa_forward_sign = 1
-femur_lift_sign = -1
-tibia_lift_sign = 1
-
-[[legs]]
-name = "front_right"
-coxa_servo_id = 41
-femur_servo_id = 42
-tibia_servo_id = 43
-coxa_home_ticks = 2048
-femur_home_ticks = 1950
-tibia_home_ticks = 2250
-coxa_forward_sign = -1
-femur_lift_sign = 1
-tibia_lift_sign = -1
-
-[[legs]]
-name = "middle_right"
-coxa_servo_id = 51
-femur_servo_id = 52
-tibia_servo_id = 53
-coxa_home_ticks = 2048
-femur_home_ticks = 1950
-tibia_home_ticks = 2250
-coxa_forward_sign = -1
-femur_lift_sign = 1
-tibia_lift_sign = -1
-
-[[legs]]
-name = "rear_right"
-coxa_servo_id = 61
-femur_servo_id = 62
-tibia_servo_id = 63
-coxa_home_ticks = 2048
-femur_home_ticks = 1950
-tibia_home_ticks = 2250
-coxa_forward_sign = -1
-femur_lift_sign = 1
-tibia_lift_sign = -1

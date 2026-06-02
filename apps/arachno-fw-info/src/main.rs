@@ -1,4 +1,4 @@
-use std::{fs, path::PathBuf, time::Duration};
+use std::{path::PathBuf, time::Duration};
 
 use anyhow::{Context, bail};
 use arachno_core::RobotConfig;
@@ -21,10 +21,8 @@ struct Args {
 
 fn main() -> anyhow::Result<()> {
     let args = Args::parse();
-    let config_text = fs::read_to_string(&args.config)
-        .with_context(|| format!("failed to read {}", args.config.display()))?;
-    let config: RobotConfig = toml::from_str(&config_text)
-        .with_context(|| format!("failed to parse {}", args.config.display()))?;
+    let config = RobotConfig::load_from_path(&args.config)
+        .with_context(|| format!("failed to load {}", args.config.display()))?;
 
     let device = args
         .device

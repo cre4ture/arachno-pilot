@@ -1,6 +1,5 @@
 use std::{
     collections::BTreeMap,
-    fs,
     net::SocketAddr,
     path::PathBuf,
     process::Stdio,
@@ -35,10 +34,16 @@ use tower_http::cors::{Any, CorsLayer};
 const IMU_BRIDGE_BAUD_RATE: u32 = 115_200;
 const IMU_PROBE_TIMEOUT_MS: u64 = 1_000;
 const TELEMETRY_LOOP_MS: u64 = 250;
+const LOW_VOLTAGE_STRIKES_TO_TRIP: u8 = 6;
+const STAND_UP_FEMUR_PREP_RATIO: f32 = 0.20;
+const STAND_UP_TIBIA_PLANT_RATIO: f32 = 0.20;
+const STAND_UP_BODY_RISE_RATIO: f32 = 0.45;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum BrainMode {
     Telemetry,
+    LayDown,
+    StandUp,
     Stand,
     SlowWalk,
 }
@@ -47,6 +52,8 @@ impl BrainMode {
     fn as_state_label(self) -> &'static str {
         match self {
             Self::Telemetry => "telemetry",
+            Self::LayDown => "lay_down",
+            Self::StandUp => "stand_up",
             Self::Stand => "stand",
             Self::SlowWalk => "slow_walk",
         }
@@ -135,6 +142,7 @@ struct MotionRuntime {
     armed_at: Option<Instant>,
     initial_pose: Option<BTreeMap<u8, u16>>,
     hold_pose: Option<BTreeMap<u8, u16>>,
+    low_voltage_strikes: BTreeMap<u8, u8>,
     summary: String,
     fault: Option<String>,
 }
@@ -228,7 +236,9 @@ impl MotionRuntime {
     fn new(mode: BrainMode, walk_seconds: Option<f32>) -> Self {
         let summary = match mode {
             BrainMode::Telemetry => "observation only; no motion commands are being sent",
-            BrainMode::Stand => "waiting for all servo feedback before standing",
+            BrainMode::LayDown => "waiting for all servo feedback before laying down",
+            BrainMode::StandUp => "waiting for all servo feedback before standing up",
+            BrainMode::Stand => "waiting for all servo feedback before holding stand",
             BrainMode::SlowWalk => "waiting for all servo feedback before starting the gait",
         };
 
@@ -238,6 +248,7 @@ impl MotionRuntime {
             armed_at: None,
             initial_pose: None,
             hold_pose: None,
+            low_voltage_strikes: BTreeMap::new(),
             summary: summary.to_owned(),
             fault: None,
         }
@@ -252,8 +263,10 @@ impl MotionRuntime {
         self.initial_pose = Some(pose.clone());
         self.hold_pose = Some(pose);
         self.summary = match self.mode {
-            BrainMode::Stand => "holding the startup stand pose".to_owned(),
-            BrainMode::SlowWalk => "holding the startup stand pose before gait".to_owned(),
+            BrainMode::LayDown => "starting lay-down transition".to_owned(),
+            BrainMode::StandUp => "starting stand-up transition".to_owned(),
+            BrainMode::Stand => "holding the configured standing pose".to_owned(),
+            BrainMode::SlowWalk => "holding the measured stand pose before gait".to_owned(),
             BrainMode::Telemetry => {
                 "observation only; no motion commands are being sent".to_owned()
             }
@@ -286,7 +299,7 @@ impl MotionRuntime {
 
         match self.mode {
             BrainMode::Telemetry => "observation only".to_owned(),
-            BrainMode::Stand | BrainMode::SlowWalk => {
+            BrainMode::LayDown | BrainMode::StandUp | BrainMode::Stand | BrainMode::SlowWalk => {
                 if imu_enabled {
                     "monitoring roll, pitch, bus voltage, and temperature".to_owned()
                 } else {
@@ -294,6 +307,73 @@ impl MotionRuntime {
                 }
             }
         }
+    }
+
+    fn check_safety(
+        &mut self,
+        config: &RobotConfig,
+        servo_ids: &[u8],
+        servo_states: &BTreeMap<u8, TelemetryServoState>,
+        imu_state: Option<&TelemetryImuState>,
+    ) -> Option<String> {
+        if let Some(imu) = imu_state {
+            if let Some(roll_deg) = imu.roll_deg {
+                if roll_deg.abs() > config.safety.max_body_roll_deg {
+                    return Some(format!(
+                        "body roll {:.1} deg exceeded limit {:.1} deg",
+                        roll_deg, config.safety.max_body_roll_deg
+                    ));
+                }
+            }
+            if let Some(pitch_deg) = imu.pitch_deg {
+                if pitch_deg.abs() > config.safety.max_body_pitch_deg {
+                    return Some(format!(
+                        "body pitch {:.1} deg exceeded limit {:.1} deg",
+                        pitch_deg, config.safety.max_body_pitch_deg
+                    ));
+                }
+            }
+        }
+
+        for servo_id in servo_ids {
+            let Some(telemetry) = servo_states
+                .get(servo_id)
+                .and_then(|state| state.telemetry.as_ref())
+            else {
+                continue;
+            };
+
+            if config.safety.min_bus_voltage_v > 0.0 {
+                if telemetry.present_voltage_v < config.safety.min_bus_voltage_v {
+                    let strikes = self.low_voltage_strikes.entry(*servo_id).or_default();
+                    *strikes = strikes.saturating_add(1);
+                    if *strikes >= LOW_VOLTAGE_STRIKES_TO_TRIP {
+                        return Some(format!(
+                            "servo {} voltage {:.1} V stayed below {:.1} V for {} samples",
+                            telemetry.servo_id,
+                            telemetry.present_voltage_v,
+                            config.safety.min_bus_voltage_v,
+                            LOW_VOLTAGE_STRIKES_TO_TRIP
+                        ));
+                    }
+                } else {
+                    self.low_voltage_strikes.remove(servo_id);
+                }
+            } else {
+                self.low_voltage_strikes.clear();
+            }
+
+            if let Some(temp_c) = telemetry.present_temperature_c {
+                if temp_c > config.safety.max_servo_temp_c {
+                    return Some(format!(
+                        "servo {} temperature {} C exceeded {} C",
+                        telemetry.servo_id, temp_c, config.safety.max_servo_temp_c
+                    ));
+                }
+            }
+        }
+
+        None
     }
 
     fn commands(&mut self, config: &RobotConfig, gait: &TripodGait) -> Option<Vec<JointCommand>> {
@@ -312,18 +392,34 @@ impl MotionRuntime {
             let armed_at = self.armed_at?;
             let elapsed = armed_at.elapsed().as_secs_f32();
             match self.mode {
+                BrainMode::LayDown => {
+                    let target = gait.lay_down_pose(config);
+                    let duration = config.locomotion.lay_down.duration_seconds.max(0.5);
+                    let progress = (elapsed / duration).clamp(0.0, 1.0);
+                    self.summary = if progress < 1.0 {
+                        format!("laying down ({:.0}%)", progress * 100.0)
+                    } else {
+                        "holding the configured lay-down pose".to_owned()
+                    };
+                    interpolate_pose(&base_pose, &target, smoothstep(progress))
+                }
+                BrainMode::StandUp => {
+                    let (pose, summary) = staged_stand_up_pose(config, gait, &base_pose, elapsed);
+                    self.summary = summary;
+                    pose
+                }
                 BrainMode::Stand => {
                     let settle = config.locomotion.stand.settle_seconds.max(0.25);
                     let progress = (elapsed / settle).clamp(0.0, 1.0);
                     self.summary = if progress < 1.0 {
                         format!(
-                            "stiffening around the startup pose ({:.0}%)",
+                            "settling into the configured standing pose ({:.0}%)",
                             progress * 100.0
                         )
                     } else {
-                        "holding the startup stand pose".to_owned()
+                        "holding the configured standing pose".to_owned()
                     };
-                    base_pose.clone()
+                    interpolate_pose(&base_pose, &gait.stand_pose(config), smoothstep(progress))
                 }
                 BrainMode::SlowWalk => {
                     let settle = config.locomotion.tripod.settle_seconds.max(0.25);
@@ -331,7 +427,7 @@ impl MotionRuntime {
                     if elapsed < settle {
                         let progress = (elapsed / settle).clamp(0.0, 1.0);
                         self.summary = format!(
-                            "holding the startup stand pose before gait ({:.0}%)",
+                            "holding the measured stand pose before gait ({:.0}%)",
                             progress * 100.0
                         );
                         base_pose.clone()
@@ -342,7 +438,7 @@ impl MotionRuntime {
                         let gait_elapsed = (elapsed - settle).max(0.0);
                         let limit = self.walk_seconds.unwrap_or_default();
                         self.summary = format!(
-                            "walk duration reached after {:.1}s / {:.1}s; holding the startup stand pose",
+                            "walk duration reached after {:.1}s / {:.1}s; holding the measured stand pose",
                             gait_elapsed, limit
                         );
                         base_pose.clone()
@@ -369,10 +465,8 @@ impl MotionRuntime {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
-    let config_text = fs::read_to_string(&args.config)
-        .with_context(|| format!("failed to read {}", args.config.display()))?;
-    let config: RobotConfig = toml::from_str(&config_text)
-        .with_context(|| format!("failed to parse {}", args.config.display()))?;
+    let config = RobotConfig::load_from_path(&args.config)
+        .with_context(|| format!("failed to load {}", args.config.display()))?;
 
     let shared = Arc::new(RwLock::new(TelemetryState::from_config(&config, args.mode)));
     spawn_control_worker(shared.clone(), config.clone(), args.mode, args.walk_seconds);
@@ -556,13 +650,8 @@ fn spawn_control_worker(
             }
 
             if mode.requires_torque() && motion.fault.is_none() {
-                if !all_servos_online(&servo_ids, &servo_states) && motion.armed_at.is_some() {
-                    motion.trip_fault(
-                        "one or more servos stopped replying during motion",
-                        current_pose(&servo_ids, &servo_states),
-                    );
-                } else if let Some(reason) =
-                    check_safety(&config, &servo_ids, &servo_states, imu_state.as_ref())
+                if let Some(reason) =
+                    motion.check_safety(&config, &servo_ids, &servo_states, imu_state.as_ref())
                 {
                     motion.trip_fault(reason, current_pose(&servo_ids, &servo_states));
                 }
@@ -763,65 +852,6 @@ fn current_pose(
     Some(pose)
 }
 
-fn all_servos_online(servo_ids: &[u8], servo_states: &BTreeMap<u8, TelemetryServoState>) -> bool {
-    servo_ids
-        .iter()
-        .all(|servo_id| servo_states.get(servo_id).is_some_and(|state| state.online))
-}
-
-fn check_safety(
-    config: &RobotConfig,
-    servo_ids: &[u8],
-    servo_states: &BTreeMap<u8, TelemetryServoState>,
-    imu_state: Option<&TelemetryImuState>,
-) -> Option<String> {
-    if let Some(imu) = imu_state {
-        if let Some(roll_deg) = imu.roll_deg {
-            if roll_deg.abs() > config.safety.max_body_roll_deg {
-                return Some(format!(
-                    "body roll {:.1} deg exceeded limit {:.1} deg",
-                    roll_deg, config.safety.max_body_roll_deg
-                ));
-            }
-        }
-        if let Some(pitch_deg) = imu.pitch_deg {
-            if pitch_deg.abs() > config.safety.max_body_pitch_deg {
-                return Some(format!(
-                    "body pitch {:.1} deg exceeded limit {:.1} deg",
-                    pitch_deg, config.safety.max_body_pitch_deg
-                ));
-            }
-        }
-    }
-
-    for servo_id in servo_ids {
-        let Some(telemetry) = servo_states
-            .get(servo_id)
-            .and_then(|state| state.telemetry.as_ref())
-        else {
-            continue;
-        };
-
-        if telemetry.present_voltage_v < config.safety.min_bus_voltage_v {
-            return Some(format!(
-                "servo {} voltage {:.1} V fell below {:.1} V",
-                telemetry.servo_id, telemetry.present_voltage_v, config.safety.min_bus_voltage_v
-            ));
-        }
-
-        if let Some(temp_c) = telemetry.present_temperature_c {
-            if temp_c > config.safety.max_servo_temp_c {
-                return Some(format!(
-                    "servo {} temperature {} C exceeded {} C",
-                    telemetry.servo_id, temp_c, config.safety.max_servo_temp_c
-                ));
-            }
-        }
-    }
-
-    None
-}
-
 fn pose_to_commands(pose: &BTreeMap<u8, u16>) -> Vec<JointCommand> {
     pose.iter()
         .map(|(&servo_id, &position_ticks)| JointCommand {
@@ -852,6 +882,163 @@ fn walk_pose_from_base(
     }
 
     commanded
+}
+
+fn staged_stand_up_pose(
+    config: &RobotConfig,
+    gait: &TripodGait,
+    base_pose: &BTreeMap<u8, u16>,
+    elapsed: f32,
+) -> (BTreeMap<u8, u16>, String) {
+    let stand_pose = gait.stand_pose(config);
+    let duration = config.locomotion.stand_up.duration_seconds.max(0.5);
+    let progress = (elapsed / duration).clamp(0.0, 1.0);
+
+    if progress >= 1.0 {
+        return (
+            stand_pose,
+            "holding the configured standing pose".to_owned(),
+        );
+    }
+
+    let femur_lift_pose = femur_lift_pose(config, base_pose);
+    let foot_plant_pose = foot_plant_pose(config, base_pose, &femur_lift_pose);
+    let body_raise_pose = body_raise_pose(config, base_pose, &stand_pose);
+
+    let femur_phase = (duration * STAND_UP_FEMUR_PREP_RATIO).max(0.1);
+    let tibia_phase = (duration * STAND_UP_TIBIA_PLANT_RATIO).max(0.1);
+    let body_phase = (duration * STAND_UP_BODY_RISE_RATIO).max(0.1);
+    let coxa_phase = (duration - femur_phase - tibia_phase - body_phase).max(0.1);
+
+    if elapsed < femur_phase {
+        let phase_progress = smoothstep((elapsed / femur_phase).clamp(0.0, 1.0));
+        (
+            interpolate_pose(base_pose, &femur_lift_pose, phase_progress),
+            format!(
+                "raising femurs to lift tibia joints ({:.0}%)",
+                phase_progress * 100.0
+            ),
+        )
+    } else if elapsed < femur_phase + tibia_phase {
+        let phase_elapsed = elapsed - femur_phase;
+        let phase_progress = smoothstep((phase_elapsed / tibia_phase).clamp(0.0, 1.0));
+        (
+            interpolate_pose(&femur_lift_pose, &foot_plant_pose, phase_progress),
+            format!(
+                "lowering tibias to plant feet ({:.0}%)",
+                phase_progress * 100.0
+            ),
+        )
+    } else if elapsed < femur_phase + tibia_phase + body_phase {
+        let phase_elapsed = elapsed - femur_phase - tibia_phase;
+        let phase_progress = smoothstep((phase_elapsed / body_phase).clamp(0.0, 1.0));
+        (
+            interpolate_pose(&foot_plant_pose, &body_raise_pose, phase_progress),
+            format!(
+                "raising body with planted feet ({:.0}%)",
+                phase_progress * 100.0
+            ),
+        )
+    } else {
+        let phase_elapsed = elapsed - femur_phase - tibia_phase - body_phase;
+        let phase_progress = smoothstep((phase_elapsed / coxa_phase).clamp(0.0, 1.0));
+        (
+            interpolate_pose(&body_raise_pose, &stand_pose, phase_progress),
+            format!("aligning coxae into stand ({:.0}%)", phase_progress * 100.0),
+        )
+    }
+}
+
+fn femur_lift_pose(config: &RobotConfig, base_pose: &BTreeMap<u8, u16>) -> BTreeMap<u8, u16> {
+    let femur_ticks = stand_up_femur_prep_ticks(config);
+    let mut pose = base_pose.clone();
+
+    for leg in &config.legs {
+        let base_femur = base_pose
+            .get(&leg.femur_servo_id)
+            .copied()
+            .unwrap_or(leg.femur_lay_down_ticks.unwrap_or(leg.femur_home_ticks));
+        pose.insert(
+            leg.femur_servo_id,
+            offset_ticks(base_femur, leg.femur_lift_sign() * femur_ticks),
+        );
+    }
+
+    pose
+}
+
+fn foot_plant_pose(
+    config: &RobotConfig,
+    base_pose: &BTreeMap<u8, u16>,
+    femur_lift_pose: &BTreeMap<u8, u16>,
+) -> BTreeMap<u8, u16> {
+    let tibia_ticks = stand_up_tibia_plant_ticks(config);
+    let mut pose = femur_lift_pose.clone();
+
+    for leg in &config.legs {
+        let base_tibia = base_pose
+            .get(&leg.tibia_servo_id)
+            .copied()
+            .unwrap_or(leg.tibia_lay_down_ticks.unwrap_or(leg.tibia_home_ticks));
+        pose.insert(
+            leg.tibia_servo_id,
+            offset_ticks(base_tibia, -leg.tibia_lift_sign() * tibia_ticks),
+        );
+    }
+
+    pose
+}
+
+fn body_raise_pose(
+    config: &RobotConfig,
+    base_pose: &BTreeMap<u8, u16>,
+    stand_pose: &BTreeMap<u8, u16>,
+) -> BTreeMap<u8, u16> {
+    let mut pose = stand_pose.clone();
+
+    for leg in &config.legs {
+        let base_coxa = base_pose
+            .get(&leg.coxa_servo_id)
+            .copied()
+            .unwrap_or(leg.coxa_lay_down_ticks.unwrap_or(leg.coxa_home_ticks));
+        pose.insert(leg.coxa_servo_id, base_coxa);
+    }
+
+    pose
+}
+
+fn stand_up_femur_prep_ticks(config: &RobotConfig) -> i16 {
+    (config.locomotion.tripod.femur_lift_ticks.abs().max(12)) * 6
+}
+
+fn stand_up_tibia_plant_ticks(config: &RobotConfig) -> i16 {
+    (config.locomotion.tripod.tibia_lift_ticks.abs().max(18)) * 5
+}
+
+fn interpolate_pose(
+    start: &BTreeMap<u8, u16>,
+    end: &BTreeMap<u8, u16>,
+    t: f32,
+) -> BTreeMap<u8, u16> {
+    let t = t.clamp(0.0, 1.0);
+    let mut pose = BTreeMap::new();
+
+    for (&servo_id, &end_ticks) in end {
+        let start_ticks = start.get(&servo_id).copied().unwrap_or(end_ticks);
+        let interpolated = start_ticks as f32 + (end_ticks as f32 - start_ticks as f32) * t;
+        pose.insert(servo_id, interpolated.round().clamp(0.0, 4095.0) as u16);
+    }
+
+    pose
+}
+
+fn offset_ticks(start_ticks: u16, delta_ticks: i16) -> u16 {
+    (i32::from(start_ticks) + i32::from(delta_ticks)).clamp(0, 4095) as u16
+}
+
+fn smoothstep(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
 }
 
 fn is_reopen_error(message: &str) -> bool {

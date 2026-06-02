@@ -99,9 +99,16 @@ impl RealStsBus {
         })
     }
 
-    fn write_byte(&mut self, servo_id: u8, address: u8, value: u8) -> HalResult<()> {
+    fn write_byte_no_response(&mut self, servo_id: u8, address: u8, value: u8) -> HalResult<()> {
         let packet = pack_instruction(servo_id, Instruction::Write, &[address, value]);
-        self.transfer(servo_id, &packet, 6)?;
+        let _ = self.port.clear(ClearBuffer::Input);
+        self.port.write_all(&packet).map_err(|err| {
+            HalError::Communication(format!("write to servo {} failed: {err}", servo_id))
+        })?;
+        self.port.flush().map_err(|err| {
+            HalError::Communication(format!("flush to servo {} failed: {err}", servo_id))
+        })?;
+        let _ = self.port.clear(ClearBuffer::Input);
         Ok(())
     }
 
@@ -148,7 +155,7 @@ impl ServoBus for RealStsBus {
 
     fn enable_torque(&mut self, enabled: bool) -> HalResult<()> {
         for &servo_id in &self.servo_ids.clone() {
-            self.write_byte(servo_id, ADDR_TORQUE_ENABLE, u8::from(enabled))?;
+            self.write_byte_no_response(servo_id, ADDR_TORQUE_ENABLE, u8::from(enabled))?;
         }
 
         Ok(())

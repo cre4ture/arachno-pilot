@@ -10,7 +10,7 @@ Rust-first starter workspace for a hexapod that can run either on a tethered Lin
 
 ## Workspace map
 
-- `apps/arachno-brain`: hardware-owning runtime that now serves telemetry, camera, dashboard, `stand`, and `slow_walk` from one process.
+- `apps/arachno-brain`: hardware-owning runtime that now serves telemetry, camera, dashboard, `lay_down`, `stand_up`, `stand`, and `slow_walk` from one process.
 - `apps/arachno-calibrate`: servo ID, zero-point, and home-pose tooling.
 - `apps/arachno-fw-info`: host-side firmware version and capability query for the RP2040 IMU bridge.
 - `apps/arachno-probe`: host-device reachability checks for configured camera and servo bridge paths.
@@ -26,6 +26,7 @@ Rust-first starter workspace for a hexapod that can run either on a tethered Lin
 - `native/`: narrow C++ bridge area for TensorRT, Argus, or vendor SDK shims.
 - `firmware/`: embedded Rust workspace for microcontroller-side bridge firmware.
 - `config/robot`: robot and hardware configuration files.
+- `config/robot/servo-config.toml`: single source of truth for Feetech bus settings, safety limits, locomotion tuning, servo IDs, stored poses, and joint direction signs.
 - `docs/architecture.md`: the recommended runtime and integration model.
 - `docs/roadmap.md`: staged locomotion and learning roadmap for the spider.
 
@@ -34,6 +35,7 @@ Rust-first starter workspace for a hexapod that can run either on a tethered Lin
 - `config/robot/host-usb.toml`: regular Linux PC connected to the robot over USB, with a USB camera and Feetech bridge.
 - `config/robot/jetson-onboard.toml`: Jetson mounted on the robot, with the CSI camera connected locally.
 - `config/robot/default.toml`: current local-development default, aligned with the host USB setup for now.
+- `config/robot/servo-config.toml`: shared servo/bus/safety/locomotion map loaded by all deployment profiles.
 
 ## Locomotion roadmap
 
@@ -41,8 +43,10 @@ The current development plan is documented in [docs/roadmap.md](/home/uli/rust-d
 
 Implemented now:
 
-- `stand`: holds the measured startup pose so the robot can stiffen safely before we trust a calibrated neutral pose
-- `slow_walk`: a cautious tripod gait that applies small offsets around that startup pose
+- `lay-down`: moves into a known stretched rest pose
+- `stand-up`: raises the femurs first, lowers the tibias to replant the feet, then lifts the body with coordinated femur+tibia motion before aligning the coxae
+- `stand`: settles into and holds the configured standing pose
+- `slow-walk`: a cautious tripod gait that applies small offsets around the measured standing pose
 - shared hard safety checks for roll, pitch, bus voltage, and temperature, with servo load still exposed in telemetry
 
 Next up:
@@ -63,7 +67,7 @@ just dashboard
 It currently provides:
 
 - a single hardware owner in `arachno-brain` for the Feetech bridge, IMU bridge, camera route, and optional browser dashboard
-- live motion status for `telemetry`, `stand`, and `slow_walk`
+- live motion status for `telemetry`, `lay_down`, `stand_up`, `stand`, and `slow_walk`
 - live servo polling through the real Feetech bus path via the brain API
 - live RP2040 IMU bridge state with roll/pitch sanity estimates and raw motion health
 - fault-tolerant telemetry cards per configured servo
@@ -97,10 +101,12 @@ cargo run -p arachno-calibrate -- --config config/robot/default.toml
 cargo run -p arachno-probe -- --config config/robot/default.toml
 cargo run -p arachno-brain -- --config config/robot/host-usb.toml --listen 127.0.0.1:4000
 cargo run -p arachno-brain -- --config config/robot/host-usb.toml --listen 127.0.0.1:4000 --dashboard
+cargo run -p arachno-brain -- --config config/robot/host-usb.toml --listen 127.0.0.1:4000 --mode lay-down --dashboard
+cargo run -p arachno-brain -- --config config/robot/host-usb.toml --listen 127.0.0.1:4000 --mode stand-up --dashboard
 cargo run -p arachno-brain -- --config config/robot/host-usb.toml --listen 127.0.0.1:4000 --mode stand --dashboard
 cargo run -p arachno-brain -- --config config/robot/host-usb.toml --listen 127.0.0.1:4000 --mode slow-walk --walk-seconds 8 --dashboard
 cargo run -p arachno-brain -- --config config/robot/jetson-onboard.toml --listen 127.0.0.1:4000
 cargo check --manifest-path firmware/Cargo.toml -p rp2040-imu-bridge --target thumbv6m-none-eabi
 ```
 
-`arachno-brain` now owns the live hardware-facing telemetry API at `/api/state`, the camera route at `/camera.mjpg`, the rich dashboard UI at `/` and `/dashboard` when started with `--dashboard`, and the first hardware motion modes through `--mode telemetry`, `--mode stand`, and `--mode slow-walk`.
+`arachno-brain` now owns the live hardware-facing telemetry API at `/api/state`, the camera route at `/camera.mjpg`, the rich dashboard UI at `/` and `/dashboard` when started with `--dashboard`, and the first hardware motion modes through `--mode telemetry`, `--mode lay-down`, `--mode stand-up`, `--mode stand`, and `--mode slow-walk`.

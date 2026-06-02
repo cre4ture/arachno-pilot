@@ -15,6 +15,12 @@ clippy:
 brain:
     cargo run -p arachno-brain -- --config config/robot/default.toml --listen 127.0.0.1:4000
 
+lay-down:
+    cargo run -p arachno-brain -- --config config/robot/host-usb.toml --listen 127.0.0.1:4000 --mode lay-down --dashboard
+
+stand-up:
+    cargo run -p arachno-brain -- --config config/robot/host-usb.toml --listen 127.0.0.1:4000 --mode stand-up --dashboard
+
 stand:
     cargo run -p arachno-brain -- --config config/robot/host-usb.toml --listen 127.0.0.1:4000 --mode stand --dashboard
 
