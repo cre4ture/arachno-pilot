@@ -36,6 +36,7 @@ Rust-first starter workspace for a hexapod that can run either on a tethered Lin
 - `config/robot/jetson-onboard.toml`: Jetson mounted on the robot, with the CSI camera connected locally.
 - `config/robot/default.toml`: current local-development default, aligned with the host USB setup for now.
 - `config/robot/servo-config.toml`: shared servo/bus/safety/locomotion map loaded by all deployment profiles.
+- `config/robot/servo-ranges.toml`: measured free-movement envelopes written by the resistance-based calibration scan.
 
 ## Locomotion roadmap
 
@@ -47,6 +48,7 @@ Implemented now:
 - `stand-up`: raises the femurs first, lowers the tibias to replant the feet, then lifts the body with coordinated femur+tibia motion before aligning the coxae
 - `stand`: settles into and holds the configured standing pose
 - `slow-walk`: a cautious tripod gait that applies small offsets around the measured standing pose
+- `sense-ranges`: slowly probes tibia, femur, and coxa travel in the laying posture and writes measured ranges to TOML
 - shared hard safety checks for roll, pitch, bus voltage, and temperature, with servo load still exposed in telemetry
 
 Next up:
@@ -98,6 +100,7 @@ Build helpers:
 ```bash
 cargo run -p arachno-brain -- --config config/robot/default.toml --listen 127.0.0.1:4000
 cargo run -p arachno-calibrate -- --config config/robot/default.toml
+cargo run -p arachno-calibrate -- --config config/robot/host-usb.toml --mode sense-ranges --output config/robot/servo-ranges.toml
 cargo run -p arachno-probe -- --config config/robot/default.toml
 cargo run -p arachno-brain -- --config config/robot/host-usb.toml --listen 127.0.0.1:4000
 cargo run -p arachno-brain -- --config config/robot/host-usb.toml --listen 127.0.0.1:4000 --dashboard

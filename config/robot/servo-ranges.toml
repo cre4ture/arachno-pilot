@@ -1,0 +1,538 @@
+robot_name = "arachno-pilot"
+deployment_profile = "host-usb"
+generated_at_ms = 1780437602158
+output_path = "config/robot/servo-ranges.toml"
+notes = "Ranges were measured in the configured lay-down posture using slow resistance probing. Positive direction is lift for femur/tibia and forward for coxa."
+
+[params]
+step_ticks = 10
+settle_ms = 160
+resistance_load_pct = 18.0
+resistance_current_ma = 120
+min_progress_ticks = 2
+min_error_ticks = 10
+min_travel_before_detection_ticks = 120
+confirm_resistance_samples = 3
+max_steps_per_direction = 180
+
+[[legs]]
+name = "front_left"
+
+[legs.coxa]
+joint = "coxa"
+servo_id = 11
+logical_positive_label = "forward"
+logical_negative_end_ticks = 1322
+logical_positive_end_ticks = 2871
+midpoint_ticks = 2097
+upper_seventy_percent_ticks = 2406
+span_ticks = 1549
+
+[legs.coxa.positive_limit]
+position_ticks = 2871
+detection = "max_sweep:front_left:coxa"
+load_pct = 100.0
+current_ma = 26
+moving = false
+status_bits = 0
+faults = []
+
+[legs.coxa.negative_limit]
+position_ticks = 1322
+detection = "max_sweep:front_left:coxa"
+load_pct = 8.0
+current_ma = 26
+moving = false
+status_bits = 0
+faults = []
+
+[legs.femur]
+joint = "femur"
+servo_id = 12
+logical_positive_label = "up"
+logical_negative_end_ticks = 2047
+logical_positive_end_ticks = 789
+midpoint_ticks = 1418
+upper_seventy_percent_ticks = 1166
+span_ticks = 1258
+
+[legs.femur.positive_limit]
+position_ticks = 789
+detection = "max_sweep:front_left:femur"
+load_pct = 1.600000023841858
+current_ma = 0
+moving = false
+status_bits = 0
+faults = []
+
+[legs.femur.negative_limit]
+position_ticks = 2047
+detection = "resistance"
+load_pct = 100.0
+current_ma = 13
+moving = false
+status_bits = 0
+faults = []
+
+[legs.tibia]
+joint = "tibia"
+servo_id = 13
+logical_positive_label = "up"
+logical_negative_end_ticks = 2028
+logical_positive_end_ticks = 2425
+midpoint_ticks = 2227
+upper_seventy_percent_ticks = 2306
+span_ticks = 397
+
+[legs.tibia.positive_limit]
+position_ticks = 2425
+detection = "resistance"
+load_pct = 100.0
+current_ma = 0
+moving = false
+status_bits = 0
+faults = []
+
+[legs.tibia.negative_limit]
+position_ticks = 2028
+detection = "max_sweep:front_left:tibia"
+load_pct = 8.0
+current_ma = 26
+moving = false
+status_bits = 0
+faults = []
+
+[[legs]]
+name = "middle_left"
+
+[legs.coxa]
+joint = "coxa"
+servo_id = 21
+logical_positive_label = "forward"
+logical_negative_end_ticks = 1213
+logical_positive_end_ticks = 2490
+midpoint_ticks = 1852
+upper_seventy_percent_ticks = 2107
+span_ticks = 1277
+
+[legs.coxa.positive_limit]
+position_ticks = 2490
+detection = "resistance"
+load_pct = 100.0
+current_ma = 0
+moving = false
+status_bits = 0
+faults = []
+
+[legs.coxa.negative_limit]
+position_ticks = 1213
+detection = "max_sweep:middle_left:coxa"
+load_pct = 8.0
+current_ma = 26
+moving = false
+status_bits = 0
+faults = []
+
+[legs.femur]
+joint = "femur"
+servo_id = 22
+logical_positive_label = "up"
+logical_negative_end_ticks = 2047
+logical_positive_end_ticks = 784
+midpoint_ticks = 1416
+upper_seventy_percent_ticks = 1163
+span_ticks = 1263
+
+[legs.femur.positive_limit]
+position_ticks = 784
+detection = "max_sweep:middle_left:femur"
+load_pct = 8.0
+current_ma = 26
+moving = false
+status_bits = 0
+faults = []
+
+[legs.femur.negative_limit]
+position_ticks = 2047
+detection = "resistance"
+load_pct = 100.0
+current_ma = 20
+moving = false
+status_bits = 0
+faults = []
+
+[legs.tibia]
+joint = "tibia"
+servo_id = 23
+logical_positive_label = "up"
+logical_negative_end_ticks = 2002
+logical_positive_end_ticks = 2398
+midpoint_ticks = 2200
+upper_seventy_percent_ticks = 2279
+span_ticks = 396
+
+[legs.tibia.positive_limit]
+position_ticks = 2398
+detection = "resistance"
+load_pct = 100.0
+current_ma = 0
+moving = false
+status_bits = 0
+faults = []
+
+[legs.tibia.negative_limit]
+position_ticks = 2002
+detection = "max_sweep:middle_left:tibia"
+load_pct = 8.0
+current_ma = 26
+moving = false
+status_bits = 0
+faults = []
+
+[[legs]]
+name = "rear_left"
+
+[legs.coxa]
+joint = "coxa"
+servo_id = 31
+logical_positive_label = "forward"
+logical_negative_end_ticks = 2135
+logical_positive_end_ticks = 2282
+midpoint_ticks = 2209
+upper_seventy_percent_ticks = 2238
+span_ticks = 147
+
+[legs.coxa.positive_limit]
+position_ticks = 2282
+detection = "resistance"
+load_pct = 100.0
+current_ma = 0
+moving = false
+status_bits = 0
+faults = []
+
+[legs.coxa.negative_limit]
+position_ticks = 2135
+detection = "resistance"
+load_pct = 100.0
+current_ma = 0
+moving = false
+status_bits = 0
+faults = []
+
+[legs.femur]
+joint = "femur"
+servo_id = 32
+logical_positive_label = "up"
+logical_negative_end_ticks = 2056
+logical_positive_end_ticks = 1124
+midpoint_ticks = 1590
+upper_seventy_percent_ticks = 1404
+span_ticks = 932
+
+[legs.femur.positive_limit]
+position_ticks = 1124
+detection = "max_sweep:rear_left:femur"
+load_pct = 8.0
+current_ma = 26
+moving = false
+status_bits = 0
+faults = []
+
+[legs.femur.negative_limit]
+position_ticks = 2056
+detection = "resistance"
+load_pct = 100.0
+current_ma = 26
+moving = false
+status_bits = 0
+faults = []
+
+[legs.tibia]
+joint = "tibia"
+servo_id = 33
+logical_positive_label = "up"
+logical_negative_end_ticks = 1920
+logical_positive_end_ticks = 3597
+midpoint_ticks = 2759
+upper_seventy_percent_ticks = 3094
+span_ticks = 1677
+
+[legs.tibia.positive_limit]
+position_ticks = 3597
+detection = "max_sweep:rear_left:tibia"
+load_pct = 0.0
+current_ma = 0
+moving = false
+status_bits = 0
+faults = []
+
+[legs.tibia.negative_limit]
+position_ticks = 1920
+detection = "max_sweep:rear_left:tibia"
+load_pct = 8.0
+current_ma = 26
+moving = false
+status_bits = 0
+faults = []
+
+[[legs]]
+name = "front_right"
+
+[legs.coxa]
+joint = "coxa"
+servo_id = 41
+logical_positive_label = "forward"
+logical_negative_end_ticks = 1710
+logical_positive_end_ticks = 1314
+midpoint_ticks = 1512
+upper_seventy_percent_ticks = 1433
+span_ticks = 396
+
+[legs.coxa.positive_limit]
+position_ticks = 1314
+detection = "max_sweep:front_right:coxa"
+load_pct = 8.0
+current_ma = 26
+moving = false
+status_bits = 0
+faults = []
+
+[legs.coxa.negative_limit]
+position_ticks = 1710
+detection = "resistance"
+load_pct = 100.0
+current_ma = 7
+moving = false
+status_bits = 0
+faults = []
+
+[legs.femur]
+joint = "femur"
+servo_id = 42
+logical_positive_label = "up"
+logical_negative_end_ticks = 2020
+logical_positive_end_ticks = 2951
+midpoint_ticks = 2486
+upper_seventy_percent_ticks = 2672
+span_ticks = 931
+
+[legs.femur.positive_limit]
+position_ticks = 2951
+detection = "max_sweep:front_right:femur"
+load_pct = 100.0
+current_ma = 26
+moving = false
+status_bits = 0
+faults = []
+
+[legs.femur.negative_limit]
+position_ticks = 2020
+detection = "max_sweep:front_right:femur"
+load_pct = 8.0
+current_ma = 26
+moving = false
+status_bits = 0
+faults = []
+
+[legs.tibia]
+joint = "tibia"
+servo_id = 43
+logical_positive_label = "up"
+logical_negative_end_ticks = 2160
+logical_positive_end_ticks = 514
+midpoint_ticks = 1337
+upper_seventy_percent_ticks = 1008
+span_ticks = 1646
+
+[legs.tibia.positive_limit]
+position_ticks = 514
+detection = "max_sweep:front_right:tibia"
+load_pct = 8.0
+current_ma = 26
+moving = false
+status_bits = 0
+faults = []
+
+[legs.tibia.negative_limit]
+position_ticks = 2160
+detection = "resistance"
+load_pct = 100.0
+current_ma = 7
+moving = false
+status_bits = 0
+faults = []
+
+[[legs]]
+name = "middle_right"
+
+[legs.coxa]
+joint = "coxa"
+servo_id = 51
+logical_positive_label = "forward"
+logical_negative_end_ticks = 1869
+logical_positive_end_ticks = 1268
+midpoint_ticks = 1569
+upper_seventy_percent_ticks = 1448
+span_ticks = 601
+
+[legs.coxa.positive_limit]
+position_ticks = 1268
+detection = "max_sweep:middle_right:coxa"
+load_pct = 8.0
+current_ma = 26
+moving = false
+status_bits = 0
+faults = []
+
+[legs.coxa.negative_limit]
+position_ticks = 1869
+detection = "resistance"
+load_pct = 100.0
+current_ma = 7
+moving = false
+status_bits = 0
+faults = []
+
+[legs.femur]
+joint = "femur"
+servo_id = 52
+logical_positive_label = "up"
+logical_negative_end_ticks = 1934
+logical_positive_end_ticks = 2992
+midpoint_ticks = 2463
+upper_seventy_percent_ticks = 2675
+span_ticks = 1058
+
+[legs.femur.positive_limit]
+position_ticks = 2992
+detection = "max_sweep:middle_right:femur"
+load_pct = 100.0
+current_ma = 26
+moving = false
+status_bits = 0
+faults = []
+
+[legs.femur.negative_limit]
+position_ticks = 1934
+detection = "max_sweep:middle_right:femur"
+load_pct = 8.0
+current_ma = 26
+moving = false
+status_bits = 0
+faults = []
+
+[legs.tibia]
+joint = "tibia"
+servo_id = 53
+logical_positive_label = "up"
+logical_negative_end_ticks = 2096
+logical_positive_end_ticks = 471
+midpoint_ticks = 1284
+upper_seventy_percent_ticks = 959
+span_ticks = 1625
+
+[legs.tibia.positive_limit]
+position_ticks = 471
+detection = "max_sweep:middle_right:tibia"
+load_pct = 8.0
+current_ma = 26
+moving = false
+status_bits = 0
+faults = []
+
+[legs.tibia.negative_limit]
+position_ticks = 2096
+detection = "resistance"
+load_pct = 100.0
+current_ma = 7
+moving = false
+status_bits = 0
+faults = []
+
+[[legs]]
+name = "rear_right"
+
+[legs.coxa]
+joint = "coxa"
+servo_id = 61
+logical_positive_label = "forward"
+logical_negative_end_ticks = 1402
+logical_positive_end_ticks = 1244
+midpoint_ticks = 1323
+upper_seventy_percent_ticks = 1291
+span_ticks = 158
+
+[legs.coxa.positive_limit]
+position_ticks = 1244
+detection = "max_sweep:rear_right:coxa"
+load_pct = 8.0
+current_ma = 26
+moving = false
+status_bits = 0
+faults = []
+
+[legs.coxa.negative_limit]
+position_ticks = 1402
+detection = "resistance"
+load_pct = 100.0
+current_ma = 0
+moving = false
+status_bits = 0
+faults = []
+
+[legs.femur]
+joint = "femur"
+servo_id = 62
+logical_positive_label = "up"
+logical_negative_end_ticks = 1979
+logical_positive_end_ticks = 2946
+midpoint_ticks = 2463
+upper_seventy_percent_ticks = 2656
+span_ticks = 967
+
+[legs.femur.positive_limit]
+position_ticks = 2946
+detection = "max_sweep:rear_right:femur"
+load_pct = 100.0
+current_ma = 26
+moving = false
+status_bits = 0
+faults = []
+
+[legs.femur.negative_limit]
+position_ticks = 1979
+detection = "max_sweep:rear_right:femur"
+load_pct = 8.0
+current_ma = 26
+moving = false
+status_bits = 0
+faults = []
+
+[legs.tibia]
+joint = "tibia"
+servo_id = 63
+logical_positive_label = "up"
+logical_negative_end_ticks = 2114
+logical_positive_end_ticks = 533
+midpoint_ticks = 1324
+upper_seventy_percent_ticks = 1007
+span_ticks = 1581
+
+[legs.tibia.positive_limit]
+position_ticks = 533
+detection = "max_sweep:rear_right:tibia"
+load_pct = 1.600000023841858
+current_ma = 7
+moving = false
+status_bits = 0
+faults = []
+
+[legs.tibia.negative_limit]
+position_ticks = 2114
+detection = "resistance"
+load_pct = 100.0
+current_ma = 13
+moving = false
+status_bits = 0
+faults = []

@@ -84,7 +84,11 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "arachno-core",
+ "arachno-feetech-sts",
+ "arachno-hal",
+ "arachno-msg",
  "clap",
+ "serde",
  "toml",
 ]
 
