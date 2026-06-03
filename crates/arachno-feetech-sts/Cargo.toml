@@ -8,3 +8,4 @@ license.workspace = true
 arachno-hal = { path = "../arachno-hal" }
 arachno-msg = { path = "../arachno-msg" }
 serialport.workspace = true
+tracing.workspace = true

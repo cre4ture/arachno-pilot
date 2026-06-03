@@ -50,6 +50,7 @@ Implemented now:
 - `slow-walk`: a cautious tripod gait that applies small offsets around the measured standing pose
 - `sense-ranges`: lowers torque limit, drives tibia/femur/coxa toward full-range endpoints, and writes the self-stopped travel envelopes to TOML
   Use `--skip-initial-lay-down` to resume a partially completed scan from the robot's current posture.
+  The run also emits a mixed workflow + low-level STS trace log next to the output TOML by default, or to a custom path via `--trace-output`.
 - `check-poses`: compares configured `stand_reference` and `lay-down` ticks in `servo-config.toml` against measured bounds from `servo-ranges.toml`
 - `suggest-poses`: generates candidate `stand_reference` and `lay-down` ticks from the measured ranges without changing runtime behavior
 - shared hard safety checks for roll, pitch, bus voltage, and temperature, with servo load still exposed in telemetry
@@ -104,6 +105,7 @@ Build helpers:
 cargo run -p arachno-brain -- --config config/robot/default.toml --listen 127.0.0.1:4000
 cargo run -p arachno-calibrate -- --config config/robot/default.toml
 cargo run -p arachno-calibrate -- --config config/robot/host-usb.toml --mode sense-ranges --output config/robot/servo-ranges.toml
+cargo run -p arachno-calibrate -- --config config/robot/host-usb.toml --mode sense-ranges --output config/robot/servo-ranges.toml --trace-output /tmp/servo-ranges.trace.log
 cargo run -p arachno-calibrate -- --config config/robot/host-usb.toml --mode check-poses --ranges config/robot/servo-ranges.toml
 cargo run -p arachno-calibrate -- --config config/robot/host-usb.toml --mode suggest-poses --ranges config/robot/servo-ranges.toml --suggestions-output /tmp/servo-pose-suggestions.toml
 cargo run -p arachno-probe -- --config config/robot/default.toml

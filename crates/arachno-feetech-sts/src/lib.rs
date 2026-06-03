@@ -7,6 +7,7 @@ use std::{
 use arachno_hal::{HalError, HalResult, ServoBus};
 use arachno_msg::{JointCommand, ServoTelemetry};
 use serialport::{ClearBuffer, SerialPort};
+use tracing::trace;
 
 const ADDR_TORQUE_ENABLE: u8 = 40;
 const ADDR_GOAL_POSITION: u8 = 42;
@@ -49,12 +50,20 @@ impl RealStsBus {
                 HalError::Communication(format!("failed to open {}: {err}", port_path))
             })?;
 
-        Ok(Self {
+        let bus = Self {
             servo_ids,
             port_path,
             baud_rate,
             port,
-        })
+        };
+        trace!(
+            target: "arachno_feetech_sts::bus",
+            port = %bus.port_path,
+            baud_rate = bus.baud_rate,
+            configured_servos = ?bus.servo_ids,
+            "opened serial bus"
+        );
+        Ok(bus)
     }
 
     pub fn port_path(&self) -> &str {
@@ -86,7 +95,7 @@ impl RealStsBus {
         let moving = response.params[10] != 0;
         let present_current_raw = u16::from_le_bytes([response.params[13], response.params[14]]);
 
-        Ok(ServoTelemetry {
+        let telemetry = ServoTelemetry {
             servo_id,
             present_position_ticks,
             present_speed_ticks,
@@ -97,18 +106,63 @@ impl RealStsBus {
             status_bits: Some(response.status),
             faults: decode_faults(response.status),
             moving,
-        })
+        };
+
+        trace!(
+            target: "arachno_feetech_sts::bus",
+            servo_id = telemetry.servo_id,
+            position_ticks = telemetry.present_position_ticks,
+            speed_ticks = telemetry.present_speed_ticks,
+            load_pct = telemetry.present_load_pct,
+            voltage_v = telemetry.present_voltage_v,
+            temperature_c = telemetry.present_temperature_c.unwrap_or_default(),
+            moving = telemetry.moving,
+            faults = ?telemetry.faults,
+            "feedback"
+        );
+
+        Ok(telemetry)
     }
 
     fn write_byte_no_response(&mut self, servo_id: u8, address: u8, value: u8) -> HalResult<()> {
         let packet = pack_instruction(servo_id, Instruction::Write, &[address, value]);
+        trace!(
+            target: "arachno_feetech_sts::bus",
+            servo_id,
+            address,
+            value,
+            packet = %format_bytes_hex(&packet),
+            "tx write-byte"
+        );
         let _ = self.port.clear(ClearBuffer::Input);
-        self.port.write_all(&packet).map_err(|err| {
-            HalError::Communication(format!("write to servo {} failed: {err}", servo_id))
-        })?;
-        self.port.flush().map_err(|err| {
-            HalError::Communication(format!("flush to servo {} failed: {err}", servo_id))
-        })?;
+        if let Err(err) = self.port.write_all(&packet) {
+            trace!(
+                target: "arachno_feetech_sts::bus",
+                servo_id,
+                address,
+                value,
+                error = %err,
+                "tx-error write-byte"
+            );
+            return Err(HalError::Communication(format!(
+                "write to servo {} failed: {err}",
+                servo_id
+            )));
+        }
+        if let Err(err) = self.port.flush() {
+            trace!(
+                target: "arachno_feetech_sts::bus",
+                servo_id,
+                address,
+                value,
+                error = %err,
+                "tx-error flush-byte"
+            );
+            return Err(HalError::Communication(format!(
+                "flush to servo {} failed: {err}",
+                servo_id
+            )));
+        }
         let _ = self.port.clear(ClearBuffer::Input);
         Ok(())
     }
@@ -116,17 +170,49 @@ impl RealStsBus {
     fn write_word_no_response(&mut self, servo_id: u8, address: u8, value: u16) -> HalResult<()> {
         let [low, high] = value.to_le_bytes();
         let packet = pack_instruction(servo_id, Instruction::Write, &[address, low, high]);
+        trace!(
+            target: "arachno_feetech_sts::bus",
+            servo_id,
+            address,
+            value,
+            packet = %format_bytes_hex(&packet),
+            "tx write-word"
+        );
         let _ = self.port.clear(ClearBuffer::Input);
-        self.port.write_all(&packet).map_err(|err| {
-            HalError::Communication(format!("write to servo {} failed: {err}", servo_id))
-        })?;
-        self.port.flush().map_err(|err| {
-            HalError::Communication(format!("flush to servo {} failed: {err}", servo_id))
-        })?;
+        if let Err(err) = self.port.write_all(&packet) {
+            trace!(
+                target: "arachno_feetech_sts::bus",
+                servo_id,
+                address,
+                value,
+                error = %err,
+                "tx-error write-word"
+            );
+            return Err(HalError::Communication(format!(
+                "write to servo {} failed: {err}",
+                servo_id
+            )));
+        }
+        if let Err(err) = self.port.flush() {
+            trace!(
+                target: "arachno_feetech_sts::bus",
+                servo_id,
+                address,
+                value,
+                error = %err,
+                "tx-error flush-word"
+            );
+            return Err(HalError::Communication(format!(
+                "flush to servo {} failed: {err}",
+                servo_id
+            )));
+        }
         let _ = self.port.clear(ClearBuffer::Input);
         Ok(())
     }
 
+    // Attention: use with caution as changing torque limits while the robot is in the air can cause sudden motion when the torque limit takes effect.
+    // It's best to call this right after setting the desired position for all servos with sync_write_positions, and avoid calling it while the robot is in the air.
     pub fn set_servo_torque_limit(&mut self, servo_id: u8, torque_limit: u16) -> HalResult<()> {
         self.write_word_no_response(servo_id, ADDR_TORQUE_LIMIT, torque_limit)
     }
@@ -144,23 +230,6 @@ impl RealStsBus {
         Ok(u16::from_le_bytes([response.params[0], response.params[1]]))
     }
 
-    pub fn set_torque_limit_for_ids(
-        &mut self,
-        servo_ids: &[u8],
-        torque_limit: u16,
-    ) -> HalResult<()> {
-        for &servo_id in servo_ids {
-            if !self.servo_ids.contains(&servo_id) {
-                return Err(HalError::DeviceUnavailable(format!(
-                    "servo {} is not configured",
-                    servo_id
-                )));
-            }
-            self.set_servo_torque_limit(servo_id, torque_limit)?;
-        }
-        Ok(())
-    }
-
     fn read_register_block(
         &mut self,
         servo_id: u8,
@@ -168,6 +237,14 @@ impl RealStsBus {
         len: u8,
     ) -> HalResult<StatusPacket> {
         let packet = pack_instruction(servo_id, Instruction::Read, &[address, len]);
+        trace!(
+            target: "arachno_feetech_sts::bus",
+            servo_id,
+            address,
+            len,
+            packet = %format_bytes_hex(&packet),
+            "tx read"
+        );
         self.transfer(servo_id, &packet, len as usize + 6)
     }
 
@@ -178,22 +255,78 @@ impl RealStsBus {
         response_len: usize,
     ) -> HalResult<StatusPacket> {
         let _ = self.port.clear(ClearBuffer::Input);
-        self.port.write_all(packet).map_err(|err| {
-            HalError::Communication(format!("write to servo {} failed: {err}", servo_id))
-        })?;
-        self.port.flush().map_err(|err| {
-            HalError::Communication(format!("flush to servo {} failed: {err}", servo_id))
-        })?;
+        if let Err(err) = self.port.write_all(packet) {
+            trace!(
+                target: "arachno_feetech_sts::bus",
+                servo_id,
+                packet = %format_bytes_hex(packet),
+                error = %err,
+                "tx-error"
+            );
+            return Err(HalError::Communication(format!(
+                "write to servo {} failed: {err}",
+                servo_id
+            )));
+        }
+        if let Err(err) = self.port.flush() {
+            trace!(
+                target: "arachno_feetech_sts::bus",
+                servo_id,
+                error = %err,
+                "tx-flush-error"
+            );
+            return Err(HalError::Communication(format!(
+                "flush to servo {} failed: {err}",
+                servo_id
+            )));
+        }
 
         let mut response = vec![0u8; response_len];
-        self.port.read_exact(&mut response).map_err(|err| {
-            HalError::Communication(format!(
+        if let Err(err) = self.port.read_exact(&mut response) {
+            trace!(
+                target: "arachno_feetech_sts::bus",
+                servo_id,
+                expected_len = response_len,
+                error = %err,
+                "rx-error"
+            );
+            return Err(HalError::Communication(format!(
                 "read from servo {} on {} failed: {}",
                 servo_id, self.port_path, err
-            ))
-        })?;
-
+            )));
+        }
+        trace!(
+            target: "arachno_feetech_sts::bus",
+            servo_id,
+            packet = %format_bytes_hex(&response),
+            "rx"
+        );
         parse_status_packet(servo_id, &response)
+    }
+
+    fn check_servo_ids(&self, servo_ids: &[u8]) -> HalResult<()> {
+        for &servo_id in servo_ids {
+            if !self.servo_ids.contains(&servo_id) {
+                return Err(HalError::DeviceUnavailable(format!(
+                    "servo {} is not configured",
+                    servo_id
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn enable_torque_on_id(&mut self, servo_id: u8, enabled: bool) -> HalResult<()> {
+        self.check_servo_ids(&[servo_id])?;
+        self.write_byte_no_response(servo_id, ADDR_TORQUE_ENABLE, u8::from(enabled))
+    }
+
+    pub fn enable_torque_on_ids(&mut self, servo_ids: &[u8], enabled: bool) -> HalResult<()> {
+        for &servo_id in servo_ids {
+            self.enable_torque_on_id(servo_id, enabled)?;
+        }
+
+        Ok(())
     }
 }
 
@@ -202,6 +335,9 @@ impl ServoBus for RealStsBus {
         &self.servo_ids
     }
 
+    // Attention: enabling torque on all servos at once can cause a sudden motion if any of them are not already at their current position,
+    // so this method should be used with caution. For example, it's best to call this right after setting the desired position for all servos
+    // with sync_write_positions, and avoid calling it while the robot is in the air.
     fn enable_torque(&mut self, enabled: bool) -> HalResult<()> {
         for &servo_id in &self.servo_ids.clone() {
             self.write_byte_no_response(servo_id, ADDR_TORQUE_ENABLE, u8::from(enabled))?;
@@ -236,12 +372,30 @@ impl ServoBus for RealStsBus {
         }
 
         let packet = pack_instruction(0xFE, Instruction::SyncWrite, &params);
-        self.port
-            .write_all(&packet)
-            .map_err(|err| HalError::Communication(format!("sync write failed: {err}")))?;
-        self.port
-            .flush()
-            .map_err(|err| HalError::Communication(format!("sync write flush failed: {err}")))?;
+        trace!(
+            target: "arachno_feetech_sts::bus",
+            address = ADDR_GOAL_POSITION,
+            command_count = commands.len(),
+            commands = %format_joint_commands(commands),
+            packet = %format_bytes_hex(&packet),
+            "tx sync-write"
+        );
+        self.port.write_all(&packet).map_err(|err| {
+            trace!(
+                target: "arachno_feetech_sts::bus",
+                error = %err,
+                "tx-error sync-write"
+            );
+            HalError::Communication(format!("sync write failed: {err}"))
+        })?;
+        self.port.flush().map_err(|err| {
+            trace!(
+                target: "arachno_feetech_sts::bus",
+                error = %err,
+                "tx-flush-error sync-write"
+            );
+            HalError::Communication(format!("sync write flush failed: {err}"))
+        })?;
 
         Ok(())
     }
@@ -358,6 +512,21 @@ fn pack_instruction(id: u8, instruction: Instruction, params: &[u8]) -> Vec<u8> 
     packet.extend_from_slice(params);
     packet.push(calculate_checksum(id, length, instruction, params));
     packet
+}
+
+fn format_bytes_hex(data: &[u8]) -> String {
+    data.iter()
+        .map(|byte| format!("{byte:02X}"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn format_joint_commands(commands: &[JointCommand]) -> String {
+    commands
+        .iter()
+        .map(|command| format!("{}:{}", command.servo_id, command.position_ticks))
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 fn parse_status_packet(expected_id: u8, data: &[u8]) -> HalResult<StatusPacket> {

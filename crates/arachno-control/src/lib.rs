@@ -4,7 +4,9 @@ use std::{
 };
 
 use arachno_core::{RobotConfig, TripodGait};
-use arachno_hal::{CameraSource, HalResult, ImuSource, ServoBus};
+use arachno_hal::{
+    CameraSource, HalResult, ImuSource, ServoBus, enable_torque_on_current_position,
+};
 use arachno_msg::RobotSnapshot;
 
 pub struct SpiderController<B, C> {
@@ -36,7 +38,7 @@ where
     }
 
     pub fn initialize(&mut self) -> HalResult<()> {
-        self.servo_bus.enable_torque(true)?;
+        enable_torque_on_current_position(&mut self.servo_bus)?;
         self.camera.start()?;
         if let Some(imu) = self.imu.as_mut() {
             imu.start()?;

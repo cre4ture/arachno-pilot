@@ -6,13 +6,21 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use anyhow::{Context, bail};
+use anyhow::{Context, anyhow, bail};
 use arachno_core::{LegConfig, RobotConfig, TripodGait};
 use arachno_feetech_sts::RealStsBus;
-use arachno_hal::ServoBus;
+use arachno_hal::{ServoBus, enable_torque_on_current_position, sync_current_pose};
 use arachno_msg::{JointCommand, ServoTelemetry};
 use clap::{Parser, ValueEnum};
 use serde::{Deserialize, Serialize};
+use tracing::{info, info_span, warn};
+use tracing_appender::non_blocking::WorkerGuard;
+use tracing_subscriber::{
+    filter::LevelFilter,
+    fmt::{self, format::FmtSpan},
+    prelude::*,
+    registry,
+};
 
 const RANGE_TARGET_TOLERANCE_TICKS: u16 = 18;
 const MOTION_START_TICKS: u16 = 24;
@@ -71,6 +79,8 @@ struct Args {
     move_timeout_ms: u64,
     #[arg(long, default_value_t = false)]
     skip_initial_lay_down: bool,
+    #[arg(long)]
+    trace_output: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -310,11 +320,14 @@ fn sense_ranges(config: &RobotConfig, args: &Args) -> anyhow::Result<()> {
         move_timeout_ms: args.move_timeout_ms.max(1_000),
     };
     let output_path = resolve_output_path(&args.output);
+    let trace_path = resolve_trace_output_path(args, &output_path);
+    let _trace_guard = init_trace_logging(&trace_path)?;
 
-    println!("range sensing for {}", config.robot.name);
-    println!("deployment profile: {}", config.deployment.profile);
-    println!("servo bus: {}", config.bus.feetech.port);
-    println!("output: {}", output_path.display());
+    info!(robot = %config.robot.name, "range sensing");
+    info!(deployment_profile = %config.deployment.profile, "loaded deployment profile");
+    info!(servo_bus = %config.bus.feetech.port, "servo bus");
+    info!(output = %output_path.display(), "range report path");
+    info!(trace_output = %trace_path.display(), "trace log path");
 
     let gait = TripodGait;
     let lay_pose = gait.lay_down_pose(config);
@@ -325,9 +338,17 @@ fn sense_ranges(config: &RobotConfig, args: &Args) -> anyhow::Result<()> {
         servo_ids.clone(),
     )
     .with_context(|| format!("failed to open servo bus {}", config.bus.feetech.port))?;
-    bus.enable_torque(true)
+
+    bus.enable_torque(false)
+        .context("failed to disable torque for range sensing")?;
+
+    // sleep a moment to ensure all servos have processed the torque disable command and are ready to accept new position commands without resistance
+    thread::sleep(Duration::from_millis(500));
+
+    enable_torque_on_current_position(&mut bus)
         .context("failed to enable torque for range sensing")?;
-    set_verified_torque_limit_for_ids(
+
+    set_verified_torque_limit_on_current_position_for_ids(
         &mut bus,
         &servo_ids,
         params.restore_torque_limit,
@@ -336,7 +357,7 @@ fn sense_ranges(config: &RobotConfig, args: &Args) -> anyhow::Result<()> {
 
     let result = (|| -> anyhow::Result<RangeScanReport> {
         if args.skip_initial_lay_down {
-            println!("skipping initial lay-down move and starting from the current pose");
+            info!("skipping initial lay-down move and starting from the current pose");
         } else {
             move_pose_until_close(
                 &mut bus,
@@ -412,7 +433,7 @@ fn sense_ranges(config: &RobotConfig, args: &Args) -> anyhow::Result<()> {
         Ok(report)
     })();
 
-    let restore = set_verified_torque_limit_for_ids(
+    let restore = set_verified_torque_limit_on_current_position_for_ids(
         &mut bus,
         &servo_ids,
         params.restore_torque_limit,
@@ -428,15 +449,15 @@ fn sense_ranges(config: &RobotConfig, args: &Args) -> anyhow::Result<()> {
     );
 
     if let Err(err) = restore {
-        eprintln!("torque-limit restore warning: {err:#}");
+        warn!("torque-limit restore warning: {err:#}");
     }
     if let Err(err) = cleanup {
-        eprintln!("cleanup warning: {err:#}");
+        warn!("cleanup warning: {err:#}");
     }
 
     let report = result?;
-    println!("range sensing complete; wrote {}", output_path.display());
-    println!("legs measured: {}", report.legs.len());
+    info!(output = %output_path.display(), "range sensing complete");
+    info!(legs_measured = report.legs.len(), "range sensing summary");
 
     Ok(())
 }
@@ -461,12 +482,18 @@ fn sense_joint_group_range(
     params: &SenseParams,
     label: &str,
 ) -> anyhow::Result<Vec<ServoRangeMeasurement>> {
-    println!("sensing {label} ranges in parallel");
+    let _span = info_span!(
+        "sense_joint_group",
+        joint = label,
+        servo_count = probes.len()
+    )
+    .entered();
+    info!("sensing ranges in parallel");
     let active_ids = probes
         .iter()
         .map(|probe| probe.servo_id)
         .collect::<Vec<_>>();
-    set_verified_torque_limit_for_ids(
+    set_verified_torque_limit_on_current_position_for_ids(
         bus,
         &active_ids,
         params.probe_torque_limit,
@@ -493,12 +520,21 @@ fn sense_joint_group_range(
         Ok((positive_hits, negative_hits))
     })();
 
-    set_verified_torque_limit_for_ids(
+    bus.enable_torque_on_ids(&active_ids, false)
+        .with_context(|| format!("failed to disable torque after {label} sensing"))?;
+
+    // sleep a moment to ensure all servos have processed the torque disable command and are ready to accept new position commands without resistance
+    thread::sleep(Duration::from_millis(500));
+
+    set_verified_torque_limit_on_current_position_for_ids(
         bus,
         &active_ids,
         params.restore_torque_limit,
         &format!("restoring torque limits after {label} sensing"),
     )?;
+
+    bus.enable_torque_on_ids(&active_ids, true)
+        .with_context(|| format!("failed to disable torque after {label} sensing"))?;
 
     let (positive_hits, negative_hits) = result?;
 
@@ -535,13 +571,15 @@ fn sense_joint_group_range(
     Ok(measurements)
 }
 
-fn set_verified_torque_limit_for_ids(
+fn set_verified_torque_limit_on_current_position_for_ids(
     bus: &mut RealStsBus,
     servo_ids: &[u8],
     torque_limit: u16,
     label: &str,
 ) -> anyhow::Result<()> {
-    println!(
+    info!(
+        servo_count = servo_ids.len(),
+        torque_limit,
         "{label}: verifying torque limit {} on {} servo(s)",
         torque_limit,
         servo_ids.len()
@@ -549,14 +587,18 @@ fn set_verified_torque_limit_for_ids(
     thread::sleep(Duration::from_millis(PHASE_SETTLE_SLEEP_MS));
 
     for &servo_id in servo_ids {
-        verify_servo_torque_limit(bus, servo_id, torque_limit)
+        // set position to current position and enable torque, then verify the torque limit is applied correctly by reading it back, with retries to handle potential transient issues
+        sync_current_pose(bus, &[servo_id]).with_context(|| {
+            format!("{label}: failed to sync current position for servo {servo_id}")
+        })?;
+        set_verified_servo_torque_limit(bus, servo_id, torque_limit)
             .with_context(|| format!("{label}: servo {servo_id}"))?;
     }
 
     Ok(())
 }
 
-fn verify_servo_torque_limit(
+fn set_verified_servo_torque_limit(
     bus: &mut RealStsBus,
     servo_id: u8,
     expected_torque_limit: u16,
@@ -619,6 +661,13 @@ fn sense_group_bound(
     logical_direction: i16,
     phase_label: &str,
 ) -> anyhow::Result<Vec<(u8, ResistanceObservation)>> {
+    let _span = info_span!(
+        "sense_group_bound",
+        phase = phase_label,
+        logical_direction,
+        servo_count = probes.len()
+    )
+    .entered();
     let active_ids = probes
         .iter()
         .map(|probe| probe.servo_id)
@@ -662,7 +711,7 @@ fn move_joint_group_to_ratio(
     poll_ms: u64,
     move_timeout_ms: u64,
 ) -> anyhow::Result<()> {
-    println!("{label}");
+    info!(ratio, servo_count = measurements.len(), "{label}");
     let tracked_servo_ids = measurements
         .iter()
         .map(|measurement| measurement.servo_id)
@@ -697,6 +746,13 @@ fn move_pose_until_close(
     move_timeout_ms: u64,
     label: &str,
 ) -> anyhow::Result<()> {
+    let _span = info_span!(
+        "move_pose_until_close",
+        label = label,
+        tracked_servos = tracked_servo_ids.len()
+    )
+    .entered();
+    info!("starting pose move");
     sync_full_pose(bus, target_pose)?;
     let started = SystemTime::now();
     let mut stable_cycles = 0u8;
@@ -729,10 +785,12 @@ fn move_pose_until_close(
         }
 
         if stable_cycles >= POSITION_SETTLE_CONFIRM_CYCLES {
+            info!("pose settled");
             return Ok(());
         }
 
         if started.elapsed().unwrap_or_default().as_millis() > u128::from(move_timeout_ms) {
+            warn!("{label}: did not settle within the timeout");
             bail!("{label} did not settle within the timeout");
         }
     }
@@ -784,14 +842,17 @@ fn wait_for_group_stop(
         }
 
         if finished.len() == states.len() {
-            println!("{phase_label}: all {} servos stopped", finished.len());
+            info!(
+                stopped = finished.len(),
+                "{phase_label}: all servos stopped"
+            );
             return Ok(finished);
         }
 
-        println!(
-            "{phase_label}: stopped={} active={}",
-            finished.len(),
-            states.len()
+        info!(
+            stopped = finished.len(),
+            active = states.len(),
+            "{phase_label}: progress"
         );
 
         if started.elapsed().unwrap_or_default().as_millis() > u128::from(params.move_timeout_ms) {
@@ -1123,7 +1184,7 @@ fn read_feedback_map_best_effort(
                 feedback.insert(*servo_id, telemetry);
             }
             Err(err) => {
-                eprintln!("feedback warning for servo {servo_id}: {err:#}");
+                warn!("feedback warning for servo {servo_id}: {err:#}");
             }
         }
     }
@@ -1216,6 +1277,62 @@ fn resolve_output_path(path: &Path) -> PathBuf {
     } else {
         PathBuf::from(path)
     }
+}
+
+fn resolve_trace_output_path(args: &Args, output_path: &Path) -> PathBuf {
+    if let Some(path) = &args.trace_output {
+        return resolve_output_path(path);
+    }
+
+    let parent = output_path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let stem = output_path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .filter(|stem| !stem.is_empty())
+        .unwrap_or("servo-ranges");
+
+    parent.join(format!("{stem}.trace.log"))
+}
+
+fn init_trace_logging(path: &Path) -> anyhow::Result<WorkerGuard> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| anyhow!("invalid trace log filename: {}", path.display()))?;
+    let directory = path.parent().unwrap_or_else(|| Path::new("."));
+
+    let file_appender = tracing_appender::rolling::never(directory, file_name);
+    let (file_writer, guard) = tracing_appender::non_blocking(file_appender);
+
+    let stdout_layer = fmt::layer()
+        .compact()
+        .with_target(true)
+        .with_filter(LevelFilter::INFO);
+
+    let file_layer = fmt::layer()
+        .with_ansi(false)
+        .with_target(true)
+        .with_timer(fmt::time::uptime())
+        .with_span_events(FmtSpan::NEW | FmtSpan::CLOSE)
+        .with_writer(file_writer)
+        .with_filter(LevelFilter::TRACE);
+
+    registry()
+        .with(stdout_layer)
+        .with(file_layer)
+        .try_init()
+        .map_err(|err| anyhow!("failed to initialize tracing subscriber: {err}"))?;
+
+    Ok(guard)
 }
 
 fn now_ms() -> u64 {
