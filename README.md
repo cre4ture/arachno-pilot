@@ -11,7 +11,7 @@ Rust-first starter workspace for a hexapod that can run either on a tethered Lin
 ## Workspace map
 
 - `apps/arachno-brain`: hardware-owning runtime that now serves telemetry, camera, dashboard, `lay_down`, `stand_up`, `stand`, and `slow_walk` from one process.
-- `apps/arachno-calibrate`: servo ID, zero-point, and home-pose tooling.
+- `apps/arachno-calibrate`: servo ID, zero-point, range-scan, pose-check, and pose-suggestion tooling.
 - `apps/arachno-fw-info`: host-side firmware version and capability query for the RP2040 IMU bridge.
 - `apps/arachno-probe`: host-device reachability checks for configured camera and servo bridge paths.
 - `crates/arachno-core`: robot config, gait primitives, and shared domain logic.
@@ -36,7 +36,7 @@ Rust-first starter workspace for a hexapod that can run either on a tethered Lin
 - `config/robot/jetson-onboard.toml`: Jetson mounted on the robot, with the CSI camera connected locally.
 - `config/robot/default.toml`: current local-development default, aligned with the host USB setup for now.
 - `config/robot/servo-config.toml`: shared servo/bus/safety/locomotion map loaded by all deployment profiles.
-- `config/robot/servo-ranges.toml`: measured free-movement envelopes written by the resistance-based calibration scan.
+- `config/robot/servo-ranges.toml`: measured free-movement envelopes written by the low-torque self-stop calibration scan.
 
 ## Locomotion roadmap
 
@@ -46,9 +46,12 @@ Implemented now:
 
 - `lay-down`: moves into a known stretched rest pose
 - `stand-up`: raises the femurs first, lowers the tibias to replant the feet, then lifts the body with coordinated femur+tibia motion before aligning the coxae
-- `stand`: settles into and holds the configured standing pose
+- `stand`: settles into and holds the configured stand-reference pose
 - `slow-walk`: a cautious tripod gait that applies small offsets around the measured standing pose
-- `sense-ranges`: slowly probes tibia, femur, and coxa travel in the laying posture and writes measured ranges to TOML
+- `sense-ranges`: lowers torque limit, drives tibia/femur/coxa toward full-range endpoints, and writes the self-stopped travel envelopes to TOML
+  Use `--skip-initial-lay-down` to resume a partially completed scan from the robot's current posture.
+- `check-poses`: compares configured `stand_reference` and `lay-down` ticks in `servo-config.toml` against measured bounds from `servo-ranges.toml`
+- `suggest-poses`: generates candidate `stand_reference` and `lay-down` ticks from the measured ranges without changing runtime behavior
 - shared hard safety checks for roll, pitch, bus voltage, and temperature, with servo load still exposed in telemetry
 
 Next up:
@@ -101,6 +104,8 @@ Build helpers:
 cargo run -p arachno-brain -- --config config/robot/default.toml --listen 127.0.0.1:4000
 cargo run -p arachno-calibrate -- --config config/robot/default.toml
 cargo run -p arachno-calibrate -- --config config/robot/host-usb.toml --mode sense-ranges --output config/robot/servo-ranges.toml
+cargo run -p arachno-calibrate -- --config config/robot/host-usb.toml --mode check-poses --ranges config/robot/servo-ranges.toml
+cargo run -p arachno-calibrate -- --config config/robot/host-usb.toml --mode suggest-poses --ranges config/robot/servo-ranges.toml --suggestions-output /tmp/servo-pose-suggestions.toml
 cargo run -p arachno-probe -- --config config/robot/default.toml
 cargo run -p arachno-brain -- --config config/robot/host-usb.toml --listen 127.0.0.1:4000
 cargo run -p arachno-brain -- --config config/robot/host-usb.toml --listen 127.0.0.1:4000 --dashboard

@@ -265,7 +265,7 @@ impl MotionRuntime {
         self.summary = match self.mode {
             BrainMode::LayDown => "starting lay-down transition".to_owned(),
             BrainMode::StandUp => "starting stand-up transition".to_owned(),
-            BrainMode::Stand => "holding the configured standing pose".to_owned(),
+            BrainMode::Stand => "holding the configured stand-reference pose".to_owned(),
             BrainMode::SlowWalk => "holding the measured stand pose before gait".to_owned(),
             BrainMode::Telemetry => {
                 "observation only; no motion commands are being sent".to_owned()
@@ -384,7 +384,8 @@ impl MotionRuntime {
         let base_pose = self
             .initial_pose
             .clone()
-            .unwrap_or_else(|| gait.stand_pose(config));
+            .or_else(|| self.hold_pose.clone())
+            .unwrap_or_else(|| self.fallback_pose(config, gait));
 
         let target_pose = if self.fault.is_some() {
             self.hold_pose.clone().unwrap_or_else(|| base_pose.clone())
@@ -413,13 +414,17 @@ impl MotionRuntime {
                     let progress = (elapsed / settle).clamp(0.0, 1.0);
                     self.summary = if progress < 1.0 {
                         format!(
-                            "settling into the configured standing pose ({:.0}%)",
+                            "settling into the configured stand-reference pose ({:.0}%)",
                             progress * 100.0
                         )
                     } else {
-                        "holding the configured standing pose".to_owned()
+                        "holding the configured stand-reference pose".to_owned()
                     };
-                    interpolate_pose(&base_pose, &gait.stand_pose(config), smoothstep(progress))
+                    interpolate_pose(
+                        &base_pose,
+                        &gait.stand_reference_pose(config),
+                        smoothstep(progress),
+                    )
                 }
                 BrainMode::SlowWalk => {
                     let settle = config.locomotion.tripod.settle_seconds.max(0.25);
@@ -459,6 +464,15 @@ impl MotionRuntime {
 
         self.hold_pose = Some(target_pose.clone());
         Some(pose_to_commands(&target_pose))
+    }
+
+    fn fallback_pose(&self, config: &RobotConfig, gait: &TripodGait) -> BTreeMap<u8, u16> {
+        match self.mode {
+            BrainMode::LayDown | BrainMode::StandUp => gait.lay_down_pose(config),
+            BrainMode::Stand | BrainMode::SlowWalk | BrainMode::Telemetry => {
+                gait.stand_reference_pose(config)
+            }
+        }
     }
 }
 
@@ -869,12 +883,15 @@ fn walk_pose_from_base(
     base_pose: &BTreeMap<u8, u16>,
     phase: f32,
 ) -> BTreeMap<u8, u16> {
-    let stand_pose = gait.stand_pose(config);
+    let stand_reference_pose = gait.stand_reference_pose(config);
     let walk_pose = gait.slow_walk_pose(config, phase);
     let mut commanded = BTreeMap::new();
 
     for (&servo_id, &walk_ticks) in &walk_pose {
-        let stand_ticks = stand_pose.get(&servo_id).copied().unwrap_or(walk_ticks);
+        let stand_ticks = stand_reference_pose
+            .get(&servo_id)
+            .copied()
+            .unwrap_or(walk_ticks);
         let base_ticks = base_pose.get(&servo_id).copied().unwrap_or(stand_ticks);
         let delta_ticks = i32::from(walk_ticks) - i32::from(stand_ticks);
         let target_ticks = (i32::from(base_ticks) + delta_ticks).clamp(0, 4095) as u16;
@@ -890,20 +907,20 @@ fn staged_stand_up_pose(
     base_pose: &BTreeMap<u8, u16>,
     elapsed: f32,
 ) -> (BTreeMap<u8, u16>, String) {
-    let stand_pose = gait.stand_pose(config);
+    let stand_reference_pose = gait.stand_reference_pose(config);
     let duration = config.locomotion.stand_up.duration_seconds.max(0.5);
     let progress = (elapsed / duration).clamp(0.0, 1.0);
 
     if progress >= 1.0 {
         return (
-            stand_pose,
-            "holding the configured standing pose".to_owned(),
+            stand_reference_pose,
+            "holding the configured stand-reference pose".to_owned(),
         );
     }
 
     let femur_lift_pose = femur_lift_pose(config, base_pose);
     let foot_plant_pose = foot_plant_pose(config, base_pose, &femur_lift_pose);
-    let body_raise_pose = body_raise_pose(config, base_pose, &stand_pose);
+    let body_raise_pose = body_raise_pose(config, base_pose, &stand_reference_pose);
 
     let femur_phase = (duration * STAND_UP_FEMUR_PREP_RATIO).max(0.1);
     let tibia_phase = (duration * STAND_UP_TIBIA_PLANT_RATIO).max(0.1);
@@ -943,7 +960,7 @@ fn staged_stand_up_pose(
         let phase_elapsed = elapsed - femur_phase - tibia_phase - body_phase;
         let phase_progress = smoothstep((phase_elapsed / coxa_phase).clamp(0.0, 1.0));
         (
-            interpolate_pose(&body_raise_pose, &stand_pose, phase_progress),
+            interpolate_pose(&body_raise_pose, &stand_reference_pose, phase_progress),
             format!("aligning coxae into stand ({:.0}%)", phase_progress * 100.0),
         )
     }
@@ -954,10 +971,10 @@ fn femur_lift_pose(config: &RobotConfig, base_pose: &BTreeMap<u8, u16>) -> BTree
     let mut pose = base_pose.clone();
 
     for leg in &config.legs {
-        let base_femur = base_pose
-            .get(&leg.femur_servo_id)
-            .copied()
-            .unwrap_or(leg.femur_lay_down_ticks.unwrap_or(leg.femur_home_ticks));
+        let base_femur = base_pose.get(&leg.femur_servo_id).copied().unwrap_or(
+            leg.femur_lay_down_ticks
+                .unwrap_or(leg.femur_stand_reference_ticks),
+        );
         pose.insert(
             leg.femur_servo_id,
             offset_ticks(base_femur, leg.femur_lift_sign() * femur_ticks),
@@ -976,10 +993,10 @@ fn foot_plant_pose(
     let mut pose = femur_lift_pose.clone();
 
     for leg in &config.legs {
-        let base_tibia = base_pose
-            .get(&leg.tibia_servo_id)
-            .copied()
-            .unwrap_or(leg.tibia_lay_down_ticks.unwrap_or(leg.tibia_home_ticks));
+        let base_tibia = base_pose.get(&leg.tibia_servo_id).copied().unwrap_or(
+            leg.tibia_lay_down_ticks
+                .unwrap_or(leg.tibia_stand_reference_ticks),
+        );
         pose.insert(
             leg.tibia_servo_id,
             offset_ticks(base_tibia, -leg.tibia_lift_sign() * tibia_ticks),
@@ -992,15 +1009,15 @@ fn foot_plant_pose(
 fn body_raise_pose(
     config: &RobotConfig,
     base_pose: &BTreeMap<u8, u16>,
-    stand_pose: &BTreeMap<u8, u16>,
+    stand_reference_pose: &BTreeMap<u8, u16>,
 ) -> BTreeMap<u8, u16> {
-    let mut pose = stand_pose.clone();
+    let mut pose = stand_reference_pose.clone();
 
     for leg in &config.legs {
-        let base_coxa = base_pose
-            .get(&leg.coxa_servo_id)
-            .copied()
-            .unwrap_or(leg.coxa_lay_down_ticks.unwrap_or(leg.coxa_home_ticks));
+        let base_coxa = base_pose.get(&leg.coxa_servo_id).copied().unwrap_or(
+            leg.coxa_lay_down_ticks
+                .unwrap_or(leg.coxa_stand_reference_ticks),
+        );
         pose.insert(leg.coxa_servo_id, base_coxa);
     }
 

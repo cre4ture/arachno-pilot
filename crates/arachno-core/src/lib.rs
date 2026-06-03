@@ -149,9 +149,12 @@ pub struct LegConfig {
     pub coxa_servo_id: u8,
     pub femur_servo_id: u8,
     pub tibia_servo_id: u8,
-    pub coxa_home_ticks: u16,
-    pub femur_home_ticks: u16,
-    pub tibia_home_ticks: u16,
+    #[serde(alias = "coxa_home_ticks")]
+    pub coxa_stand_reference_ticks: u16,
+    #[serde(alias = "femur_home_ticks")]
+    pub femur_stand_reference_ticks: u16,
+    #[serde(alias = "tibia_home_ticks")]
+    pub tibia_stand_reference_ticks: u16,
     #[serde(default)]
     pub coxa_lay_down_ticks: Option<u16>,
     #[serde(default)]
@@ -339,14 +342,14 @@ impl LegConfig {
     pub fn femur_lift_sign(&self) -> i16 {
         resolve_sign(
             self.femur_lift_sign,
-            toward_center_sign(self.femur_home_ticks),
+            toward_center_sign(self.femur_stand_reference_ticks),
         )
     }
 
     pub fn tibia_lift_sign(&self) -> i16 {
         resolve_sign(
             self.tibia_lift_sign,
-            toward_center_sign(self.tibia_home_ticks),
+            toward_center_sign(self.tibia_stand_reference_ticks),
         )
     }
 
@@ -362,16 +365,20 @@ impl LegConfig {
 pub struct TripodGait;
 
 impl TripodGait {
-    pub fn stand_pose(&self, config: &RobotConfig) -> BTreeMap<u8, u16> {
+    pub fn stand_reference_pose(&self, config: &RobotConfig) -> BTreeMap<u8, u16> {
         let mut pose = BTreeMap::new();
 
         for leg in &config.legs {
-            pose.insert(leg.coxa_servo_id, leg.coxa_home_ticks);
-            pose.insert(leg.femur_servo_id, leg.femur_home_ticks);
-            pose.insert(leg.tibia_servo_id, leg.tibia_home_ticks);
+            pose.insert(leg.coxa_servo_id, leg.coxa_stand_reference_ticks);
+            pose.insert(leg.femur_servo_id, leg.femur_stand_reference_ticks);
+            pose.insert(leg.tibia_servo_id, leg.tibia_stand_reference_ticks);
         }
 
         pose
+    }
+
+    pub fn stand_pose(&self, config: &RobotConfig) -> BTreeMap<u8, u16> {
+        self.stand_reference_pose(config)
     }
 
     pub fn lay_down_pose(&self, config: &RobotConfig) -> BTreeMap<u8, u16> {
@@ -380,15 +387,18 @@ impl TripodGait {
         for leg in &config.legs {
             pose.insert(
                 leg.coxa_servo_id,
-                leg.coxa_lay_down_ticks.unwrap_or(leg.coxa_home_ticks),
+                leg.coxa_lay_down_ticks
+                    .unwrap_or(leg.coxa_stand_reference_ticks),
             );
             pose.insert(
                 leg.femur_servo_id,
-                leg.femur_lay_down_ticks.unwrap_or(leg.femur_home_ticks),
+                leg.femur_lay_down_ticks
+                    .unwrap_or(leg.femur_stand_reference_ticks),
             );
             pose.insert(
                 leg.tibia_servo_id,
-                leg.tibia_lay_down_ticks.unwrap_or(leg.tibia_home_ticks),
+                leg.tibia_lay_down_ticks
+                    .unwrap_or(leg.tibia_stand_reference_ticks),
             );
         }
 
@@ -396,7 +406,7 @@ impl TripodGait {
     }
 
     pub fn stand_commands(&self, config: &RobotConfig) -> Vec<JointCommand> {
-        pose_to_commands(&self.stand_pose(config))
+        pose_to_commands(&self.stand_reference_pose(config))
     }
 
     pub fn lay_down_commands(&self, config: &RobotConfig) -> Vec<JointCommand> {
@@ -404,7 +414,7 @@ impl TripodGait {
     }
 
     pub fn slow_walk_pose(&self, config: &RobotConfig, phase: f32) -> BTreeMap<u8, u16> {
-        let mut pose = self.stand_pose(config);
+        let mut pose = self.stand_reference_pose(config);
         let phase = phase.rem_euclid(1.0);
         let gait = &config.locomotion.tripod;
 
@@ -424,15 +434,18 @@ impl TripodGait {
 
             pose.insert(
                 leg.coxa_servo_id,
-                offset_ticks(leg.coxa_home_ticks, leg.coxa_forward_sign() * coxa_offset),
+                offset_ticks(
+                    leg.coxa_stand_reference_ticks,
+                    leg.coxa_forward_sign() * coxa_offset,
+                ),
             );
             pose.insert(
                 leg.femur_servo_id,
-                offset_ticks(leg.femur_home_ticks, femur_offset),
+                offset_ticks(leg.femur_stand_reference_ticks, femur_offset),
             );
             pose.insert(
                 leg.tibia_servo_id,
-                offset_ticks(leg.tibia_home_ticks, tibia_offset),
+                offset_ticks(leg.tibia_stand_reference_ticks, tibia_offset),
             );
         }
 
@@ -443,8 +456,13 @@ impl TripodGait {
         pose_to_commands(&self.slow_walk_pose(config, phase))
     }
 
-    pub fn home_commands(&self, config: &RobotConfig) -> Vec<JointCommand> {
+    pub fn stand_reference_commands(&self, config: &RobotConfig) -> Vec<JointCommand> {
         self.stand_commands(config)
+    }
+
+    // Backward-compatible alias for older callers and serialized terminology.
+    pub fn home_commands(&self, config: &RobotConfig) -> Vec<JointCommand> {
+        self.stand_reference_commands(config)
     }
 }
 
@@ -499,8 +517,8 @@ fn resolve_sign(configured: i8, fallback: i16) -> i16 {
     }
 }
 
-fn toward_center_sign(home_ticks: u16) -> i16 {
-    if home_ticks >= 2048 { -1 } else { 1 }
+fn toward_center_sign(stand_reference_ticks: u16) -> i16 {
+    if stand_reference_ticks >= 2048 { -1 } else { 1 }
 }
 
 fn leg_cycle_shape(phase: f32, stride_ticks: i16) -> (i16, f32) {
@@ -526,8 +544,8 @@ fn smoothstep(t: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
-fn offset_ticks(home_ticks: u16, delta: i16) -> u16 {
-    (i32::from(home_ticks) + i32::from(delta)).clamp(0, 4095) as u16
+fn offset_ticks(start_ticks: u16, delta: i16) -> u16 {
+    (i32::from(start_ticks) + i32::from(delta)).clamp(0, 4095) as u16
 }
 
 #[cfg(test)]
@@ -609,9 +627,9 @@ name = "front_left"
 coxa_servo_id = 11
 femur_servo_id = 12
 tibia_servo_id = 13
-coxa_home_ticks = 2048
-femur_home_ticks = 2150
-tibia_home_ticks = 1850
+coxa_stand_reference_ticks = 2048
+femur_stand_reference_ticks = 2150
+tibia_stand_reference_ticks = 1850
 coxa_lay_down_ticks = 2000
 femur_lay_down_ticks = 2050
 tibia_lay_down_ticks = 2040

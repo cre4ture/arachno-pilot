@@ -10,9 +10,10 @@ use serialport::{ClearBuffer, SerialPort};
 
 const ADDR_TORQUE_ENABLE: u8 = 40;
 const ADDR_GOAL_POSITION: u8 = 42;
+const ADDR_TORQUE_LIMIT: u8 = 48;
 const ADDR_PRESENT_TELEMETRY: u8 = 56;
 const PRESENT_TELEMETRY_LEN: u8 = 15;
-const DEFAULT_TIMEOUT_MS: u64 = 20;
+const DEFAULT_TIMEOUT_MS: u64 = 50;
 
 #[repr(u8)]
 enum Instruction {
@@ -109,6 +110,54 @@ impl RealStsBus {
             HalError::Communication(format!("flush to servo {} failed: {err}", servo_id))
         })?;
         let _ = self.port.clear(ClearBuffer::Input);
+        Ok(())
+    }
+
+    fn write_word_no_response(&mut self, servo_id: u8, address: u8, value: u16) -> HalResult<()> {
+        let [low, high] = value.to_le_bytes();
+        let packet = pack_instruction(servo_id, Instruction::Write, &[address, low, high]);
+        let _ = self.port.clear(ClearBuffer::Input);
+        self.port.write_all(&packet).map_err(|err| {
+            HalError::Communication(format!("write to servo {} failed: {err}", servo_id))
+        })?;
+        self.port.flush().map_err(|err| {
+            HalError::Communication(format!("flush to servo {} failed: {err}", servo_id))
+        })?;
+        let _ = self.port.clear(ClearBuffer::Input);
+        Ok(())
+    }
+
+    pub fn set_servo_torque_limit(&mut self, servo_id: u8, torque_limit: u16) -> HalResult<()> {
+        self.write_word_no_response(servo_id, ADDR_TORQUE_LIMIT, torque_limit)
+    }
+
+    pub fn read_servo_torque_limit(&mut self, servo_id: u8) -> HalResult<u16> {
+        let response = self.read_register_block(servo_id, ADDR_TORQUE_LIMIT, 2)?;
+        if response.params.len() < 2 {
+            return Err(HalError::Communication(format!(
+                "servo {} torque-limit response too short: expected 2 bytes, got {}",
+                servo_id,
+                response.params.len()
+            )));
+        }
+
+        Ok(u16::from_le_bytes([response.params[0], response.params[1]]))
+    }
+
+    pub fn set_torque_limit_for_ids(
+        &mut self,
+        servo_ids: &[u8],
+        torque_limit: u16,
+    ) -> HalResult<()> {
+        for &servo_id in servo_ids {
+            if !self.servo_ids.contains(&servo_id) {
+                return Err(HalError::DeviceUnavailable(format!(
+                    "servo {} is not configured",
+                    servo_id
+                )));
+            }
+            self.set_servo_torque_limit(servo_id, torque_limit)?;
+        }
         Ok(())
     }
 

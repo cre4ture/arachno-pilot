@@ -19,14 +19,14 @@ Goals:
 
 - move into a known lay-down pose
 - stand up from that pose slowly
-- hold the configured standing pose
+- hold the configured stand-reference pose
 - return to lay-down without dropping the body
 
 Current implementation:
 
 - `arachno-brain --mode lay-down` ramps from the measured current pose into configured per-leg lay-down ticks
 - `arachno-brain --mode stand-up` raises the femurs first, lowers the tibias to replant the feet, then lifts the body with coordinated femur+tibia motion before aligning the coxae
-- `arachno-brain --mode stand` settles into and holds the configured standing pose
+- `arachno-brain --mode stand` settles into and holds the configured stand-reference pose
 - hard safety checks monitor roll, pitch, voltage, and temperature while load/current remain visible in telemetry
 - `config/robot/servo-config.toml` is the single source of truth for servo bus settings, safety limits, locomotion tuning, servo IDs, and stored standing/lay-down ticks
 
@@ -41,7 +41,7 @@ Goals:
 Current implementation:
 
 - `arachno-brain --mode slow-walk` starts from the measured standing pose and runs a small tripod gait around it
-- motion is bounded by the configured home ticks, gait offsets, and shared safety limits
+- motion is bounded by the configured stand-reference ticks, gait offsets, and shared safety limits
 
 ## Phase 3: Minimum Sensing For Walking
 

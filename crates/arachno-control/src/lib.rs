@@ -44,10 +44,15 @@ where
         Ok(())
     }
 
-    pub fn step_home_pose(&mut self) -> HalResult<RobotSnapshot> {
-        let commands = self.gait.home_commands(&self.config);
+    pub fn step_stand_reference_pose(&mut self) -> HalResult<RobotSnapshot> {
+        let commands = self.gait.stand_reference_commands(&self.config);
         self.servo_bus.sync_write_positions(&commands)?;
-        self.poll_snapshot("home")
+        self.poll_snapshot("stand_reference")
+    }
+
+    // Backward-compatible alias for older callers.
+    pub fn step_home_pose(&mut self) -> HalResult<RobotSnapshot> {
+        self.step_stand_reference_pose()
     }
 
     pub fn poll_snapshot(&mut self, body_mode: &str) -> HalResult<RobotSnapshot> {

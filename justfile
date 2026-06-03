@@ -33,6 +33,12 @@ calibrate:
 sense-ranges:
     cargo run -p arachno-calibrate -- --config config/robot/host-usb.toml --mode sense-ranges --output config/robot/servo-ranges.toml
 
+check-poses:
+    cargo run -p arachno-calibrate -- --config config/robot/host-usb.toml --mode check-poses --ranges config/robot/servo-ranges.toml
+
+suggest-poses:
+    cargo run -p arachno-calibrate -- --config config/robot/host-usb.toml --mode suggest-poses --ranges config/robot/servo-ranges.toml --suggestions-output /tmp/servo-pose-suggestions.toml
+
 probe:
     cargo run -p arachno-probe -- --config config/robot/default.toml
 

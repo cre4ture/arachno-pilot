@@ -58,7 +58,7 @@ Pure robot logic:
 
 - robot configuration
 - leg naming and joint mapping
-- home pose and gait primitives
+- stand-reference pose and gait primitives
 - kinematics later
 
 ### `crates/arachno-hal`
