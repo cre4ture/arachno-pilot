@@ -25,10 +25,10 @@ use axum::{
     extract::State,
     http::{StatusCode, header},
     response::{Html, IntoResponse, Response},
-    routing::get,
+    routing::{get, post},
 };
 use clap::{Parser, ValueEnum};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::{net::TcpListener, process::Command};
 use tokio_util::io::ReaderStream;
 use tower_http::cors::{Any, CorsLayer};
@@ -40,10 +40,14 @@ const LOW_VOLTAGE_STRIKES_TO_TRIP: u8 = 6;
 const STAND_UP_FEMUR_PREP_RATIO: f32 = 0.20;
 const STAND_UP_TIBIA_PLANT_RATIO: f32 = 0.20;
 const STAND_UP_BODY_RISE_RATIO: f32 = 0.45;
+const MANUAL_COXA_LIMIT_DEG: f32 = 180.0;
+const MANUAL_FEMUR_LIMIT_DEG: f32 = 180.0;
+const MANUAL_TIBIA_LIMIT_DEG: f32 = 180.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum BrainMode {
     Telemetry,
+    Manual,
     LayDown,
     StandUp,
     Stand,
@@ -54,6 +58,7 @@ impl BrainMode {
     fn as_state_label(self) -> &'static str {
         match self {
             Self::Telemetry => "telemetry",
+            Self::Manual => "manual",
             Self::LayDown => "lay_down",
             Self::StandUp => "stand_up",
             Self::Stand => "stand",
@@ -84,6 +89,7 @@ struct Args {
 struct AppState {
     config: RobotConfig,
     shared: Arc<RwLock<TelemetryState>>,
+    manual: Arc<RwLock<ManualControlState>>,
     dashboard_enabled: bool,
 }
 
@@ -104,6 +110,7 @@ struct TelemetryState {
     online_servo_count: usize,
     last_poll_error: Option<String>,
     imu: Option<TelemetryImuState>,
+    manual: TelemetryManualState,
     servos: Vec<TelemetryServoState>,
 }
 
@@ -115,6 +122,7 @@ struct TelemetryServoState {
     error: Option<String>,
     telemetry: Option<ServoTelemetry>,
     position_deg: Option<f32>,
+    semantic_angle_deg: Option<f32>,
     position_percent: Option<f32>,
     speed_rpm: Option<f32>,
 }
@@ -137,6 +145,42 @@ struct TelemetryImuState {
     gyro_norm_deg_s: Option<f32>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct TelemetryManualState {
+    enabled: bool,
+    ready: bool,
+    base_pose_captured: bool,
+    summary: String,
+    groups: Vec<ManualGroupInfo>,
+    group_values: Vec<ManualGroupValue>,
+    joints: Vec<ManualJointInfo>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ManualGroupInfo {
+    key: String,
+    label: String,
+    legs: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ManualGroupValue {
+    key: String,
+    coxa_deg: f32,
+    femur_deg: f32,
+    tibia_deg: f32,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ManualJointInfo {
+    key: String,
+    label: String,
+    negative_label: String,
+    positive_label: String,
+    min_deg: f32,
+    max_deg: f32,
+}
+
 #[derive(Debug, Clone)]
 struct MotionRuntime {
     mode: BrainMode,
@@ -149,12 +193,38 @@ struct MotionRuntime {
     fault: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+struct ManualControlState {
+    enabled: bool,
+    base_pose: Option<BTreeMap<u8, u16>>,
+    target_pose: Option<BTreeMap<u8, u16>>,
+    summary: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ManualApplyRequest {
+    group_key: String,
+    coxa_deg: f32,
+    femur_deg: f32,
+    tibia_deg: f32,
+}
+
+#[derive(Debug, Deserialize)]
+struct ManualResetRequest {
+    group_key: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ManualCommandResponse {
+    summary: String,
+}
+
 struct ServoPollOutcome {
     should_reopen_bus: bool,
 }
 
 impl TelemetryState {
-    fn from_config(config: &RobotConfig, mode: BrainMode) -> Self {
+    fn from_config(config: &RobotConfig, mode: BrainMode, manual: &ManualControlState) -> Self {
         let labels = servo_labels(config);
         let camera = RobotCamera::new(config.camera.clone());
 
@@ -182,6 +252,7 @@ impl TelemetryState {
             online_servo_count: 0,
             last_poll_error: Some("control worker not started yet".to_owned()),
             imu: telemetry_imu_from_config(config),
+            manual: build_manual_telemetry(config, manual, None),
             servos: config
                 .all_servo_ids()
                 .into_iter()
@@ -197,6 +268,24 @@ impl TelemetryState {
     }
 }
 
+impl ManualControlState {
+    fn for_mode(mode: BrainMode) -> Self {
+        let enabled = mode == BrainMode::Manual;
+        let summary = if enabled {
+            "waiting for the current robot pose before manual angle control becomes ready"
+        } else {
+            "manual control is disabled; start arachno-brain with --mode manual to enable dashboard sliders"
+        };
+
+        Self {
+            enabled,
+            base_pose: None,
+            target_pose: None,
+            summary: summary.to_owned(),
+        }
+    }
+}
+
 impl TelemetryServoState {
     fn offline(servo_id: u8, label: String, message: impl Into<String>) -> Self {
         Self {
@@ -206,6 +295,7 @@ impl TelemetryServoState {
             error: Some(message.into()),
             telemetry: None,
             position_deg: None,
+            semantic_angle_deg: None,
             position_percent: None,
             speed_rpm: None,
         }
@@ -228,6 +318,7 @@ impl TelemetryServoState {
             error,
             telemetry: Some(telemetry),
             position_deg,
+            semantic_angle_deg: None,
             position_percent,
             speed_rpm,
         }
@@ -238,6 +329,7 @@ impl MotionRuntime {
     fn new(mode: BrainMode, walk_seconds: Option<f32>) -> Self {
         let summary = match mode {
             BrainMode::Telemetry => "observation only; no motion commands are being sent",
+            BrainMode::Manual => "waiting for all servo feedback before arming manual control",
             BrainMode::LayDown => "waiting for all servo feedback before laying down",
             BrainMode::StandUp => "waiting for all servo feedback before standing up",
             BrainMode::Stand => "waiting for all servo feedback before holding stand",
@@ -265,6 +357,7 @@ impl MotionRuntime {
         self.initial_pose = Some(pose.clone());
         self.hold_pose = Some(pose);
         self.summary = match self.mode {
+            BrainMode::Manual => "manual control armed at the measured robot pose".to_owned(),
             BrainMode::LayDown => "starting lay-down transition".to_owned(),
             BrainMode::StandUp => "starting stand-up transition".to_owned(),
             BrainMode::Stand => "holding the configured stand-reference pose".to_owned(),
@@ -301,6 +394,14 @@ impl MotionRuntime {
 
         match self.mode {
             BrainMode::Telemetry => "observation only".to_owned(),
+            BrainMode::Manual => {
+                if imu_enabled {
+                    "manual control active; monitoring roll, pitch, bus voltage, and temperature"
+                        .to_owned()
+                } else {
+                    "manual control active; monitoring bus voltage and temperature".to_owned()
+                }
+            }
             BrainMode::LayDown | BrainMode::StandUp | BrainMode::Stand | BrainMode::SlowWalk => {
                 if imu_enabled {
                     "monitoring roll, pitch, bus voltage, and temperature".to_owned()
@@ -378,7 +479,12 @@ impl MotionRuntime {
         None
     }
 
-    fn commands(&mut self, config: &RobotConfig, gait: &TripodGait) -> Option<Vec<JointCommand>> {
+    fn commands(
+        &mut self,
+        config: &RobotConfig,
+        gait: &TripodGait,
+        manual: Option<&Arc<RwLock<ManualControlState>>>,
+    ) -> Option<Vec<JointCommand>> {
         if self.mode == BrainMode::Telemetry {
             return None;
         }
@@ -395,6 +501,31 @@ impl MotionRuntime {
             let armed_at = self.armed_at?;
             let elapsed = armed_at.elapsed().as_secs_f32();
             match self.mode {
+                BrainMode::Manual => {
+                    if let Some(shared) = manual {
+                        match shared.read() {
+                            Ok(control) => {
+                                self.summary = control.summary.clone();
+                                control
+                                    .target_pose
+                                    .clone()
+                                    .or_else(|| control.base_pose.clone())
+                                    .unwrap_or_else(|| base_pose.clone())
+                            }
+                            Err(_) => {
+                                self.summary =
+                                    "manual control state is unavailable; holding the current pose"
+                                        .to_owned();
+                                base_pose.clone()
+                            }
+                        }
+                    } else {
+                        self.summary =
+                            "manual control channel is unavailable; holding the current pose"
+                                .to_owned();
+                        base_pose.clone()
+                    }
+                }
                 BrainMode::LayDown => {
                     let target = gait.lay_down_pose(config);
                     let duration = config.locomotion.lay_down.duration_seconds.max(0.5);
@@ -470,6 +601,7 @@ impl MotionRuntime {
 
     fn fallback_pose(&self, config: &RobotConfig, gait: &TripodGait) -> BTreeMap<u8, u16> {
         match self.mode {
+            BrainMode::Manual => gait.stand_reference_pose(config),
             BrainMode::LayDown | BrainMode::StandUp => gait.lay_down_pose(config),
             BrainMode::Stand | BrainMode::SlowWalk | BrainMode::Telemetry => {
                 gait.stand_reference_pose(config)
@@ -515,18 +647,37 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
-    let shared = Arc::new(RwLock::new(TelemetryState::from_config(&config, args.mode)));
-    spawn_control_worker(shared.clone(), config.clone(), args.mode, args.walk_seconds);
+    let manual = Arc::new(RwLock::new(ManualControlState::for_mode(args.mode)));
+    let initial_manual = manual
+        .read()
+        .map_err(|_| anyhow::anyhow!("failed to initialize manual control state"))?
+        .clone();
+    let shared = Arc::new(RwLock::new(TelemetryState::from_config(
+        &config,
+        args.mode,
+        &initial_manual,
+    )));
+    spawn_control_worker(
+        shared.clone(),
+        manual.clone(),
+        config.clone(),
+        args.mode,
+        args.walk_seconds,
+    );
 
     let app = Router::new()
         .route("/", get(index))
         .route("/dashboard", get(dashboard))
         .route("/api/state", get(api_state))
+        .route("/api/manual/capture", post(api_manual_capture))
+        .route("/api/manual/apply", post(api_manual_apply))
+        .route("/api/manual/reset", post(api_manual_reset))
         .route("/camera.mjpg", get(camera_stream))
         .layer(CorsLayer::new().allow_origin(Any))
         .with_state(AppState {
             config: config.clone(),
             shared,
+            manual,
             dashboard_enabled: args.dashboard,
         });
 
@@ -536,6 +687,9 @@ async fn main() -> anyhow::Result<()> {
     println!("compute_target: {}", config.deployment.compute);
     println!("servo_port: {}", config.bus.feetech.port);
     println!("mode: {}", args.mode.as_state_label());
+    if args.mode == BrainMode::Manual {
+        println!("manual_control: enabled via /api/manual/* and dashboard sliders");
+    }
     if let Some(limit) = args.walk_seconds {
         println!("walk_seconds: {limit:.1}");
     }
@@ -560,6 +714,7 @@ async fn main() -> anyhow::Result<()> {
 
 fn spawn_control_worker(
     shared: Arc<RwLock<TelemetryState>>,
+    manual: Arc<RwLock<ManualControlState>>,
     config: RobotConfig,
     mode: BrainMode,
     walk_seconds: Option<f32>,
@@ -609,6 +764,7 @@ fn spawn_control_worker(
                                 &servo_states,
                                 imu_state.clone(),
                                 &motion,
+                                &manual,
                                 Some(format!("failed to open servo bus: {err}")),
                             ),
                         );
@@ -634,6 +790,7 @@ fn spawn_control_worker(
                             &servo_states,
                             imu_state.clone(),
                             &motion,
+                            &manual,
                             Some(format!("failed to enable torque: {err}")),
                         ),
                     );
@@ -678,6 +835,7 @@ fn spawn_control_worker(
                         &servo_states,
                         imu_state.clone(),
                         &motion,
+                        &manual,
                         Some("servo bus needs to be reopened".to_owned()),
                     ),
                 );
@@ -687,6 +845,7 @@ fn spawn_control_worker(
 
             if mode.requires_torque() && motion.armed_at.is_none() {
                 if let Some(start_pose) = current_pose(&servo_ids, &servo_states) {
+                    ensure_manual_reference_pose(&manual, &config, mode, &start_pose);
                     motion.arm(start_pose);
                 } else {
                     motion.summary = format!(
@@ -704,7 +863,7 @@ fn spawn_control_worker(
                 }
             }
 
-            if let Some(commands) = motion.commands(&config, &gait) {
+            if let Some(commands) = motion.commands(&config, &gait, Some(&manual)) {
                 if let Err(err) = real_bus.sync_write_positions(&commands) {
                     motion.trip_fault(
                         format!("failed to send motion commands: {err}"),
@@ -720,6 +879,7 @@ fn spawn_control_worker(
                             &servo_states,
                             imu_state.clone(),
                             &motion,
+                            &manual,
                             Some(format!("sync write failed: {err}")),
                         ),
                     );
@@ -736,6 +896,7 @@ fn spawn_control_worker(
                     &servo_states,
                     imu_state.clone(),
                     &motion,
+                    &manual,
                     None,
                 ),
             );
@@ -834,18 +995,28 @@ fn build_state_snapshot(
     servo_states: &BTreeMap<u8, TelemetryServoState>,
     imu: Option<TelemetryImuState>,
     motion: &MotionRuntime,
+    manual: &Arc<RwLock<ManualControlState>>,
     transport_error: Option<String>,
 ) -> TelemetryState {
+    let pose = current_pose(servo_ids, servo_states);
     let servos = servo_ids
         .iter()
         .map(|servo_id| {
-            servo_states.get(servo_id).cloned().unwrap_or_else(|| {
+            let mut servo = servo_states.get(servo_id).cloned().unwrap_or_else(|| {
                 TelemetryServoState::offline(
                     *servo_id,
                     format!("servo-{servo_id}"),
                     "missing state",
                 )
-            })
+            });
+            servo.semantic_angle_deg = servo.telemetry.as_ref().and_then(|telemetry| {
+                servo_semantic_angle_deg(
+                    config,
+                    telemetry.servo_id,
+                    telemetry.present_position_ticks,
+                )
+            });
+            servo
         })
         .collect::<Vec<_>>();
 
@@ -880,7 +1051,324 @@ fn build_state_snapshot(
         online_servo_count,
         last_poll_error,
         imu,
+        manual: manual_snapshot(config, manual, pose.as_ref()),
         servos,
+    }
+}
+
+fn build_manual_telemetry(
+    config: &RobotConfig,
+    control: &ManualControlState,
+    current_pose: Option<&BTreeMap<u8, u16>>,
+) -> TelemetryManualState {
+    TelemetryManualState {
+        enabled: control.enabled,
+        ready: control.base_pose.is_some() && current_pose.is_some(),
+        base_pose_captured: control.base_pose.is_some(),
+        summary: control.summary.clone(),
+        groups: manual_group_infos(config),
+        group_values: manual_group_values(config, current_pose, control.base_pose.as_ref()),
+        joints: manual_joint_infos(),
+    }
+}
+
+fn manual_snapshot(
+    config: &RobotConfig,
+    manual: &Arc<RwLock<ManualControlState>>,
+    current_pose: Option<&BTreeMap<u8, u16>>,
+) -> TelemetryManualState {
+    match manual.read() {
+        Ok(control) => build_manual_telemetry(config, &control, current_pose),
+        Err(_) => TelemetryManualState {
+            enabled: false,
+            ready: false,
+            base_pose_captured: false,
+            summary: "manual control state is unavailable".to_owned(),
+            groups: manual_group_infos(config),
+            group_values: Vec::new(),
+            joints: manual_joint_infos(),
+        },
+    }
+}
+
+fn manual_group_infos(config: &RobotConfig) -> Vec<ManualGroupInfo> {
+    let mut groups = vec![
+        manual_group_info(
+            "all_legs",
+            "All legs",
+            config.legs.iter().map(|leg| leg.name.as_str()).collect(),
+        ),
+        manual_group_info(
+            "left_side",
+            "Left side",
+            config
+                .legs
+                .iter()
+                .filter(|leg| leg.name.contains("left"))
+                .map(|leg| leg.name.as_str())
+                .collect(),
+        ),
+        manual_group_info(
+            "right_side",
+            "Right side",
+            config
+                .legs
+                .iter()
+                .filter(|leg| leg.name.contains("right"))
+                .map(|leg| leg.name.as_str())
+                .collect(),
+        ),
+        manual_group_info(
+            "front_pair",
+            "Front pair",
+            config
+                .legs
+                .iter()
+                .filter(|leg| leg.name.starts_with("front_"))
+                .map(|leg| leg.name.as_str())
+                .collect(),
+        ),
+        manual_group_info(
+            "middle_pair",
+            "Middle pair",
+            config
+                .legs
+                .iter()
+                .filter(|leg| leg.name.starts_with("middle_"))
+                .map(|leg| leg.name.as_str())
+                .collect(),
+        ),
+        manual_group_info(
+            "rear_pair",
+            "Rear pair",
+            config
+                .legs
+                .iter()
+                .filter(|leg| leg.name.starts_with("rear_"))
+                .map(|leg| leg.name.as_str())
+                .collect(),
+        ),
+        manual_group_info(
+            "tripod_a",
+            "Tripod A",
+            config
+                .legs
+                .iter()
+                .filter(|leg| leg.is_tripod_a())
+                .map(|leg| leg.name.as_str())
+                .collect(),
+        ),
+        manual_group_info(
+            "tripod_b",
+            "Tripod B",
+            config
+                .legs
+                .iter()
+                .filter(|leg| !leg.is_tripod_a())
+                .map(|leg| leg.name.as_str())
+                .collect(),
+        ),
+    ];
+
+    groups.extend(config.legs.iter().map(|leg| ManualGroupInfo {
+        key: format!("leg:{}", leg.name),
+        label: humanize_leg_name(&leg.name),
+        legs: vec![humanize_leg_name(&leg.name)],
+    }));
+    groups
+}
+
+fn manual_group_info(key: &str, label: &str, legs: Vec<&str>) -> ManualGroupInfo {
+    ManualGroupInfo {
+        key: key.to_owned(),
+        label: label.to_owned(),
+        legs: legs.into_iter().map(humanize_leg_name).collect(),
+    }
+}
+
+fn manual_group_values(
+    config: &RobotConfig,
+    current_pose: Option<&BTreeMap<u8, u16>>,
+    base_pose: Option<&BTreeMap<u8, u16>>,
+) -> Vec<ManualGroupValue> {
+    let Some(current_pose) = current_pose else {
+        return Vec::new();
+    };
+    let Some(base_pose) = base_pose else {
+        return Vec::new();
+    };
+
+    let mut groups = vec![
+        manual_group_value(config, "all_legs", current_pose, base_pose),
+        manual_group_value_for_filter(config, "left_side", current_pose, base_pose, |leg| {
+            leg.name.contains("left")
+        }),
+        manual_group_value_for_filter(config, "right_side", current_pose, base_pose, |leg| {
+            leg.name.contains("right")
+        }),
+        manual_group_value_for_filter(config, "front_pair", current_pose, base_pose, |leg| {
+            leg.name.starts_with("front_")
+        }),
+        manual_group_value_for_filter(config, "middle_pair", current_pose, base_pose, |leg| {
+            leg.name.starts_with("middle_")
+        }),
+        manual_group_value_for_filter(config, "rear_pair", current_pose, base_pose, |leg| {
+            leg.name.starts_with("rear_")
+        }),
+        manual_group_value_for_filter(config, "tripod_a", current_pose, base_pose, |leg| {
+            leg.is_tripod_a()
+        }),
+        manual_group_value_for_filter(config, "tripod_b", current_pose, base_pose, |leg| {
+            !leg.is_tripod_a()
+        }),
+    ];
+
+    groups.extend(config.legs.iter().map(|leg| {
+        manual_group_value_for_legs(
+            format!("leg:{}", leg.name),
+            current_pose,
+            base_pose,
+            vec![leg],
+        )
+    }));
+
+    groups
+}
+
+fn manual_group_value(
+    config: &RobotConfig,
+    key: &str,
+    current_pose: &BTreeMap<u8, u16>,
+    base_pose: &BTreeMap<u8, u16>,
+) -> ManualGroupValue {
+    manual_group_value_for_legs(
+        key.to_owned(),
+        current_pose,
+        base_pose,
+        config.legs.iter().collect(),
+    )
+}
+
+fn manual_group_value_for_filter<F>(
+    config: &RobotConfig,
+    key: &str,
+    current_pose: &BTreeMap<u8, u16>,
+    base_pose: &BTreeMap<u8, u16>,
+    predicate: F,
+) -> ManualGroupValue
+where
+    F: Fn(&arachno_core::LegConfig) -> bool,
+{
+    manual_group_value_for_legs(
+        key.to_owned(),
+        current_pose,
+        base_pose,
+        config.legs.iter().filter(|leg| predicate(leg)).collect(),
+    )
+}
+
+fn manual_group_value_for_legs(
+    key: String,
+    current_pose: &BTreeMap<u8, u16>,
+    base_pose: &BTreeMap<u8, u16>,
+    legs: Vec<&arachno_core::LegConfig>,
+) -> ManualGroupValue {
+    ManualGroupValue {
+        key,
+        coxa_deg: manual_joint_group_average_deg(current_pose, base_pose, &legs, "coxa"),
+        femur_deg: manual_joint_group_average_deg(current_pose, base_pose, &legs, "femur"),
+        tibia_deg: manual_joint_group_average_deg(current_pose, base_pose, &legs, "tibia"),
+    }
+}
+
+fn manual_joint_group_average_deg(
+    current_pose: &BTreeMap<u8, u16>,
+    base_pose: &BTreeMap<u8, u16>,
+    legs: &[&arachno_core::LegConfig],
+    joint_key: &str,
+) -> f32 {
+    let values = legs
+        .iter()
+        .filter_map(|leg| {
+            let (servo_id, sign) = manual_joint_servo_and_sign(leg, joint_key)?;
+            let current_ticks = current_pose.get(&servo_id).copied()?;
+            let base_ticks = base_pose.get(&servo_id).copied()?;
+            Some(semantic_ticks_to_degrees(
+                i32::from(current_ticks) - i32::from(base_ticks),
+                sign,
+            ))
+        })
+        .collect::<Vec<_>>();
+
+    if values.is_empty() {
+        0.0
+    } else {
+        values.iter().sum::<f32>() / values.len() as f32
+    }
+}
+
+fn manual_joint_infos() -> Vec<ManualJointInfo> {
+    vec![
+        ManualJointInfo {
+            key: "coxa".to_owned(),
+            label: "Coxa".to_owned(),
+            negative_label: "back".to_owned(),
+            positive_label: "forward".to_owned(),
+            min_deg: -MANUAL_COXA_LIMIT_DEG,
+            max_deg: MANUAL_COXA_LIMIT_DEG,
+        },
+        ManualJointInfo {
+            key: "femur".to_owned(),
+            label: "Femur".to_owned(),
+            negative_label: "down".to_owned(),
+            positive_label: "up".to_owned(),
+            min_deg: -MANUAL_FEMUR_LIMIT_DEG,
+            max_deg: MANUAL_FEMUR_LIMIT_DEG,
+        },
+        ManualJointInfo {
+            key: "tibia".to_owned(),
+            label: "Tibia".to_owned(),
+            negative_label: "down".to_owned(),
+            positive_label: "up".to_owned(),
+            min_deg: -MANUAL_TIBIA_LIMIT_DEG,
+            max_deg: MANUAL_TIBIA_LIMIT_DEG,
+        },
+    ]
+}
+
+fn humanize_leg_name(name: &str) -> String {
+    name.split('_')
+        .map(|part| {
+            let mut chars = part.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn ensure_manual_reference_pose(
+    manual: &Arc<RwLock<ManualControlState>>,
+    config: &RobotConfig,
+    mode: BrainMode,
+    pose: &BTreeMap<u8, u16>,
+) {
+    if mode != BrainMode::Manual {
+        return;
+    }
+
+    if let Ok(mut control) = manual.write() {
+        if !control.enabled || control.base_pose.is_some() {
+            return;
+        }
+
+        control.base_pose = Some(TripodGait.stand_reference_pose(config));
+        control.target_pose = Some(pose.clone());
+        control.summary =
+            "manual control is ready; sliders now reflect the current robot pose relative to the configured stand-reference pose"
+                .to_owned();
     }
 }
 
@@ -897,6 +1385,163 @@ fn current_pose(
     }
 
     Some(pose)
+}
+
+fn current_pose_from_snapshot_servos(servos: &[TelemetryServoState]) -> Option<BTreeMap<u8, u16>> {
+    let mut pose = BTreeMap::new();
+    for servo in servos {
+        let telemetry = servo.telemetry.as_ref()?;
+        pose.insert(servo.servo_id, telemetry.present_position_ticks);
+    }
+    Some(pose)
+}
+
+fn current_pose_from_shared_snapshot(
+    state: &AppState,
+) -> Result<BTreeMap<u8, u16>, (StatusCode, String)> {
+    let snapshot = state.shared.read().map_err(|_| {
+        manual_api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "telemetry state lock poisoned",
+        )
+    })?;
+    current_pose_from_snapshot_servos(&snapshot.servos).ok_or_else(|| {
+        manual_api_error(
+            StatusCode::CONFLICT,
+            "manual control needs fresh feedback from all configured servos before it can capture or apply angles",
+        )
+    })
+}
+
+fn ensure_manual_enabled(state: &AppState) -> Result<(), (StatusCode, String)> {
+    let enabled = state
+        .manual
+        .read()
+        .map_err(|_| {
+            manual_api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "manual control lock poisoned",
+            )
+        })?
+        .enabled;
+    if enabled {
+        Ok(())
+    } else {
+        Err(manual_api_error(
+            StatusCode::CONFLICT,
+            "manual control is disabled; restart arachno-brain with --mode manual",
+        ))
+    }
+}
+
+fn manual_api_error(status: StatusCode, message: impl Into<String>) -> (StatusCode, String) {
+    (status, message.into())
+}
+
+fn resolve_manual_group<'a>(
+    config: &'a RobotConfig,
+    key: &str,
+) -> Option<(String, Vec<&'a arachno_core::LegConfig>)> {
+    let select = |predicate: &dyn Fn(&arachno_core::LegConfig) -> bool,
+                  label: &str|
+     -> Option<(String, Vec<&'a arachno_core::LegConfig>)> {
+        let legs = config
+            .legs
+            .iter()
+            .filter(|leg| predicate(leg))
+            .collect::<Vec<_>>();
+        (!legs.is_empty()).then(|| (label.to_owned(), legs))
+    };
+
+    match key {
+        "all_legs" => select(&|_| true, "All legs"),
+        "left_side" => select(&|leg| leg.name.contains("left"), "Left side"),
+        "right_side" => select(&|leg| leg.name.contains("right"), "Right side"),
+        "front_pair" => select(&|leg| leg.name.starts_with("front_"), "Front pair"),
+        "middle_pair" => select(&|leg| leg.name.starts_with("middle_"), "Middle pair"),
+        "rear_pair" => select(&|leg| leg.name.starts_with("rear_"), "Rear pair"),
+        "tripod_a" => select(&|leg| leg.is_tripod_a(), "Tripod A"),
+        "tripod_b" => select(&|leg| !leg.is_tripod_a(), "Tripod B"),
+        _ => key.strip_prefix("leg:").and_then(|name| {
+            config
+                .legs
+                .iter()
+                .find(|leg| leg.name == name)
+                .map(|leg| (humanize_leg_name(&leg.name), vec![leg]))
+        }),
+    }
+}
+
+fn set_manual_joint_target(
+    target_pose: &mut BTreeMap<u8, u16>,
+    base_pose: &BTreeMap<u8, u16>,
+    leg: &arachno_core::LegConfig,
+    joint_key: &str,
+    degrees: f32,
+) {
+    let Some((servo_id, sign)) = manual_joint_servo_and_sign(leg, joint_key) else {
+        return;
+    };
+    let Some(base_ticks) = base_pose.get(&servo_id).copied() else {
+        return;
+    };
+    let delta_ticks = semantic_degrees_to_ticks(degrees, sign);
+    let next_ticks = (i32::from(base_ticks) + i32::from(delta_ticks)).clamp(0, 4095) as u16;
+    target_pose.insert(servo_id, next_ticks);
+}
+
+fn reset_manual_leg_to_base(
+    target_pose: &mut BTreeMap<u8, u16>,
+    base_pose: &BTreeMap<u8, u16>,
+    leg: &arachno_core::LegConfig,
+) {
+    for servo_id in [leg.coxa_servo_id, leg.femur_servo_id, leg.tibia_servo_id] {
+        if let Some(base_ticks) = base_pose.get(&servo_id).copied() {
+            target_pose.insert(servo_id, base_ticks);
+        }
+    }
+}
+
+fn manual_joint_servo_and_sign(
+    leg: &arachno_core::LegConfig,
+    joint_key: &str,
+) -> Option<(u8, i16)> {
+    match joint_key {
+        "coxa" => Some((leg.coxa_servo_id, leg.coxa_forward_sign())),
+        "femur" => Some((leg.femur_servo_id, leg.femur_lift_sign())),
+        "tibia" => Some((leg.tibia_servo_id, leg.tibia_lift_sign())),
+        _ => None,
+    }
+}
+
+fn semantic_degrees_to_ticks(degrees: f32, sign: i16) -> i16 {
+    let delta = degrees * (4096.0 / 360.0);
+    (delta * sign as f32).round() as i16
+}
+
+fn semantic_ticks_to_degrees(delta_ticks: i32, sign: i16) -> f32 {
+    delta_ticks as f32 * 360.0 / 4096.0 / sign as f32
+}
+
+fn servo_semantic_angle_deg(config: &RobotConfig, servo_id: u8, present_ticks: u16) -> Option<f32> {
+    let leg = config.legs.iter().find(|leg| {
+        leg.coxa_servo_id == servo_id
+            || leg.femur_servo_id == servo_id
+            || leg.tibia_servo_id == servo_id
+    })?;
+
+    let (reference_ticks, sign) = if leg.coxa_servo_id == servo_id {
+        (leg.coxa_stand_reference_ticks, leg.coxa_forward_sign())
+    } else if leg.femur_servo_id == servo_id {
+        (leg.femur_stand_reference_ticks, leg.femur_lift_sign())
+    } else {
+        (leg.tibia_stand_reference_ticks, leg.tibia_lift_sign())
+    };
+
+    Some(semantic_ticks_to_degrees(
+        i32::from(present_ticks) - i32::from(reference_ticks),
+        sign,
+    ))
 }
 
 fn pose_to_commands(pose: &BTreeMap<u8, u16>) -> Vec<JointCommand> {
@@ -1136,6 +1781,121 @@ async fn api_state(State(state): State<AppState>) -> Result<Json<TelemetryState>
         .read()
         .map(|snapshot| Json(snapshot.clone()))
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+async fn api_manual_capture(
+    State(state): State<AppState>,
+) -> Result<Json<ManualCommandResponse>, (StatusCode, String)> {
+    ensure_manual_enabled(&state)?;
+    let pose = current_pose_from_shared_snapshot(&state)?;
+    let summary = "captured the current robot pose as the manual control zero".to_owned();
+
+    let mut manual = state.manual.write().map_err(|_| {
+        manual_api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "manual control lock poisoned",
+        )
+    })?;
+    manual.base_pose = Some(pose.clone());
+    manual.target_pose = Some(pose);
+    manual.summary = summary.clone();
+
+    Ok(Json(ManualCommandResponse { summary }))
+}
+
+async fn api_manual_apply(
+    State(state): State<AppState>,
+    Json(request): Json<ManualApplyRequest>,
+) -> Result<Json<ManualCommandResponse>, (StatusCode, String)> {
+    ensure_manual_enabled(&state)?;
+    let (group_label, legs) = resolve_manual_group(&state.config, &request.group_key)
+        .ok_or_else(|| manual_api_error(StatusCode::BAD_REQUEST, "unknown manual control group"))?;
+    let fallback_pose = current_pose_from_shared_snapshot(&state)?;
+    let coxa_deg = request
+        .coxa_deg
+        .clamp(-MANUAL_COXA_LIMIT_DEG, MANUAL_COXA_LIMIT_DEG);
+    let femur_deg = request
+        .femur_deg
+        .clamp(-MANUAL_FEMUR_LIMIT_DEG, MANUAL_FEMUR_LIMIT_DEG);
+    let tibia_deg = request
+        .tibia_deg
+        .clamp(-MANUAL_TIBIA_LIMIT_DEG, MANUAL_TIBIA_LIMIT_DEG);
+
+    let mut manual = state.manual.write().map_err(|_| {
+        manual_api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "manual control lock poisoned",
+        )
+    })?;
+    let base_pose = manual
+        .base_pose
+        .clone()
+        .unwrap_or_else(|| fallback_pose.clone());
+    let mut target_pose = manual
+        .target_pose
+        .clone()
+        .unwrap_or_else(|| base_pose.clone());
+    manual.base_pose = Some(base_pose.clone());
+
+    for leg in legs {
+        set_manual_joint_target(&mut target_pose, &base_pose, leg, "coxa", coxa_deg);
+        set_manual_joint_target(&mut target_pose, &base_pose, leg, "femur", femur_deg);
+        set_manual_joint_target(&mut target_pose, &base_pose, leg, "tibia", tibia_deg);
+    }
+
+    let summary = format!(
+        "manual target updated for {group_label}: coxa {coxa_deg:+.1}°, femur {femur_deg:+.1}°, tibia {tibia_deg:+.1}°"
+    );
+    manual.target_pose = Some(target_pose);
+    manual.summary = summary.clone();
+
+    Ok(Json(ManualCommandResponse { summary }))
+}
+
+async fn api_manual_reset(
+    State(state): State<AppState>,
+    payload: Option<Json<ManualResetRequest>>,
+) -> Result<Json<ManualCommandResponse>, (StatusCode, String)> {
+    ensure_manual_enabled(&state)?;
+    let fallback_pose = current_pose_from_shared_snapshot(&state)?;
+    let maybe_group_key = payload.and_then(|Json(request)| request.group_key);
+
+    let mut manual = state.manual.write().map_err(|_| {
+        manual_api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "manual control lock poisoned",
+        )
+    })?;
+    let base_pose = manual
+        .base_pose
+        .clone()
+        .unwrap_or_else(|| fallback_pose.clone());
+    manual.base_pose = Some(base_pose.clone());
+
+    let summary = if let Some(group_key) = maybe_group_key {
+        let (group_label, legs) =
+            resolve_manual_group(&state.config, &group_key).ok_or_else(|| {
+                manual_api_error(StatusCode::BAD_REQUEST, "unknown manual control group")
+            })?;
+        let mut target_pose = manual
+            .target_pose
+            .clone()
+            .unwrap_or_else(|| base_pose.clone());
+        for leg in legs {
+            reset_manual_leg_to_base(&mut target_pose, &base_pose, leg);
+        }
+        manual.target_pose = Some(target_pose);
+        let summary = format!("manual target reset to zero for {group_label}");
+        manual.summary = summary.clone();
+        summary
+    } else {
+        manual.target_pose = Some(base_pose.clone());
+        let summary = "manual target reset to zero for all legs".to_owned();
+        manual.summary = summary.clone();
+        summary
+    };
+
+    Ok(Json(ManualCommandResponse { summary }))
 }
 
 async fn camera_stream(State(state): State<AppState>) -> Response {

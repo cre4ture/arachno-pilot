@@ -194,6 +194,177 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
       line-height: 1.4;
     }
 
+    .manual-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+
+    .manual-card {
+      padding: 16px;
+      background: var(--panel-strong);
+      border-radius: 16px;
+      border: 1px solid rgba(255,255,255,0.06);
+    }
+
+    .manual-card select,
+    .manual-card button,
+    .manual-sliders button {
+      width: 100%;
+      border: 1px solid rgba(255,255,255,0.1);
+      background: rgba(7, 11, 16, 0.88);
+      color: var(--text);
+      border-radius: 12px;
+      padding: 11px 12px;
+      font: inherit;
+    }
+
+    .manual-card button,
+    .manual-sliders button {
+      cursor: pointer;
+      transition: transform 120ms ease, border-color 120ms ease, background 120ms ease;
+    }
+
+    .manual-card button:hover,
+    .manual-sliders button:hover {
+      transform: translateY(-1px);
+      border-color: rgba(255, 146, 84, 0.45);
+    }
+
+    .manual-card button:disabled,
+    .manual-sliders button:disabled {
+      cursor: not-allowed;
+      opacity: 0.55;
+      transform: none;
+    }
+
+    .manual-sliders {
+      display: grid;
+      gap: 12px;
+    }
+
+    .slider-field {
+      padding: 16px;
+      background: var(--panel-strong);
+      border-radius: 16px;
+      border: 1px solid rgba(255,255,255,0.06);
+    }
+
+    .slider-top {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: baseline;
+      margin-bottom: 10px;
+    }
+
+    .slider-top strong {
+      font-size: 1rem;
+    }
+
+    .slider-top span {
+      color: var(--accent);
+      font-weight: 700;
+    }
+
+    .slider-field input[type="range"] {
+      width: 100%;
+      accent-color: var(--accent);
+      margin: 0;
+    }
+
+    .slider-legend {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      color: var(--muted);
+      font-size: 0.9rem;
+      margin-top: 10px;
+    }
+
+    .manual-actions {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 4px;
+    }
+
+    .manual-actions .wide {
+      grid-column: 1 / -1;
+    }
+
+    .manual-live-toggle {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      color: var(--muted);
+      font-size: 0.95rem;
+      margin: 4px 2px 14px;
+    }
+
+    .manual-live-toggle input {
+      width: 18px;
+      height: 18px;
+      accent-color: var(--accent);
+    }
+
+    .leg-schematic-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .leg-schematic-card {
+      padding: 16px;
+      background: var(--panel-strong);
+      border-radius: 16px;
+      border: 1px solid rgba(255,255,255,0.06);
+    }
+
+    .leg-schematic-top {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: baseline;
+      margin-bottom: 12px;
+    }
+
+    .leg-schematic-top strong {
+      font-size: 1rem;
+    }
+
+    .leg-schematic-top span {
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+
+    .leg-schematic-svg {
+      width: 100%;
+      height: 10rem;
+      display: block;
+    }
+
+    .leg-schematic-svg.mirror {
+      transform: scaleX(-1);
+    }
+
+    .leg-schematic-metrics {
+      margin-top: 10px;
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+      color: var(--muted);
+      font-size: 0.86rem;
+    }
+
+    .leg-schematic-metrics strong {
+      display: block;
+      color: var(--text);
+      font-size: 0.95rem;
+      margin-bottom: 3px;
+    }
+
     .servo-layout {
       margin-top: 18px;
       display: grid;
@@ -553,6 +724,87 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
 
     <section class="panel" style="margin-top: 18px;">
       <div class="panel-header">
+        <h2>Manual Control</h2>
+        <div class="muted" id="manual-summary">manual control disabled</div>
+      </div>
+      <div class="panel-body">
+        <div class="manual-grid">
+          <div class="manual-card">
+            <div class="stat-label">Leg Group</div>
+            <select id="manual-group"></select>
+            <div class="stat-note" id="manual-group-note">Choose a leg group, then apply semantic angle offsets in degrees.</div>
+          </div>
+          <div class="manual-card">
+            <div class="stat-label">Manual Mode</div>
+            <div class="stat-value" id="manual-mode-state">disabled</div>
+            <div class="stat-note" id="manual-mode-note">Start arachno-brain with <code>--mode manual</code> to enable dashboard-based servo control.</div>
+          </div>
+        </div>
+
+        <div class="manual-sliders">
+          <label class="slider-field">
+            <div class="slider-top">
+              <strong id="manual-coxa-label">Coxa</strong>
+              <span id="manual-coxa-value">0.0°</span>
+            </div>
+            <input id="manual-coxa-slider" type="range" min="-180" max="180" step="0.5" value="0" />
+            <div class="slider-legend">
+              <span id="manual-coxa-negative">back</span>
+              <span id="manual-coxa-positive">forward</span>
+            </div>
+          </label>
+
+          <label class="slider-field">
+            <div class="slider-top">
+              <strong id="manual-femur-label">Femur</strong>
+              <span id="manual-femur-value">0.0°</span>
+            </div>
+            <input id="manual-femur-slider" type="range" min="-180" max="180" step="0.5" value="0" />
+            <div class="slider-legend">
+              <span id="manual-femur-negative">down</span>
+              <span id="manual-femur-positive">up</span>
+            </div>
+          </label>
+
+          <label class="slider-field">
+            <div class="slider-top">
+              <strong id="manual-tibia-label">Tibia</strong>
+              <span id="manual-tibia-value">0.0°</span>
+            </div>
+            <input id="manual-tibia-slider" type="range" min="-180" max="180" step="0.5" value="0" />
+            <div class="slider-legend">
+              <span id="manual-tibia-negative">down</span>
+              <span id="manual-tibia-positive">up</span>
+            </div>
+          </label>
+        </div>
+
+        <label class="manual-live-toggle">
+          <input id="manual-live-apply" type="checkbox" />
+          <span>Apply slider movement immediately while dragging</span>
+        </label>
+
+        <div class="manual-actions">
+          <button id="manual-apply" type="button">Apply To Selected Group</button>
+          <button id="manual-reset-group" type="button">Reset Selected Group</button>
+          <button id="manual-reset-all" class="wide" type="button">Reset All Legs To Manual Zero</button>
+          <button id="manual-capture" class="wide" type="button">Capture Current Pose As Manual Zero</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" style="margin-top: 18px;">
+      <div class="panel-header">
+        <h2>Leg Schematic</h2>
+        <div class="muted" id="leg-schematic-summary">waiting for live servo feedback</div>
+      </div>
+      <div class="panel-body">
+        <div class="leg-schematic-grid" id="leg-schematic-grid"></div>
+      </div>
+    </section>
+
+    <section class="panel" style="margin-top: 18px;">
+      <div class="panel-header">
         <h2>Servos</h2>
         <div class="muted" id="fault-summary">No servo data yet</div>
       </div>
@@ -584,13 +836,30 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
   <script>
     const stateUrl = "/api/state";
     const cameraUrl = "/camera.mjpg";
+    const manualApplyUrl = "/api/manual/apply";
+    const manualResetUrl = "/api/manual/reset";
+    const manualCaptureUrl = "/api/manual/capture";
+    const manualLiveApplyIntervalMs = 200;
     let streamStarted = false;
+    let manualGroupsReady = false;
+    let manualLiveApplyTimer = null;
+    let manualLiveApplyPending = false;
+    let lastManualLiveApplyAt = 0;
+    let manualSlidersInitialized = { value: false };
     const LEG_ORDER = [
       "front_left",
       "middle_left",
       "rear_left",
       "front_right",
       "middle_right",
+      "rear_right",
+    ];
+    const LEG_SCHEMATIC_ORDER = [
+      "front_left",
+      "front_right",
+      "middle_left",
+      "middle_right",
+      "rear_left",
       "rear_right",
     ];
     const LEG_META = {
@@ -614,6 +883,7 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
       2: "femur",
       3: "tibia",
     };
+    const MANUAL_JOINT_KEYS = ["coxa", "femur", "tibia"];
 
     function fmt(value, digits = 1) {
       return Number.isFinite(value) ? value.toFixed(digits) : "n/a";
@@ -638,6 +908,206 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
 
     function hexByte(value) {
       return Number.isInteger(value) ? `0x${value.toString(16).padStart(2, "0")}` : "n/a";
+    }
+
+    function sliderValue(axis) {
+      return Number(document.getElementById(`manual-${axis}-slider`).value);
+    }
+
+    function updateSliderReadout(axis) {
+      document.getElementById(`manual-${axis}-value`).textContent = `${sliderValue(axis).toFixed(1)}°`;
+    }
+
+    function manualLiveApplyEnabled() {
+      return document.getElementById("manual-live-apply").checked;
+    }
+
+    function scheduleLiveManualApply() {
+      if (!manualLiveApplyEnabled()) return;
+      manualLiveApplyPending = true;
+      if (manualLiveApplyTimer) return;
+
+      const now = Date.now();
+      const delay = Math.max(0, manualLiveApplyIntervalMs - (now - lastManualLiveApplyAt));
+      manualLiveApplyTimer = setTimeout(async () => {
+        manualLiveApplyTimer = null;
+        if (!manualLiveApplyPending) return;
+        manualLiveApplyPending = false;
+        lastManualLiveApplyAt = Date.now();
+        try {
+          await applyManualGroup();
+        } catch (error) {
+          document.getElementById("manual-summary").textContent = String(error);
+        }
+        if (manualLiveApplyPending) {
+          scheduleLiveManualApply();
+        }
+      }, delay);
+    }
+
+    function syncManualSliderSpecs(joints) {
+      for (const joint of joints ?? []) {
+        const slider = document.getElementById(`manual-${joint.key}-slider`);
+        if (!slider) continue;
+        slider.min = String(joint.min_deg);
+        slider.max = String(joint.max_deg);
+        document.getElementById(`manual-${joint.key}-label`).textContent = joint.label;
+        document.getElementById(`manual-${joint.key}-negative`).textContent = joint.negative_label;
+        document.getElementById(`manual-${joint.key}-positive`).textContent = joint.positive_label;
+        updateSliderReadout(joint.key);
+      }
+    }
+
+    function ensureManualGroups(groups) {
+      const select = document.getElementById("manual-group");
+      const previous = select.value;
+      select.innerHTML = "";
+      for (const group of groups ?? []) {
+        const option = document.createElement("option");
+        option.value = group.key;
+        option.textContent = group.label;
+        select.appendChild(option);
+      }
+      if (previous && [...select.options].some((option) => option.value === previous)) {
+        select.value = previous;
+      }
+      manualGroupsReady = select.options.length > 0;
+      updateManualGroupNote(groups);
+    }
+
+    function updateManualGroupNote(groups) {
+      const select = document.getElementById("manual-group");
+      const note = document.getElementById("manual-group-note");
+      const selected = (groups ?? []).find((group) => group.key === select.value) ?? groups?.[0];
+      note.textContent = selected
+        ? `${selected.label}: ${selected.legs.join(", ")}`
+        : "Choose a leg group, then apply semantic angle offsets in degrees.";
+    }
+
+    function currentManualGroupValue() {
+      const groupKey = document.getElementById("manual-group").value;
+      return (window.__manualGroupValues ?? []).find((group) => group.key === groupKey) ?? null;
+    }
+
+    function setManualSlidersFromGroupValue(force = false) {
+      const group = currentManualGroupValue();
+      if (!group) return;
+      if (!force && manualSlidersInitialized.value) return;
+      document.getElementById("manual-coxa-slider").value = String(group.coxa_deg.toFixed(1));
+      document.getElementById("manual-femur-slider").value = String(group.femur_deg.toFixed(1));
+      document.getElementById("manual-tibia-slider").value = String(group.tibia_deg.toFixed(1));
+      for (const axis of MANUAL_JOINT_KEYS) {
+        updateSliderReadout(axis);
+      }
+      manualSlidersInitialized.value = true;
+    }
+
+    function setManualControlsEnabled(enabled) {
+      document.getElementById("manual-group").disabled = !enabled;
+      document.getElementById("manual-apply").disabled = !enabled;
+      document.getElementById("manual-reset-group").disabled = !enabled;
+      document.getElementById("manual-reset-all").disabled = !enabled;
+      document.getElementById("manual-capture").disabled = !enabled;
+      document.getElementById("manual-live-apply").disabled = !enabled;
+      for (const axis of MANUAL_JOINT_KEYS) {
+        document.getElementById(`manual-${axis}-slider`).disabled = !enabled;
+      }
+    }
+
+    async function postJson(url, payload) {
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload ?? {}),
+      });
+      if (!response.ok) {
+        const message = await response.text();
+        throw new Error(message || `${response.status}`);
+      }
+      return response.json();
+    }
+
+    async function applyManualGroup() {
+      const result = await postJson(manualApplyUrl, {
+        group_key: document.getElementById("manual-group").value,
+        coxa_deg: sliderValue("coxa"),
+        femur_deg: sliderValue("femur"),
+        tibia_deg: sliderValue("tibia"),
+      });
+      document.getElementById("manual-summary").textContent = result.summary;
+      await refresh();
+    }
+
+    async function resetManualGroup() {
+      const result = await postJson(manualResetUrl, {
+        group_key: document.getElementById("manual-group").value,
+      });
+      document.getElementById("manual-summary").textContent = result.summary;
+      await refresh();
+      setManualSlidersFromGroupValue(true);
+    }
+
+    async function resetManualAll() {
+      const result = await postJson(manualResetUrl, {});
+      document.getElementById("manual-summary").textContent = result.summary;
+      await refresh();
+      setManualSlidersFromGroupValue(true);
+    }
+
+    async function captureManualZero() {
+      const result = await postJson(manualCaptureUrl, {});
+      document.getElementById("manual-summary").textContent = result.summary;
+      await refresh();
+      setManualSlidersFromGroupValue(true);
+    }
+
+    function bindManualControls() {
+      if (window.__manualControlsBound) return;
+      window.__manualControlsBound = true;
+      for (const axis of MANUAL_JOINT_KEYS) {
+        document.getElementById(`manual-${axis}-slider`).addEventListener("input", () => {
+          updateSliderReadout(axis);
+          scheduleLiveManualApply();
+        });
+        updateSliderReadout(axis);
+      }
+      document.getElementById("manual-group").addEventListener("change", () => {
+        updateManualGroupNote(window.__manualGroups ?? []);
+        setManualSlidersFromGroupValue(true);
+      });
+      document.getElementById("manual-apply").addEventListener("click", () => applyManualGroup().catch((error) => {
+        document.getElementById("manual-summary").textContent = String(error);
+      }));
+      document.getElementById("manual-reset-group").addEventListener("click", () => resetManualGroup().catch((error) => {
+        document.getElementById("manual-summary").textContent = String(error);
+      }));
+      document.getElementById("manual-reset-all").addEventListener("click", () => resetManualAll().catch((error) => {
+        document.getElementById("manual-summary").textContent = String(error);
+      }));
+      document.getElementById("manual-capture").addEventListener("click", () => captureManualZero().catch((error) => {
+        document.getElementById("manual-summary").textContent = String(error);
+      }));
+    }
+
+    function updateManualPanel(manual) {
+      window.__manualGroups = manual?.groups ?? [];
+      window.__manualGroupValues = manual?.group_values ?? [];
+      bindManualControls();
+      ensureManualGroups(window.__manualGroups);
+      syncManualSliderSpecs(manual?.joints ?? []);
+      setManualSlidersFromGroupValue(!manualSlidersInitialized.value);
+
+      document.getElementById("manual-summary").textContent = manual?.summary ?? "manual control unavailable";
+      document.getElementById("manual-mode-state").textContent = manual?.enabled
+        ? (manual.ready ? "ready" : "waiting")
+        : "disabled";
+      document.getElementById("manual-mode-note").textContent = manual?.enabled
+        ? (manual.base_pose_captured
+            ? "Manual zero is captured. Sliders apply semantic angles relative to that pose."
+            : "Waiting for full servo feedback or press capture once all servos are online.")
+        : "Start arachno-brain with --mode manual to enable dashboard-based servo control.";
+
+      setManualControlsEnabled(Boolean(manual?.enabled && manualGroupsReady));
     }
 
     function updateImuPanel(imu) {
@@ -746,6 +1216,11 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
     }
 
     function renderServoMap(servos) {
+      const grouped = groupServosByLeg(servos);
+      return LEG_ORDER.map((legKey) => renderLegCluster(legKey, grouped[legKey])).join("");
+    }
+
+    function groupServosByLeg(servos) {
       const grouped = Object.fromEntries(LEG_ORDER.map((key) => [key, []]));
       for (const servo of servos) {
         const legKey = legKeyForServo(servo);
@@ -753,8 +1228,78 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
           grouped[legKey].push(servo);
         }
       }
+      return grouped;
+    }
 
-      return LEG_ORDER.map((legKey) => renderLegCluster(legKey, grouped[legKey])).join("");
+    function clamp(value, min, max) {
+      return Math.min(Math.max(value, min), max);
+    }
+
+    function pointFrom(origin, length, angleRad) {
+      return {
+        x: origin.x + Math.cos(angleRad) * length,
+        y: origin.y + Math.sin(angleRad) * length,
+      };
+    }
+
+    function legSchematicPose(servos) {
+      const byJoint = Object.fromEntries(servos.map((servo) => [jointIndexForServo(servo), servo]));
+      const coxa = clamp(byJoint[1]?.semantic_angle_deg ?? 0, -140, 140);
+      const femur = clamp(byJoint[2]?.semantic_angle_deg ?? 0, -140, 140);
+      const tibia = clamp(byJoint[3]?.semantic_angle_deg ?? 0, -140, 140);
+      const anchor = { x: 36, y: 86 };
+      const coxaLen = 42;
+      const femurLen = 40;
+      const tibiaLen = 46;
+
+      const coxaRad = (-coxa * 0.55) * Math.PI / 180;
+      const femurRad = coxaRad + ((40 - femur * 0.42) * Math.PI / 180);
+      const tibiaRad = femurRad + ((46 - tibia * 0.38) * Math.PI / 180);
+
+      const coxaEnd = pointFrom(anchor, coxaLen, coxaRad);
+      const femurEnd = pointFrom(coxaEnd, femurLen, femurRad);
+      const tibiaEnd = pointFrom(femurEnd, tibiaLen, tibiaRad);
+
+      return { anchor, coxaEnd, femurEnd, tibiaEnd, coxa, femur, tibia };
+    }
+
+    function renderLegSchematicCard(legKey, servos) {
+      const meta = LEG_META[legKey];
+      const pose = legSchematicPose(servos);
+      const onlineCount = servos.filter((servo) => servo.online).length;
+      const stroke = onlineCount === 3 ? '#ff9254' : (onlineCount > 0 ? '#ffc26b' : '#5a6775');
+      const fill = onlineCount === 3 ? 'rgba(255,146,84,0.16)' : 'rgba(255,255,255,0.05)';
+      const mirror = meta.side === "left" ? "mirror" : "";
+
+      return `
+        <article class="leg-schematic-card">
+          <div class="leg-schematic-top">
+            <strong>${meta.label}</strong>
+            <span>${onlineCount}/3 online</span>
+          </div>
+          <svg class="leg-schematic-svg ${mirror}" viewBox="0 0 240 170" aria-label="${meta.label} live pose">
+            <rect x='10' y='24' width='30' height='124' rx='14' fill='${fill}' stroke='rgba(255,255,255,0.08)' />
+            <path d='M ${pose.anchor.x} ${pose.anchor.y} L ${pose.coxaEnd.x.toFixed(1)} ${pose.coxaEnd.y.toFixed(1)} L ${pose.femurEnd.x.toFixed(1)} ${pose.femurEnd.y.toFixed(1)} L ${pose.tibiaEnd.x.toFixed(1)} ${pose.tibiaEnd.y.toFixed(1)}'
+              fill='none' stroke='${stroke}' stroke-width='9' stroke-linecap='round' stroke-linejoin='round' />
+            <circle cx='${pose.anchor.x}' cy='${pose.anchor.y}' r='6.5' fill='#eef3f7' />
+            <circle cx='${pose.coxaEnd.x.toFixed(1)}' cy='${pose.coxaEnd.y.toFixed(1)}' r='5.5' fill='#d9e2ec' />
+            <circle cx='${pose.femurEnd.x.toFixed(1)}' cy='${pose.femurEnd.y.toFixed(1)}' r='5.2' fill='#c8d3de' />
+            <circle cx='${pose.tibiaEnd.x.toFixed(1)}' cy='${pose.tibiaEnd.y.toFixed(1)}' r='5.2' fill='${stroke}' />
+          </svg>
+          <div class="leg-schematic-metrics">
+            <div><strong>${fmt(pose.coxa, 1)}°</strong>coxa</div>
+            <div><strong>${fmt(pose.femur, 1)}°</strong>femur</div>
+            <div><strong>${fmt(pose.tibia, 1)}°</strong>tibia</div>
+          </div>
+        </article>
+      `;
+    }
+
+    function renderLegSchematicGrid(servos) {
+      const grouped = groupServosByLeg(servos);
+      return LEG_SCHEMATIC_ORDER
+        .map((legKey) => renderLegSchematicCard(legKey, grouped[legKey]))
+        .join("");
     }
 
     function updateBadge(ok, text) {
@@ -784,11 +1329,16 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
         document.getElementById("motion-fault").textContent = state.motion_fault ?? "No safety trips latched.";
         document.getElementById("updated-at").textContent = state.updated_at_ms ? new Date(state.updated_at_ms).toLocaleTimeString() : "never";
         updateImuPanel(state.imu);
+        updateManualPanel(state.manual);
 
         const faulted = state.servos.filter((servo) => servo.telemetry && servo.telemetry.faults.length > 0).length;
+        const groupedServos = groupServosByLeg(state.servos);
+        const liveLegs = LEG_ORDER.filter((legKey) => groupedServos[legKey].filter((servo) => servo.online).length === 3).length;
         document.getElementById("fault-summary").textContent = `${faulted} servo(s) reporting status flags`;
+        document.getElementById("leg-schematic-summary").textContent = `${liveLegs}/${LEG_ORDER.length} legs fully live`;
         document.getElementById("robot-note").textContent =
           `${state.motion_mode}: ${state.motion_summary} ${state.online_servo_count}/${state.servos.length} joints responding.`;
+        document.getElementById("leg-schematic-grid").innerHTML = renderLegSchematicGrid(state.servos);
         document.getElementById("servo-map-legs").innerHTML = renderServoMap(state.servos);
 
         updateBadge(

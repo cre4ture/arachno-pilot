@@ -351,12 +351,14 @@ impl RealStsBus {
         servo_id: u8,
         response_len: usize,
     ) -> HalResult<StatusPacket> {
-        let response = self.read_response_frame(servo_id, response_len).map_err(|err| {
-            HalError::Communication(format!(
-                "read from servo {} on {} failed: {}",
-                servo_id, self.port_path, err
-            ))
-        })?;
+        let response = self
+            .read_response_frame(servo_id, response_len)
+            .map_err(|err| {
+                HalError::Communication(format!(
+                    "read from servo {} on {} failed: {}",
+                    servo_id, self.port_path, err
+                ))
+            })?;
         self.parse_received_status_packet(servo_id, &response)
     }
 

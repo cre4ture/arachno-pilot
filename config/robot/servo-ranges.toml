@@ -1,6 +1,6 @@
 robot_name = "arachno-pilot"
 deployment_profile = "host-usb"
-generated_at_ms = 1780561891145
+generated_at_ms = 1780688829531
 output_path = "config/robot/servo-ranges.toml"
 notes = "Ranges were measured in the configured lay-down posture by lowering RAM torque limit, commanding full-range travel, and recording where each servo self-stopped on resistance. Positive direction is lift for femur/tibia and forward for coxa."
 
@@ -19,27 +19,27 @@ name = "front_left"
 joint = "coxa"
 servo_id = 11
 logical_positive_label = "forward"
-logical_negative_end_ticks = 2870
-logical_positive_end_ticks = 2871
-midpoint_ticks = 2871
-upper_seventy_percent_ticks = 2871
-span_ticks = 1
+logical_negative_end_ticks = 1505
+logical_positive_end_ticks = 2872
+midpoint_ticks = 2189
+upper_seventy_percent_ticks = 2462
+span_ticks = 1367
 
 [legs.coxa.positive_limit]
-position_ticks = 2871
+position_ticks = 2872
 detection = "torque_limit_stop"
 load_pct = 100.0
-current_ma = 46
+current_ma = 52
 moving = false
 status_bits = 0
 faults = []
 
 [legs.coxa.negative_limit]
-position_ticks = 2870
+position_ticks = 1505
 detection = "torque_limit_stop"
 load_pct = 10.0
-current_ma = 13
-moving = true
+current_ma = 39
+moving = false
 status_bits = 0
 faults = []
 
@@ -47,23 +47,23 @@ faults = []
 joint = "femur"
 servo_id = 12
 logical_positive_label = "up"
-logical_negative_end_ticks = 2082
-logical_positive_end_ticks = 1145
-midpoint_ticks = 1614
-upper_seventy_percent_ticks = 1426
-span_ticks = 937
+logical_negative_end_ticks = 2140
+logical_positive_end_ticks = 1170
+midpoint_ticks = 1655
+upper_seventy_percent_ticks = 1461
+span_ticks = 970
 
 [legs.femur.positive_limit]
-position_ticks = 1145
+position_ticks = 1170
 detection = "torque_limit_stop"
 load_pct = 10.0
-current_ma = 46
+current_ma = 39
 moving = false
 status_bits = 0
 faults = []
 
 [legs.femur.negative_limit]
-position_ticks = 2082
+position_ticks = 2140
 detection = "torque_limit_stop"
 load_pct = 100.0
 current_ma = 39
@@ -75,23 +75,23 @@ faults = []
 joint = "tibia"
 servo_id = 13
 logical_positive_label = "up"
-logical_negative_end_ticks = 2016
-logical_positive_end_ticks = 3627
-midpoint_ticks = 2822
-upper_seventy_percent_ticks = 3144
-span_ticks = 1611
+logical_negative_end_ticks = 2011
+logical_positive_end_ticks = 3625
+midpoint_ticks = 2818
+upper_seventy_percent_ticks = 3141
+span_ticks = 1614
 
 [legs.tibia.positive_limit]
-position_ticks = 3627
+position_ticks = 3625
 detection = "torque_limit_stop"
 load_pct = 100.0
-current_ma = 39
+current_ma = 46
 moving = false
 status_bits = 0
 faults = []
 
 [legs.tibia.negative_limit]
-position_ticks = 2016
+position_ticks = 2011
 detection = "torque_limit_stop"
 load_pct = 10.0
 current_ma = 39
@@ -106,11 +106,11 @@ name = "middle_left"
 joint = "coxa"
 servo_id = 21
 logical_positive_label = "forward"
-logical_negative_end_ticks = 2828
+logical_negative_end_ticks = 1464
 logical_positive_end_ticks = 2828
-midpoint_ticks = 2828
-upper_seventy_percent_ticks = 2828
-span_ticks = 0
+midpoint_ticks = 2146
+upper_seventy_percent_ticks = 2419
+span_ticks = 1364
 
 [legs.coxa.positive_limit]
 position_ticks = 2828
@@ -122,11 +122,11 @@ status_bits = 0
 faults = []
 
 [legs.coxa.negative_limit]
-position_ticks = 2828
+position_ticks = 1464
 detection = "torque_limit_stop"
 load_pct = 10.0
-current_ma = 26
-moving = true
+current_ma = 46
+moving = false
 status_bits = 0
 faults = []
 
@@ -134,14 +134,14 @@ faults = []
 joint = "femur"
 servo_id = 22
 logical_positive_label = "up"
-logical_negative_end_ticks = 2070
-logical_positive_end_ticks = 1179
-midpoint_ticks = 1625
-upper_seventy_percent_ticks = 1446
-span_ticks = 891
+logical_negative_end_ticks = 2137
+logical_positive_end_ticks = 1176
+midpoint_ticks = 1657
+upper_seventy_percent_ticks = 1464
+span_ticks = 961
 
 [legs.femur.positive_limit]
-position_ticks = 1179
+position_ticks = 1176
 detection = "torque_limit_stop"
 load_pct = 10.0
 current_ma = 39
@@ -150,10 +150,10 @@ status_bits = 0
 faults = []
 
 [legs.femur.negative_limit]
-position_ticks = 2070
+position_ticks = 2137
 detection = "torque_limit_stop"
 load_pct = 100.0
-current_ma = 46
+current_ma = 52
 moving = false
 status_bits = 0
 faults = []
@@ -162,23 +162,23 @@ faults = []
 joint = "tibia"
 servo_id = 23
 logical_positive_label = "up"
-logical_negative_end_ticks = 1983
-logical_positive_end_ticks = 3609
-midpoint_ticks = 2796
-upper_seventy_percent_ticks = 3121
+logical_negative_end_ticks = 1984
+logical_positive_end_ticks = 3610
+midpoint_ticks = 2797
+upper_seventy_percent_ticks = 3122
 span_ticks = 1626
 
 [legs.tibia.positive_limit]
-position_ticks = 3609
+position_ticks = 3610
 detection = "torque_limit_stop"
 load_pct = 100.0
-current_ma = 39
+current_ma = 33
 moving = false
 status_bits = 0
 faults = []
 
 [legs.tibia.negative_limit]
-position_ticks = 1983
+position_ticks = 1984
 detection = "torque_limit_stop"
 load_pct = 10.0
 current_ma = 39
@@ -193,14 +193,14 @@ name = "rear_left"
 joint = "coxa"
 servo_id = 31
 logical_positive_label = "forward"
-logical_negative_end_ticks = 2418
-logical_positive_end_ticks = 2418
-midpoint_ticks = 2418
-upper_seventy_percent_ticks = 2418
-span_ticks = 0
+logical_negative_end_ticks = 1395
+logical_positive_end_ticks = 2415
+midpoint_ticks = 1905
+upper_seventy_percent_ticks = 2109
+span_ticks = 1020
 
 [legs.coxa.positive_limit]
-position_ticks = 2418
+position_ticks = 2415
 detection = "torque_limit_stop"
 load_pct = 100.0
 current_ma = 46
@@ -209,11 +209,11 @@ status_bits = 0
 faults = []
 
 [legs.coxa.negative_limit]
-position_ticks = 2418
+position_ticks = 1395
 detection = "torque_limit_stop"
-load_pct = 100.0
-current_ma = 46
-moving = true
+load_pct = 10.0
+current_ma = 39
+moving = false
 status_bits = 0
 faults = []
 
@@ -221,26 +221,26 @@ faults = []
 joint = "femur"
 servo_id = 32
 logical_positive_label = "up"
-logical_negative_end_ticks = 2086
-logical_positive_end_ticks = 1140
-midpoint_ticks = 1613
-upper_seventy_percent_ticks = 1424
-span_ticks = 946
+logical_negative_end_ticks = 2111
+logical_positive_end_ticks = 1139
+midpoint_ticks = 1625
+upper_seventy_percent_ticks = 1431
+span_ticks = 972
 
 [legs.femur.positive_limit]
-position_ticks = 1140
+position_ticks = 1139
 detection = "torque_limit_stop"
 load_pct = 10.0
-current_ma = 52
+current_ma = 46
 moving = false
 status_bits = 0
 faults = []
 
 [legs.femur.negative_limit]
-position_ticks = 2086
+position_ticks = 2111
 detection = "torque_limit_stop"
 load_pct = 100.0
-current_ma = 46
+current_ma = 33
 moving = false
 status_bits = 0
 faults = []
@@ -249,26 +249,26 @@ faults = []
 joint = "tibia"
 servo_id = 33
 logical_positive_label = "up"
-logical_negative_end_ticks = 1896
-logical_positive_end_ticks = 3618
-midpoint_ticks = 2757
-upper_seventy_percent_ticks = 3101
-span_ticks = 1722
+logical_negative_end_ticks = 1885
+logical_positive_end_ticks = 3619
+midpoint_ticks = 2752
+upper_seventy_percent_ticks = 3099
+span_ticks = 1734
 
 [legs.tibia.positive_limit]
-position_ticks = 3618
+position_ticks = 3619
 detection = "torque_limit_stop"
 load_pct = 100.0
-current_ma = 39
+current_ma = 52
 moving = false
 status_bits = 0
 faults = []
 
 [legs.tibia.negative_limit]
-position_ticks = 1896
+position_ticks = 1885
 detection = "torque_limit_stop"
 load_pct = 10.0
-current_ma = 33
+current_ma = 39
 moving = false
 status_bits = 0
 faults = []
@@ -280,11 +280,11 @@ name = "front_right"
 joint = "coxa"
 servo_id = 41
 logical_positive_label = "forward"
-logical_negative_end_ticks = 1313
+logical_negative_end_ticks = 2706
 logical_positive_end_ticks = 1313
-midpoint_ticks = 1313
-upper_seventy_percent_ticks = 1313
-span_ticks = 0
+midpoint_ticks = 2010
+upper_seventy_percent_ticks = 1731
+span_ticks = 1393
 
 [legs.coxa.positive_limit]
 position_ticks = 1313
@@ -296,11 +296,11 @@ status_bits = 0
 faults = []
 
 [legs.coxa.negative_limit]
-position_ticks = 1313
+position_ticks = 2706
 detection = "torque_limit_stop"
 load_pct = 100.0
-current_ma = 0
-moving = true
+current_ma = 39
+moving = false
 status_bits = 0
 faults = []
 
@@ -308,14 +308,14 @@ faults = []
 joint = "femur"
 servo_id = 42
 logical_positive_label = "up"
-logical_negative_end_ticks = 2043
-logical_positive_end_ticks = 2939
-midpoint_ticks = 2491
-upper_seventy_percent_ticks = 2670
-span_ticks = 896
+logical_negative_end_ticks = 2017
+logical_positive_end_ticks = 3013
+midpoint_ticks = 2515
+upper_seventy_percent_ticks = 2714
+span_ticks = 996
 
 [legs.femur.positive_limit]
-position_ticks = 2939
+position_ticks = 3013
 detection = "torque_limit_stop"
 load_pct = 100.0
 current_ma = 39
@@ -324,10 +324,10 @@ status_bits = 0
 faults = []
 
 [legs.femur.negative_limit]
-position_ticks = 2043
+position_ticks = 2017
 detection = "torque_limit_stop"
 load_pct = 10.0
-current_ma = 52
+current_ma = 33
 moving = false
 status_bits = 0
 faults = []
@@ -336,26 +336,26 @@ faults = []
 joint = "tibia"
 servo_id = 43
 logical_positive_label = "up"
-logical_negative_end_ticks = 2177
-logical_positive_end_ticks = 514
-midpoint_ticks = 1346
+logical_negative_end_ticks = 2174
+logical_positive_end_ticks = 516
+midpoint_ticks = 1345
 upper_seventy_percent_ticks = 1013
-span_ticks = 1663
+span_ticks = 1658
 
 [legs.tibia.positive_limit]
-position_ticks = 514
+position_ticks = 516
 detection = "torque_limit_stop"
 load_pct = 10.0
-current_ma = 39
+current_ma = 52
 moving = false
 status_bits = 0
 faults = []
 
 [legs.tibia.negative_limit]
-position_ticks = 2177
+position_ticks = 2174
 detection = "torque_limit_stop"
 load_pct = 100.0
-current_ma = 39
+current_ma = 52
 moving = false
 status_bits = 0
 faults = []
@@ -367,27 +367,27 @@ name = "middle_right"
 joint = "coxa"
 servo_id = 51
 logical_positive_label = "forward"
-logical_negative_end_ticks = 1266
+logical_negative_end_ticks = 2654
 logical_positive_end_ticks = 1266
-midpoint_ticks = 1266
-upper_seventy_percent_ticks = 1266
-span_ticks = 0
+midpoint_ticks = 1960
+upper_seventy_percent_ticks = 1682
+span_ticks = 1388
 
 [legs.coxa.positive_limit]
 position_ticks = 1266
 detection = "torque_limit_stop"
 load_pct = 10.0
-current_ma = 39
+current_ma = 52
 moving = false
 status_bits = 0
 faults = []
 
 [legs.coxa.negative_limit]
-position_ticks = 1266
+position_ticks = 2654
 detection = "torque_limit_stop"
 load_pct = 100.0
-current_ma = 20
-moving = true
+current_ma = 46
+moving = false
 status_bits = 0
 faults = []
 
@@ -395,14 +395,14 @@ faults = []
 joint = "femur"
 servo_id = 52
 logical_positive_label = "up"
-logical_negative_end_ticks = 2030
-logical_positive_end_ticks = 2954
-midpoint_ticks = 2492
-upper_seventy_percent_ticks = 2677
-span_ticks = 924
+logical_negative_end_ticks = 2017
+logical_positive_end_ticks = 2940
+midpoint_ticks = 2479
+upper_seventy_percent_ticks = 2663
+span_ticks = 923
 
 [legs.femur.positive_limit]
-position_ticks = 2954
+position_ticks = 2940
 detection = "torque_limit_stop"
 load_pct = 100.0
 current_ma = 39
@@ -411,7 +411,7 @@ status_bits = 0
 faults = []
 
 [legs.femur.negative_limit]
-position_ticks = 2030
+position_ticks = 2017
 detection = "torque_limit_stop"
 load_pct = 10.0
 current_ma = 39
@@ -423,14 +423,14 @@ faults = []
 joint = "tibia"
 servo_id = 53
 logical_positive_label = "up"
-logical_negative_end_ticks = 2113
-logical_positive_end_ticks = 474
-midpoint_ticks = 1294
-upper_seventy_percent_ticks = 966
-span_ticks = 1639
+logical_negative_end_ticks = 2108
+logical_positive_end_ticks = 472
+midpoint_ticks = 1290
+upper_seventy_percent_ticks = 963
+span_ticks = 1636
 
 [legs.tibia.positive_limit]
-position_ticks = 474
+position_ticks = 472
 detection = "torque_limit_stop"
 load_pct = 10.0
 current_ma = 39
@@ -439,10 +439,10 @@ status_bits = 0
 faults = []
 
 [legs.tibia.negative_limit]
-position_ticks = 2113
+position_ticks = 2108
 detection = "torque_limit_stop"
 load_pct = 100.0
-current_ma = 39
+current_ma = 46
 moving = false
 status_bits = 0
 faults = []
@@ -454,14 +454,14 @@ name = "rear_right"
 joint = "coxa"
 servo_id = 61
 logical_positive_label = "forward"
-logical_negative_end_ticks = 1424
-logical_positive_end_ticks = 1424
-midpoint_ticks = 1424
-upper_seventy_percent_ticks = 1424
-span_ticks = 0
+logical_negative_end_ticks = 2745
+logical_positive_end_ticks = 1423
+midpoint_ticks = 2084
+upper_seventy_percent_ticks = 1820
+span_ticks = 1322
 
 [legs.coxa.positive_limit]
-position_ticks = 1424
+position_ticks = 1423
 detection = "torque_limit_stop"
 load_pct = 10.0
 current_ma = 46
@@ -470,11 +470,11 @@ status_bits = 0
 faults = []
 
 [legs.coxa.negative_limit]
-position_ticks = 1424
+position_ticks = 2745
 detection = "torque_limit_stop"
-load_pct = 10.0
+load_pct = 100.0
 current_ma = 46
-moving = true
+moving = false
 status_bits = 0
 faults = []
 
@@ -482,23 +482,23 @@ faults = []
 joint = "femur"
 servo_id = 62
 logical_positive_label = "up"
-logical_negative_end_ticks = 2031
-logical_positive_end_ticks = 2918
-midpoint_ticks = 2475
-upper_seventy_percent_ticks = 2652
-span_ticks = 887
+logical_negative_end_ticks = 2041
+logical_positive_end_ticks = 2906
+midpoint_ticks = 2474
+upper_seventy_percent_ticks = 2647
+span_ticks = 865
 
 [legs.femur.positive_limit]
-position_ticks = 2918
+position_ticks = 2906
 detection = "torque_limit_stop"
 load_pct = 100.0
-current_ma = 52
+current_ma = 39
 moving = false
 status_bits = 0
 faults = []
 
 [legs.femur.negative_limit]
-position_ticks = 2031
+position_ticks = 2041
 detection = "torque_limit_stop"
 load_pct = 10.0
 current_ma = 46
@@ -510,26 +510,26 @@ faults = []
 joint = "tibia"
 servo_id = 63
 logical_positive_label = "up"
-logical_negative_end_ticks = 2133
-logical_positive_end_ticks = 512
-midpoint_ticks = 1323
-upper_seventy_percent_ticks = 998
-span_ticks = 1621
+logical_negative_end_ticks = 2128
+logical_positive_end_ticks = 511
+midpoint_ticks = 1320
+upper_seventy_percent_ticks = 996
+span_ticks = 1617
 
 [legs.tibia.positive_limit]
-position_ticks = 512
+position_ticks = 511
 detection = "torque_limit_stop"
 load_pct = 10.0
-current_ma = 39
+current_ma = 46
 moving = false
 status_bits = 0
 faults = []
 
 [legs.tibia.negative_limit]
-position_ticks = 2133
+position_ticks = 2128
 detection = "torque_limit_stop"
 load_pct = 100.0
-current_ma = 46
+current_ma = 52
 moving = false
 status_bits = 0
 faults = []
