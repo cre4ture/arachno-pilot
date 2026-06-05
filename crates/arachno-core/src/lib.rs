@@ -15,6 +15,8 @@ pub struct RobotConfig {
     #[serde(default)]
     pub servo_store: Option<ServoStoreConfig>,
     #[serde(default)]
+    pub servo_eeprom: ServoEepromConfig,
+    #[serde(default)]
     pub bus: BusConfig,
     pub camera: CameraConfig,
     #[serde(default)]
@@ -44,6 +46,27 @@ pub struct RobotMeta {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServoStoreConfig {
     pub path: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ServoEepromConfig {
+    #[serde(default)]
+    pub entries: Vec<ServoEepromEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServoEepromEntry {
+    pub name: String,
+    pub address: u8,
+    pub width: ServoRegisterWidth,
+    pub value: u16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ServoRegisterWidth {
+    U8,
+    U16,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -172,6 +195,8 @@ pub struct LegConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SharedServoConfigFile {
     #[serde(default)]
+    pub servo_eeprom: Option<ServoEepromConfig>,
+    #[serde(default)]
     pub bus: Option<BusConfig>,
     #[serde(default)]
     pub safety: Option<SafetyConfig>,
@@ -213,6 +238,12 @@ impl Default for FeetechBusConfig {
     }
 }
 
+impl Default for ServoRegisterWidth {
+    fn default() -> Self {
+        Self::U8
+    }
+}
+
 impl Default for SafetyConfig {
     fn default() -> Self {
         Self {
@@ -238,6 +269,9 @@ impl RobotConfig {
             }
             if let Some(bus) = servo_file.bus {
                 config.bus = bus;
+            }
+            if let Some(servo_eeprom) = servo_file.servo_eeprom {
+                config.servo_eeprom = servo_eeprom;
             }
             if let Some(safety) = servo_file.safety {
                 config.safety = safety;
@@ -609,6 +643,18 @@ port = "/dev/ttyACM-test"
 baud_rate = 1000000
 telemetry_stride = 4
 
+[[servo_eeprom.entries]]
+name = "status_return_level"
+address = 8
+width = "u8"
+value = 1
+
+[[servo_eeprom.entries]]
+name = "max_torque_limit"
+address = 16
+width = "u16"
+value = 1000
+
 [safety]
 max_body_pitch_deg = 18.0
 max_body_roll_deg = 17.0
@@ -644,6 +690,9 @@ tibia_lift_sign = 1
 
         assert_eq!(config.bus.feetech.port, "/dev/ttyACM-test");
         assert_eq!(config.bus.feetech.telemetry_stride, 4);
+        assert_eq!(config.servo_eeprom.entries.len(), 2);
+        assert_eq!(config.servo_eeprom.entries[0].address, 8);
+        assert_eq!(config.servo_eeprom.entries[1].value, 1000);
         assert_eq!(config.safety.min_bus_voltage_v, 6.1);
         assert_eq!(config.locomotion.command_hz, 25);
         assert_eq!(config.locomotion.stand_up.duration_seconds, 12.0);

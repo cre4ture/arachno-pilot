@@ -11,7 +11,7 @@ Rust-first starter workspace for a hexapod that can run either on a tethered Lin
 ## Workspace map
 
 - `apps/arachno-brain`: hardware-owning runtime that now serves telemetry, camera, dashboard, `lay_down`, `stand_up`, `stand`, and `slow_walk` from one process.
-- `apps/arachno-calibrate`: servo ID, zero-point, range-scan, pose-check, and pose-suggestion tooling.
+- `apps/arachno-calibrate`: servo ID, EEPROM-profile, range-scan, pose-check, and pose-suggestion tooling.
 - `apps/arachno-fw-info`: host-side firmware version and capability query for the RP2040 IMU bridge.
 - `apps/arachno-probe`: host-device reachability checks for configured camera and servo bridge paths.
 - `crates/arachno-core`: robot config, gait primitives, and shared domain logic.
@@ -26,7 +26,7 @@ Rust-first starter workspace for a hexapod that can run either on a tethered Lin
 - `native/`: narrow C++ bridge area for TensorRT, Argus, or vendor SDK shims.
 - `firmware/`: embedded Rust workspace for microcontroller-side bridge firmware.
 - `config/robot`: robot and hardware configuration files.
-- `config/robot/servo-config.toml`: single source of truth for Feetech bus settings, safety limits, locomotion tuning, servo IDs, stored poses, and joint direction signs.
+- `config/robot/servo-config.toml`: single source of truth for Feetech bus settings, expected EEPROM values, safety limits, locomotion tuning, servo IDs, stored poses, and joint direction signs.
 - `docs/architecture.md`: the recommended runtime and integration model.
 - `docs/roadmap.md`: staged locomotion and learning roadmap for the spider.
 
@@ -44,16 +44,20 @@ The current development plan is documented in [docs/roadmap.md](/home/uli/rust-d
 
 Implemented now:
 
+- `apply-eeprom`: temporarily clears the servo EEPROM `Lock Mark` (`0x37`), writes the configured persistent profile, verifies every entry by readback, then restores the lock to `1`
+- `verify-eeprom`: performs the same EEPROM profile validation without writing any values
 - `lay-down`: moves into a known stretched rest pose
 - `stand-up`: raises the femurs first, lowers the tibias to replant the feet, then lifts the body with coordinated femur+tibia motion before aligning the coxae
 - `stand`: settles into and holds the configured stand-reference pose
 - `slow-walk`: a cautious tripod gait that applies small offsets around the measured standing pose
 - `sense-ranges`: lowers torque limit, drives tibia/femur/coxa toward full-range endpoints, and writes the self-stopped travel envelopes to TOML
+  It validates the configured EEPROM profile first and refuses to start the scan if any servo does not match.
   Use `--skip-initial-lay-down` to resume a partially completed scan from the robot's current posture.
   The run also emits a mixed workflow + low-level STS trace log next to the output TOML by default, or to a custom path via `--trace-output`.
 - `check-poses`: compares configured `stand_reference` and `lay-down` ticks in `servo-config.toml` against measured bounds from `servo-ranges.toml`
 - `suggest-poses`: generates candidate `stand_reference` and `lay-down` ticks from the measured ranges without changing runtime behavior
 - shared hard safety checks for roll, pitch, bus voltage, and temperature, with servo load still exposed in telemetry
+- `arachno-brain` validates the configured EEPROM profile on startup and refuses to start if any servo does not match
 
 Next up:
 
@@ -104,6 +108,8 @@ Build helpers:
 ```bash
 cargo run -p arachno-brain -- --config config/robot/default.toml --listen 127.0.0.1:4000
 cargo run -p arachno-calibrate -- --config config/robot/default.toml
+cargo run -p arachno-calibrate -- --config config/robot/host-usb.toml --mode apply-eeprom
+cargo run -p arachno-calibrate -- --config config/robot/host-usb.toml --mode verify-eeprom
 cargo run -p arachno-calibrate -- --config config/robot/host-usb.toml --mode sense-ranges --output config/robot/servo-ranges.toml
 cargo run -p arachno-calibrate -- --config config/robot/host-usb.toml --mode sense-ranges --output config/robot/servo-ranges.toml --trace-output /tmp/servo-ranges.trace.log
 cargo run -p arachno-calibrate -- --config config/robot/host-usb.toml --mode check-poses --ranges config/robot/servo-ranges.toml
@@ -120,3 +126,5 @@ cargo check --manifest-path firmware/Cargo.toml -p rp2040-imu-bridge --target th
 ```
 
 `arachno-brain` now owns the live hardware-facing telemetry API at `/api/state`, the camera route at `/camera.mjpg`, the rich dashboard UI at `/` and `/dashboard` when started with `--dashboard`, and the first hardware motion modes through `--mode telemetry`, `--mode lay-down`, `--mode stand-up`, `--mode stand`, and `--mode slow-walk`.
+
+Servo EEPROM policy lives in `config/robot/servo-config.toml` under `[[servo_eeprom.entries]]`. Only `arachno-calibrate --mode apply-eeprom` writes those persistent registers. Normal runtime writes stay on a RAM-only whitelist in the STS driver, and `arachno-brain` validates the configured EEPROM values before it starts the control worker.

@@ -7,8 +7,12 @@ use std::{
 };
 
 use anyhow::{Context, anyhow, bail};
-use arachno_core::{LegConfig, RobotConfig, TripodGait};
-use arachno_feetech_sts::RealStsBus;
+use arachno_core::{LegConfig, RobotConfig, ServoEepromEntry, TripodGait};
+use arachno_feetech_sts::{
+    LOCK_MARK, RealStsBus, validate_servo_eeprom_entry as validate_bus_servo_eeprom_entry,
+    validate_servo_eeprom_entry_value as validate_bus_servo_eeprom_entry_value,
+    validate_servo_eeprom_profile as validate_bus_servo_eeprom_profile,
+};
 use arachno_hal::{ServoBus, enable_torque_on_current_position, sync_current_pose};
 use arachno_msg::{JointCommand, ServoTelemetry};
 use clap::{Parser, ValueEnum};
@@ -30,6 +34,8 @@ const TORQUE_LIMIT_VERIFY_ATTEMPTS: usize = 6;
 const TORQUE_LIMIT_READBACK_ATTEMPTS: usize = 3;
 const TORQUE_LIMIT_VERIFY_SLEEP_MS: u64 = 30;
 const TORQUE_LIMIT_APPLY_SLEEP_MS: u64 = 20;
+const EEPROM_WRITE_SETTLE_MS: u64 = 80;
+const EEPROM_LOCK_SETTLE_MS: u64 = 50;
 const POSITION_SETTLE_CONFIRM_CYCLES: u8 = 2;
 const PHASE_SETTLE_SLEEP_MS: u64 = 250;
 const POSE_EDGE_WARNING_MIN_TICKS: u16 = 20;
@@ -41,6 +47,8 @@ const LAY_DOWN_INSET_RATIO: f32 = 0.08;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum CalibrateMode {
     Plan,
+    ApplyEeprom,
+    VerifyEeprom,
     SenseRanges,
     CheckPoses,
     SuggestPoses,
@@ -195,6 +203,8 @@ fn main() -> anyhow::Result<()> {
 
     match args.mode {
         CalibrateMode::Plan => print_plan(&config),
+        CalibrateMode::ApplyEeprom => apply_eeprom(&config)?,
+        CalibrateMode::VerifyEeprom => verify_eeprom(&config)?,
         CalibrateMode::SenseRanges => sense_ranges(&config, &args)?,
         CalibrateMode::CheckPoses => check_poses(&config, &args)?,
         CalibrateMode::SuggestPoses => suggest_poses(&config, &args)?,
@@ -207,6 +217,10 @@ fn print_plan(config: &RobotConfig) {
     println!("calibration plan for {}", config.robot.name);
     println!("deployment profile: {}", config.deployment.profile);
     println!("servo bus: {}", config.bus.feetech.port);
+    println!(
+        "eeprom profile entries: {}",
+        config.servo_eeprom.entries.len()
+    );
 
     for leg in &config.legs {
         println!(
@@ -214,6 +228,198 @@ fn print_plan(config: &RobotConfig) {
             leg.name, leg.coxa_servo_id, leg.femur_servo_id, leg.tibia_servo_id
         );
     }
+}
+
+fn apply_eeprom(config: &RobotConfig) -> anyhow::Result<()> {
+    if config.servo_eeprom.entries.is_empty() {
+        bail!("config does not define any servo EEPROM entries");
+    }
+
+    let servo_ids = config.all_servo_ids();
+    let mut bus = RealStsBus::open(
+        config.bus.feetech.port.clone(),
+        config.bus.feetech.baud_rate,
+        servo_ids.clone(),
+    )
+    .with_context(|| format!("failed to open servo bus {}", config.bus.feetech.port))?;
+
+    println!(
+        "applying EEPROM profile with {} entries to {} servos via {}",
+        config.servo_eeprom.entries.len(),
+        servo_ids.len(),
+        config.bus.feetech.port
+    );
+    info!(
+        servo_count = servo_ids.len(),
+        entry_count = config.servo_eeprom.entries.len(),
+        "applying persistent servo EEPROM profile"
+    );
+
+    println!(
+        "unlocking EEPROM writes via {} (0x{:X})",
+        LOCK_MARK.name, LOCK_MARK.address
+    );
+    for &servo_id in &servo_ids {
+        bus.set_eeprom_write_lock(servo_id, false)
+            .with_context(|| format!("failed to unlock EEPROM writes on servo {}", servo_id))?;
+    }
+    thread::sleep(Duration::from_millis(EEPROM_LOCK_SETTLE_MS));
+
+    let apply_result = (|| -> anyhow::Result<()> {
+        for entry in &config.servo_eeprom.entries {
+            println!(
+                "writing EEPROM {} at address {} as {:?} = {}",
+                entry.name, entry.address, entry.width, entry.value
+            );
+            info!(
+                name = %entry.name,
+                address = entry.address,
+                width = ?entry.width,
+                value = entry.value,
+                "applying EEPROM entry"
+            );
+            for &servo_id in &servo_ids {
+                write_and_verify_eeprom_entry(&mut bus, servo_id, entry).with_context(|| {
+                    format!(
+                        "failed to apply EEPROM entry {} to servo {}",
+                        entry.name, servo_id
+                    )
+                })?;
+            }
+        }
+        Ok(())
+    })();
+
+    println!(
+        "relocking EEPROM writes via {} (0x{:X})",
+        LOCK_MARK.name, LOCK_MARK.address
+    );
+    let relock_result = (|| -> anyhow::Result<()> {
+        for &servo_id in &servo_ids {
+            bus.set_eeprom_write_lock(servo_id, true).with_context(|| {
+                format!("failed to restore EEPROM write lock on servo {}", servo_id)
+            })?;
+        }
+        thread::sleep(Duration::from_millis(EEPROM_LOCK_SETTLE_MS));
+        Ok(())
+    })();
+
+    if let Err(relock_err) = relock_result {
+        return match apply_result {
+            Ok(()) => Err(relock_err),
+            Err(apply_err) => Err(apply_err.context(format!(
+                "also failed to restore EEPROM write lock: {relock_err:#}"
+            ))),
+        };
+    }
+
+    apply_result?;
+
+    println!("EEPROM profile applied successfully");
+    info!("persistent servo EEPROM profile applied successfully");
+    Ok(())
+}
+
+fn verify_eeprom(config: &RobotConfig) -> anyhow::Result<()> {
+    if config.servo_eeprom.entries.is_empty() {
+        bail!("config does not define any servo EEPROM entries");
+    }
+
+    let servo_ids = config.all_servo_ids();
+    let mut bus = RealStsBus::open(
+        config.bus.feetech.port.clone(),
+        config.bus.feetech.baud_rate,
+        servo_ids.clone(),
+    )
+    .with_context(|| format!("failed to open servo bus {}", config.bus.feetech.port))?;
+
+    println!(
+        "verifying EEPROM profile with {} entries on {} servos via {}",
+        config.servo_eeprom.entries.len(),
+        servo_ids.len(),
+        config.bus.feetech.port
+    );
+    for entry in &config.servo_eeprom.entries {
+        println!(
+            "verifying EEPROM {} at address {} as {:?} = {}",
+            entry.name, entry.address, entry.width, entry.value
+        );
+        for &servo_id in &servo_ids {
+            let observed = validate_bus_servo_eeprom_entry_value(&mut bus, servo_id, entry)
+                .with_context(|| {
+                    format!(
+                        "failed EEPROM validation for entry {} on servo {}",
+                        entry.name, servo_id
+                    )
+                })?;
+            println!(
+                "  servo {}: verified {} (0x{:X}) = {}",
+                servo_id, entry.name, entry.address, observed
+            );
+        }
+    }
+
+    println!("EEPROM profile verification passed");
+
+    Ok(())
+}
+
+fn write_and_verify_eeprom_entry(
+    bus: &mut RealStsBus,
+    servo_id: u8,
+    entry: &ServoEepromEntry,
+) -> anyhow::Result<()> {
+    match entry.width {
+        arachno_core::ServoRegisterWidth::U8 => {
+            let value = u8::try_from(entry.value).with_context(|| {
+                format!(
+                    "EEPROM entry {} value {} does not fit into u8",
+                    entry.name, entry.value
+                )
+            })?;
+            bus.write_persistent_register_u8(servo_id, entry.address, value)?;
+        }
+        arachno_core::ServoRegisterWidth::U16 => {
+            bus.write_persistent_register_u16(servo_id, entry.address, entry.value)?;
+        }
+    }
+    thread::sleep(Duration::from_millis(EEPROM_WRITE_SETTLE_MS));
+    validate_bus_servo_eeprom_entry(bus, servo_id, entry).with_context(|| {
+        format!(
+            "failed to verify EEPROM entry {} on servo {}",
+            entry.name, servo_id
+        )
+    })?;
+
+    Ok(())
+}
+
+fn validate_servo_eeprom_profile(
+    bus: &mut RealStsBus,
+    servo_ids: &[u8],
+    entries: &[ServoEepromEntry],
+) -> anyhow::Result<()> {
+    if entries.is_empty() {
+        return Ok(());
+    }
+
+    println!(
+        "validating EEPROM profile with {} entries on {} servos",
+        entries.len(),
+        servo_ids.len()
+    );
+    info!(
+        servo_count = servo_ids.len(),
+        entry_count = entries.len(),
+        "validating persistent servo EEPROM profile"
+    );
+
+    validate_bus_servo_eeprom_profile(bus, servo_ids, entries)
+        .context("persistent servo EEPROM profile validation failed")?;
+
+    println!("EEPROM profile validation passed");
+    info!("persistent servo EEPROM profile validation passed");
+    Ok(())
 }
 
 fn check_poses(config: &RobotConfig, args: &Args) -> anyhow::Result<()> {
@@ -338,6 +544,9 @@ fn sense_ranges(config: &RobotConfig, args: &Args) -> anyhow::Result<()> {
         servo_ids.clone(),
     )
     .with_context(|| format!("failed to open servo bus {}", config.bus.feetech.port))?;
+
+    validate_servo_eeprom_profile(&mut bus, &servo_ids, &config.servo_eeprom.entries)
+        .context("failed EEPROM validation before range sensing")?;
 
     bus.enable_torque(false)
         .context("failed to disable torque for range sensing")?;

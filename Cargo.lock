@@ -136,6 +136,7 @@ dependencies = [
 name = "arachno-feetech-sts"
 version = "0.1.0"
 dependencies = [
+ "arachno-core",
  "arachno-hal",
  "arachno-msg",
  "serialport",

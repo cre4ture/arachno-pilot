@@ -6,6 +6,18 @@ port = "/dev/serial/by-id/usb-1a86_USB_Single_Serial_5B79033507-if00"
 baud_rate = 1000000
 telemetry_stride = 6
 
+[[servo_eeprom.entries]]
+name = "status_return_level"
+address = 8
+width = "u8"
+value = 1
+
+[[servo_eeprom.entries]]
+name = "max_torque_limit"
+address = 16
+width = "u16"
+value = 400
+
 [safety]
 max_body_pitch_deg = 20.0
 max_body_roll_deg = 20.0

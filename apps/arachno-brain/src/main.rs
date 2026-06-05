@@ -13,7 +13,9 @@ mod dashboard_page;
 use anyhow::Context;
 use arachno_camera::RobotCamera;
 use arachno_core::{CameraBackend, RobotConfig, TripodGait};
-use arachno_feetech_sts::RealStsBus;
+use arachno_feetech_sts::{
+    RealStsBus, validate_servo_eeprom_profile as validate_bus_servo_eeprom_profile,
+};
 use arachno_hal::{CameraSource, ImuSource, ServoBus};
 use arachno_imu_host::{DeviceInfoProbe, SensorKind, UsbImuBridge};
 use arachno_msg::{ImuTelemetry, JointCommand, ServoTelemetry};
@@ -476,11 +478,42 @@ impl MotionRuntime {
     }
 }
 
+fn validate_servo_eeprom_profile(config: &RobotConfig) -> anyhow::Result<()> {
+    if config.servo_eeprom.entries.is_empty() {
+        return Ok(());
+    }
+
+    let servo_ids = config.all_servo_ids();
+    let mut bus = RealStsBus::open(
+        config.bus.feetech.port.clone(),
+        config.bus.feetech.baud_rate,
+        servo_ids.clone(),
+    )
+    .with_context(|| {
+        format!(
+            "failed to open servo bus {} for EEPROM validation",
+            config.bus.feetech.port
+        )
+    })?;
+
+    validate_bus_servo_eeprom_profile(&mut bus, &servo_ids, &config.servo_eeprom.entries)
+        .context("persistent servo EEPROM profile validation failed")?;
+
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     let config = RobotConfig::load_from_path(&args.config)
         .with_context(|| format!("failed to load {}", args.config.display()))?;
+    validate_servo_eeprom_profile(&config)?;
+    if !config.servo_eeprom.entries.is_empty() {
+        println!(
+            "servo_eeprom: validated {} configured persistent register values",
+            config.servo_eeprom.entries.len()
+        );
+    }
 
     let shared = Arc::new(RwLock::new(TelemetryState::from_config(&config, args.mode)));
     spawn_control_worker(shared.clone(), config.clone(), args.mode, args.walk_seconds);

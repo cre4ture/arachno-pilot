@@ -4,16 +4,19 @@ use std::{
     time::Duration,
 };
 
+use arachno_core::{ServoEepromEntry, ServoRegisterWidth};
 use arachno_hal::{HalError, HalResult, ServoBus};
 use arachno_msg::{JointCommand, ServoTelemetry};
+pub use registers::{
+    GOAL_POSITION, KNOWN_REGISTERS, LOCK_MARK, MAX_TORQUE_LIMIT, PRESENT_TELEMETRY, RegisterAccess,
+    RegisterArea, STATUS_RETURN_LEVEL, ServoRegister, TORQUE_ENABLE, TORQUE_LIMIT, lookup_register,
+};
+use registers::{RegisterAccess::ReadWrite, RegisterArea::Eeprom};
 use serialport::{ClearBuffer, SerialPort};
 use tracing::trace;
 
-const ADDR_TORQUE_ENABLE: u8 = 40;
-const ADDR_GOAL_POSITION: u8 = 42;
-const ADDR_TORQUE_LIMIT: u8 = 48;
-const ADDR_PRESENT_TELEMETRY: u8 = 56;
-const PRESENT_TELEMETRY_LEN: u8 = 15;
+mod registers;
+
 const DEFAULT_TIMEOUT_MS: u64 = 50;
 
 #[repr(u8)]
@@ -75,14 +78,17 @@ impl RealStsBus {
     }
 
     pub fn read_feedback_tolerant(&mut self, servo_id: u8) -> HalResult<ServoTelemetry> {
-        let response =
-            self.read_register_block(servo_id, ADDR_PRESENT_TELEMETRY, PRESENT_TELEMETRY_LEN)?;
+        let response = self.read_register_block(
+            servo_id,
+            PRESENT_TELEMETRY.address,
+            PRESENT_TELEMETRY.width_bytes,
+        )?;
 
-        if response.params.len() < PRESENT_TELEMETRY_LEN as usize {
+        if response.params.len() < PRESENT_TELEMETRY.width_bytes as usize {
             return Err(HalError::Communication(format!(
                 "servo {} telemetry response too short: expected {} bytes, got {}",
                 servo_id,
-                PRESENT_TELEMETRY_LEN,
+                PRESENT_TELEMETRY.width_bytes,
                 response.params.len()
             )));
         }
@@ -124,15 +130,24 @@ impl RealStsBus {
         Ok(telemetry)
     }
 
-    fn write_byte_no_response(&mut self, servo_id: u8, address: u8, value: u8) -> HalResult<()> {
-        let packet = pack_instruction(servo_id, Instruction::Write, &[address, value]);
+    fn write_register_no_response(
+        &mut self,
+        servo_id: u8,
+        address: u8,
+        params: &[u8],
+        scope: &str,
+    ) -> HalResult<()> {
+        let mut instruction_params = Vec::with_capacity(1 + params.len());
+        instruction_params.push(address);
+        instruction_params.extend_from_slice(params);
+        let packet = pack_instruction(servo_id, Instruction::Write, &instruction_params);
         trace!(
             target: "arachno_feetech_sts::bus",
             servo_id,
             address,
-            value,
+            scope,
             packet = %format_bytes_hex(&packet),
-            "tx write-byte"
+            "tx write-register"
         );
         let _ = self.port.clear(ClearBuffer::Input);
         if let Err(err) = self.port.write_all(&packet) {
@@ -140,9 +155,9 @@ impl RealStsBus {
                 target: "arachno_feetech_sts::bus",
                 servo_id,
                 address,
-                value,
+                scope,
                 error = %err,
-                "tx-error write-byte"
+                "tx-error write-register"
             );
             return Err(HalError::Communication(format!(
                 "write to servo {} failed: {err}",
@@ -154,9 +169,9 @@ impl RealStsBus {
                 target: "arachno_feetech_sts::bus",
                 servo_id,
                 address,
-                value,
+                scope,
                 error = %err,
-                "tx-error flush-byte"
+                "tx-error flush-register"
             );
             return Err(HalError::Communication(format!(
                 "flush to servo {} failed: {err}",
@@ -167,67 +182,88 @@ impl RealStsBus {
         Ok(())
     }
 
-    fn write_word_no_response(&mut self, servo_id: u8, address: u8, value: u16) -> HalResult<()> {
-        let [low, high] = value.to_le_bytes();
-        let packet = pack_instruction(servo_id, Instruction::Write, &[address, low, high]);
-        trace!(
-            target: "arachno_feetech_sts::bus",
-            servo_id,
-            address,
-            value,
-            packet = %format_bytes_hex(&packet),
-            "tx write-word"
-        );
-        let _ = self.port.clear(ClearBuffer::Input);
-        if let Err(err) = self.port.write_all(&packet) {
-            trace!(
-                target: "arachno_feetech_sts::bus",
-                servo_id,
-                address,
-                value,
-                error = %err,
-                "tx-error write-word"
-            );
-            return Err(HalError::Communication(format!(
-                "write to servo {} failed: {err}",
-                servo_id
-            )));
-        }
-        if let Err(err) = self.port.flush() {
-            trace!(
-                target: "arachno_feetech_sts::bus",
-                servo_id,
-                address,
-                value,
-                error = %err,
-                "tx-error flush-word"
-            );
-            return Err(HalError::Communication(format!(
-                "flush to servo {} failed: {err}",
-                servo_id
-            )));
-        }
-        let _ = self.port.clear(ClearBuffer::Input);
-        Ok(())
+    fn write_runtime_byte(&mut self, servo_id: u8, address: u8, value: u8) -> HalResult<()> {
+        ensure_runtime_write_allowed(address, 1)?;
+        self.write_register_no_response(servo_id, address, &[value], "runtime")
     }
 
-    // Attention: use with caution as changing torque limits while the robot is in the air can cause sudden motion when the torque limit takes effect.
-    // It's best to call this right after setting the desired position for all servos with sync_write_positions, and avoid calling it while the robot is in the air.
-    pub fn set_servo_torque_limit(&mut self, servo_id: u8, torque_limit: u16) -> HalResult<()> {
-        self.write_word_no_response(servo_id, ADDR_TORQUE_LIMIT, torque_limit)
+    fn write_runtime_word(&mut self, servo_id: u8, address: u8, value: u16) -> HalResult<()> {
+        ensure_runtime_write_allowed(address, 2)?;
+        self.write_register_no_response(servo_id, address, &value.to_le_bytes(), "runtime")
     }
 
-    pub fn read_servo_torque_limit(&mut self, servo_id: u8) -> HalResult<u16> {
-        let response = self.read_register_block(servo_id, ADDR_TORQUE_LIMIT, 2)?;
+    pub fn write_persistent_register_u8(
+        &mut self,
+        servo_id: u8,
+        address: u8,
+        value: u8,
+    ) -> HalResult<()> {
+        ensure_persistent_write_allowed(address, 1)?;
+        self.write_register_no_response(servo_id, address, &[value], "persistent")
+    }
+
+    pub fn write_persistent_register_u16(
+        &mut self,
+        servo_id: u8,
+        address: u8,
+        value: u16,
+    ) -> HalResult<()> {
+        ensure_persistent_write_allowed(address, 2)?;
+        self.write_register_no_response(servo_id, address, &value.to_le_bytes(), "persistent")
+    }
+
+    pub fn read_register_u8(&mut self, servo_id: u8, address: u8) -> HalResult<u8> {
+        let response = self.read_register_block(servo_id, address, 1)?;
+        response.params.first().copied().ok_or_else(|| {
+            HalError::Communication(format!(
+                "servo {} register {} response too short: expected 1 byte, got {}",
+                servo_id,
+                address,
+                response.params.len()
+            ))
+        })
+    }
+
+    pub fn read_register_u16(&mut self, servo_id: u8, address: u8) -> HalResult<u16> {
+        let response = self.read_register_block(servo_id, address, 2)?;
         if response.params.len() < 2 {
             return Err(HalError::Communication(format!(
-                "servo {} torque-limit response too short: expected 2 bytes, got {}",
+                "servo {} register {} response too short: expected 2 bytes, got {}",
                 servo_id,
+                address,
                 response.params.len()
             )));
         }
 
         Ok(u16::from_le_bytes([response.params[0], response.params[1]]))
+    }
+
+    // Attention: use with caution as changing torque limits while the robot is in the air can cause sudden motion when the torque limit takes effect.
+    // It's best to call this right after setting the desired position for all servos with sync_write_positions, and avoid calling it while the robot is in the air.
+    pub fn set_servo_torque_limit(&mut self, servo_id: u8, torque_limit: u16) -> HalResult<()> {
+        self.write_runtime_word(servo_id, TORQUE_LIMIT.address, torque_limit)
+    }
+
+    pub fn read_servo_torque_limit(&mut self, servo_id: u8) -> HalResult<u16> {
+        self.read_register_u16(servo_id, TORQUE_LIMIT.address)
+    }
+
+    pub fn read_eeprom_write_lock(&mut self, servo_id: u8) -> HalResult<bool> {
+        Ok(self.read_register_u8(servo_id, LOCK_MARK.address)? != 0)
+    }
+
+    pub fn set_eeprom_write_lock(&mut self, servo_id: u8, locked: bool) -> HalResult<()> {
+        self.write_runtime_byte(servo_id, LOCK_MARK.address, u8::from(locked))?;
+        let observed = self.read_eeprom_write_lock(servo_id)?;
+        if observed != locked {
+            return Err(HalError::Communication(format!(
+                "failed to set EEPROM write lock on servo {}: expected {}, observed {}",
+                servo_id,
+                u8::from(locked),
+                u8::from(observed)
+            )));
+        }
+        Ok(())
     }
 
     fn read_register_block(
@@ -318,7 +354,7 @@ impl RealStsBus {
 
     pub fn enable_torque_on_id(&mut self, servo_id: u8, enabled: bool) -> HalResult<()> {
         self.check_servo_ids(&[servo_id])?;
-        self.write_byte_no_response(servo_id, ADDR_TORQUE_ENABLE, u8::from(enabled))
+        self.write_runtime_byte(servo_id, TORQUE_ENABLE.address, u8::from(enabled))
     }
 
     pub fn enable_torque_on_ids(&mut self, servo_ids: &[u8], enabled: bool) -> HalResult<()> {
@@ -328,6 +364,59 @@ impl RealStsBus {
 
         Ok(())
     }
+}
+
+pub fn validate_servo_eeprom_profile(
+    bus: &mut RealStsBus,
+    servo_ids: &[u8],
+    entries: &[ServoEepromEntry],
+) -> HalResult<()> {
+    for entry in entries {
+        for &servo_id in servo_ids {
+            validate_servo_eeprom_entry(bus, servo_id, entry)?;
+        }
+    }
+
+    Ok(())
+}
+
+pub fn validate_servo_eeprom_entry_value(
+    bus: &mut RealStsBus,
+    servo_id: u8,
+    entry: &ServoEepromEntry,
+) -> HalResult<u16> {
+    let observed = match entry.width {
+        ServoRegisterWidth::U8 => u16::from(bus.read_register_u8(servo_id, entry.address)?),
+        ServoRegisterWidth::U16 => bus.read_register_u16(servo_id, entry.address)?,
+    };
+
+    let expected = match entry.width {
+        ServoRegisterWidth::U8 => u16::from(u8::try_from(entry.value).map_err(|_| {
+            HalError::Unsupported(format!(
+                "EEPROM entry {} value {} does not fit into u8",
+                entry.name, entry.value
+            ))
+        })?),
+        ServoRegisterWidth::U16 => entry.value,
+    };
+
+    if observed != expected {
+        return Err(HalError::Communication(format!(
+            "EEPROM validation failed for servo {} entry {} at address {}: expected {}, observed {}",
+            servo_id, entry.name, entry.address, expected, observed
+        )));
+    }
+
+    Ok(observed)
+}
+
+pub fn validate_servo_eeprom_entry(
+    bus: &mut RealStsBus,
+    servo_id: u8,
+    entry: &ServoEepromEntry,
+) -> HalResult<()> {
+    let _ = validate_servo_eeprom_entry_value(bus, servo_id, entry)?;
+    Ok(())
 }
 
 impl ServoBus for RealStsBus {
@@ -340,13 +429,14 @@ impl ServoBus for RealStsBus {
     // with sync_write_positions, and avoid calling it while the robot is in the air.
     fn enable_torque(&mut self, enabled: bool) -> HalResult<()> {
         for &servo_id in &self.servo_ids.clone() {
-            self.write_byte_no_response(servo_id, ADDR_TORQUE_ENABLE, u8::from(enabled))?;
+            self.write_runtime_byte(servo_id, TORQUE_ENABLE.address, u8::from(enabled))?;
         }
 
         Ok(())
     }
 
     fn sync_write_positions(&mut self, commands: &[JointCommand]) -> HalResult<()> {
+        ensure_runtime_write_allowed(GOAL_POSITION.address, GOAL_POSITION.width_bytes)?;
         for command in commands {
             if !self.servo_ids.contains(&command.servo_id) {
                 return Err(HalError::DeviceUnavailable(format!(
@@ -361,8 +451,8 @@ impl ServoBus for RealStsBus {
         }
 
         let mut params = Vec::with_capacity(2 + commands.len() * 3);
-        params.push(ADDR_GOAL_POSITION);
-        params.push(2);
+        params.push(GOAL_POSITION.address);
+        params.push(GOAL_POSITION.width_bytes);
 
         for command in commands {
             let [low, high] = command.position_ticks.to_le_bytes();
@@ -374,7 +464,7 @@ impl ServoBus for RealStsBus {
         let packet = pack_instruction(0xFE, Instruction::SyncWrite, &params);
         trace!(
             target: "arachno_feetech_sts::bus",
-            address = ADDR_GOAL_POSITION,
+            address = GOAL_POSITION.address,
             command_count = commands.len(),
             commands = %format_joint_commands(commands),
             packet = %format_bytes_hex(&packet),
@@ -585,6 +675,50 @@ fn raw_current_to_ma(raw: u16) -> u16 {
     ((raw as f32) * 6.5).round() as u16
 }
 
+fn ensure_runtime_write_allowed(address: u8, width_bytes: u8) -> HalResult<()> {
+    let Some(register) = lookup_register(address, width_bytes) else {
+        return Err(HalError::Unsupported(format!(
+            "runtime write to unknown register {} ({} byte{}) is not allowed",
+            address,
+            width_bytes,
+            if width_bytes == 1 { "" } else { "s" }
+        )));
+    };
+
+    if register.area != Eeprom {
+        return Ok(());
+    }
+
+    let detail = format!(
+        "{} [{} {:?} {:?}]",
+        register.name, register.address, register.area, register.access
+    );
+
+    Err(HalError::Unsupported(format!(
+        "runtime write is not allowed for {detail}"
+    )))
+}
+
+fn ensure_persistent_write_allowed(address: u8, width_bytes: u8) -> HalResult<()> {
+    let Some(register) = lookup_register(address, width_bytes) else {
+        return Err(HalError::Unsupported(format!(
+            "persistent write to unknown register {} ({} byte{}) is not allowed",
+            address,
+            width_bytes,
+            if width_bytes == 1 { "" } else { "s" }
+        )));
+    };
+
+    if register.area != Eeprom || register.access != ReadWrite {
+        return Err(HalError::Unsupported(format!(
+            "persistent write is not allowed for {} [{} {:?} {:?}]",
+            register.name, register.address, register.area, register.access
+        )));
+    }
+
+    Ok(())
+}
+
 fn decode_faults(status: u8) -> Vec<String> {
     let mut faults = Vec::new();
 
@@ -609,7 +743,12 @@ fn decode_faults(status: u8) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{calculate_checksum, decode_faults, load_raw_to_pct, raw_current_to_ma};
+    use super::{
+        GOAL_POSITION, LOCK_MARK, MAX_TORQUE_LIMIT, PRESENT_TELEMETRY, STATUS_RETURN_LEVEL,
+        TORQUE_ENABLE, TORQUE_LIMIT, calculate_checksum, decode_faults,
+        ensure_persistent_write_allowed, ensure_runtime_write_allowed, load_raw_to_pct,
+        raw_current_to_ma,
+    };
 
     #[test]
     fn checksum_matches_expected_example() {
@@ -629,5 +768,58 @@ mod tests {
     fn normalizes_raw_feedback_units() {
         assert_eq!(load_raw_to_pct(-125), 12.5);
         assert_eq!(raw_current_to_ma(100), 650);
+    }
+
+    #[test]
+    fn runtime_write_rejects_only_eeprom_registers() {
+        assert!(
+            ensure_runtime_write_allowed(TORQUE_ENABLE.address, TORQUE_ENABLE.width_bytes).is_ok()
+        );
+        assert!(
+            ensure_runtime_write_allowed(TORQUE_LIMIT.address, TORQUE_LIMIT.width_bytes).is_ok()
+        );
+        assert!(
+            ensure_runtime_write_allowed(GOAL_POSITION.address, GOAL_POSITION.width_bytes).is_ok()
+        );
+        assert!(
+            ensure_runtime_write_allowed(PRESENT_TELEMETRY.address, PRESENT_TELEMETRY.width_bytes)
+                .is_ok()
+        );
+        assert!(ensure_runtime_write_allowed(LOCK_MARK.address, LOCK_MARK.width_bytes).is_ok());
+        assert!(
+            ensure_runtime_write_allowed(MAX_TORQUE_LIMIT.address, MAX_TORQUE_LIMIT.width_bytes)
+                .is_err()
+        );
+        assert!(
+            ensure_runtime_write_allowed(
+                STATUS_RETURN_LEVEL.address,
+                STATUS_RETURN_LEVEL.width_bytes
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn persistent_write_rejects_ram_registers() {
+        assert!(
+            ensure_persistent_write_allowed(
+                STATUS_RETURN_LEVEL.address,
+                STATUS_RETURN_LEVEL.width_bytes
+            )
+            .is_ok()
+        );
+        assert!(
+            ensure_persistent_write_allowed(MAX_TORQUE_LIMIT.address, MAX_TORQUE_LIMIT.width_bytes)
+                .is_ok()
+        );
+        assert!(
+            ensure_persistent_write_allowed(TORQUE_ENABLE.address, TORQUE_ENABLE.width_bytes)
+                .is_err()
+        );
+        assert!(ensure_persistent_write_allowed(LOCK_MARK.address, LOCK_MARK.width_bytes).is_err());
+        assert!(
+            ensure_persistent_write_allowed(TORQUE_LIMIT.address, TORQUE_LIMIT.width_bytes)
+                .is_err()
+        );
     }
 }

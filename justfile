@@ -30,6 +30,12 @@ slow-walk:
 calibrate:
     cargo run -p arachno-calibrate -- --config config/robot/default.toml
 
+apply-eeprom:
+    cargo run -p arachno-calibrate -- --config config/robot/host-usb.toml --mode apply-eeprom
+
+verify-eeprom:
+    cargo run -p arachno-calibrate -- --config config/robot/host-usb.toml --mode verify-eeprom
+
 sense-ranges:
     cargo run -p arachno-calibrate -- --config config/robot/host-usb.toml --mode sense-ranges --output config/robot/servo-ranges.toml
 
