@@ -9,7 +9,8 @@ use std::{
 use anyhow::{Context, anyhow, bail};
 use arachno_core::{LegConfig, RobotConfig, ServoEepromEntry, TripodGait};
 use arachno_feetech_sts::{
-    LOCK_MARK, RealStsBus, validate_servo_eeprom_entry as validate_bus_servo_eeprom_entry,
+    LOCK_MARK, RealStsBus, WriteConfirmationMode,
+    validate_servo_eeprom_entry as validate_bus_servo_eeprom_entry,
     validate_servo_eeprom_entry_value as validate_bus_servo_eeprom_entry_value,
     validate_servo_eeprom_profile as validate_bus_servo_eeprom_profile,
 };
@@ -249,6 +250,7 @@ fn apply_eeprom(config: &RobotConfig) -> anyhow::Result<()> {
         servo_ids.len(),
         config.bus.feetech.port
     );
+    bus.set_write_confirmation_mode(WriteConfirmationMode::Optional);
     info!(
         servo_count = servo_ids.len(),
         entry_count = config.servo_eeprom.entries.len(),

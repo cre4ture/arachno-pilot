@@ -1,6 +1,6 @@
 use std::{
     collections::BTreeMap,
-    io::{Read, Write},
+    io::{ErrorKind, Read, Write},
     time::Duration,
 };
 
@@ -18,6 +18,7 @@ use tracing::trace;
 mod registers;
 
 const DEFAULT_TIMEOUT_MS: u64 = 50;
+const WRITE_STATUS_PACKET_LEN: usize = 6;
 
 #[repr(u8)]
 enum Instruction {
@@ -32,10 +33,17 @@ struct StatusPacket {
     params: Vec<u8>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WriteConfirmationMode {
+    Required,
+    Optional,
+}
+
 pub struct RealStsBus {
     servo_ids: Vec<u8>,
     port_path: String,
     baud_rate: u32,
+    write_confirmation_mode: WriteConfirmationMode,
     port: Box<dyn SerialPort>,
 }
 
@@ -57,6 +65,7 @@ impl RealStsBus {
             servo_ids,
             port_path,
             baud_rate,
+            write_confirmation_mode: WriteConfirmationMode::Required,
             port,
         };
         trace!(
@@ -75,6 +84,19 @@ impl RealStsBus {
 
     pub fn baud_rate(&self) -> u32 {
         self.baud_rate
+    }
+
+    pub fn write_confirmation_mode(&self) -> WriteConfirmationMode {
+        self.write_confirmation_mode
+    }
+
+    pub fn set_write_confirmation_mode(
+        &mut self,
+        mode: WriteConfirmationMode,
+    ) -> WriteConfirmationMode {
+        let previous = self.write_confirmation_mode;
+        self.write_confirmation_mode = mode;
+        previous
     }
 
     pub fn read_feedback_tolerant(&mut self, servo_id: u8) -> HalResult<ServoTelemetry> {
@@ -130,66 +152,61 @@ impl RealStsBus {
         Ok(telemetry)
     }
 
-    fn write_register_no_response(
+    fn write_register_with_confirmation(
         &mut self,
         servo_id: u8,
-        address: u8,
+        register: &'static ServoRegister,
         params: &[u8],
         scope: &str,
     ) -> HalResult<()> {
         let mut instruction_params = Vec::with_capacity(1 + params.len());
-        instruction_params.push(address);
+        instruction_params.push(register.address);
         instruction_params.extend_from_slice(params);
         let packet = pack_instruction(servo_id, Instruction::Write, &instruction_params);
         trace!(
             target: "arachno_feetech_sts::bus",
             servo_id,
-            address,
+            register = register.name,
+            address = register.address,
             scope,
             packet = %format_bytes_hex(&packet),
             "tx write-register"
         );
-        let _ = self.port.clear(ClearBuffer::Input);
-        if let Err(err) = self.port.write_all(&packet) {
-            trace!(
-                target: "arachno_feetech_sts::bus",
-                servo_id,
-                address,
-                scope,
-                error = %err,
-                "tx-error write-register"
-            );
-            return Err(HalError::Communication(format!(
-                "write to servo {} failed: {err}",
-                servo_id
-            )));
+        self.transmit_packet(servo_id, &packet)?;
+        match self.write_confirmation_mode {
+            WriteConfirmationMode::Required => {
+                let response =
+                    self.receive_status_packet_required(servo_id, WRITE_STATUS_PACKET_LEN)?;
+                self.validate_write_confirmation(servo_id, register, scope, &response)?;
+            }
+            WriteConfirmationMode::Optional => {
+                if let Some(response) =
+                    self.receive_status_packet_optional(servo_id, WRITE_STATUS_PACKET_LEN)?
+                {
+                    self.validate_write_confirmation(servo_id, register, scope, &response)?;
+                } else {
+                    trace!(
+                        target: "arachno_feetech_sts::bus",
+                        servo_id,
+                        register = register.name,
+                        address = register.address,
+                        scope,
+                        "rx-skip optional write-confirmation not received"
+                    );
+                }
+            }
         }
-        if let Err(err) = self.port.flush() {
-            trace!(
-                target: "arachno_feetech_sts::bus",
-                servo_id,
-                address,
-                scope,
-                error = %err,
-                "tx-error flush-register"
-            );
-            return Err(HalError::Communication(format!(
-                "flush to servo {} failed: {err}",
-                servo_id
-            )));
-        }
-        let _ = self.port.clear(ClearBuffer::Input);
         Ok(())
     }
 
     fn write_runtime_byte(&mut self, servo_id: u8, address: u8, value: u8) -> HalResult<()> {
-        ensure_runtime_write_allowed(address, 1)?;
-        self.write_register_no_response(servo_id, address, &[value], "runtime")
+        let register = runtime_writable_register(address, 1)?;
+        self.write_register_with_confirmation(servo_id, register, &[value], "runtime")
     }
 
     fn write_runtime_word(&mut self, servo_id: u8, address: u8, value: u16) -> HalResult<()> {
-        ensure_runtime_write_allowed(address, 2)?;
-        self.write_register_no_response(servo_id, address, &value.to_le_bytes(), "runtime")
+        let register = runtime_writable_register(address, 2)?;
+        self.write_register_with_confirmation(servo_id, register, &value.to_le_bytes(), "runtime")
     }
 
     pub fn write_persistent_register_u8(
@@ -198,8 +215,8 @@ impl RealStsBus {
         address: u8,
         value: u8,
     ) -> HalResult<()> {
-        ensure_persistent_write_allowed(address, 1)?;
-        self.write_register_no_response(servo_id, address, &[value], "persistent")
+        let register = persistent_writable_register(address, 1)?;
+        self.write_register_with_confirmation(servo_id, register, &[value], "persistent")
     }
 
     pub fn write_persistent_register_u16(
@@ -208,8 +225,13 @@ impl RealStsBus {
         address: u8,
         value: u16,
     ) -> HalResult<()> {
-        ensure_persistent_write_allowed(address, 2)?;
-        self.write_register_no_response(servo_id, address, &value.to_le_bytes(), "persistent")
+        let register = persistent_writable_register(address, 2)?;
+        self.write_register_with_confirmation(
+            servo_id,
+            register,
+            &value.to_le_bytes(),
+            "persistent",
+        )
     }
 
     pub fn read_register_u8(&mut self, servo_id: u8, address: u8) -> HalResult<u8> {
@@ -290,6 +312,11 @@ impl RealStsBus {
         packet: &[u8],
         response_len: usize,
     ) -> HalResult<StatusPacket> {
+        self.transmit_packet(servo_id, packet)?;
+        self.receive_status_packet_required(servo_id, response_len)
+    }
+
+    fn transmit_packet(&mut self, servo_id: u8, packet: &[u8]) -> HalResult<()> {
         let _ = self.port.clear(ClearBuffer::Input);
         if let Err(err) = self.port.write_all(packet) {
             trace!(
@@ -316,9 +343,58 @@ impl RealStsBus {
                 servo_id
             )));
         }
+        Ok(())
+    }
 
+    fn receive_status_packet_required(
+        &mut self,
+        servo_id: u8,
+        response_len: usize,
+    ) -> HalResult<StatusPacket> {
+        let response = self.read_response_frame(servo_id, response_len).map_err(|err| {
+            HalError::Communication(format!(
+                "read from servo {} on {} failed: {}",
+                servo_id, self.port_path, err
+            ))
+        })?;
+        self.parse_received_status_packet(servo_id, &response)
+    }
+
+    fn receive_status_packet_optional(
+        &mut self,
+        servo_id: u8,
+        response_len: usize,
+    ) -> HalResult<Option<StatusPacket>> {
+        match self.read_response_frame(servo_id, response_len) {
+            Ok(response) => self
+                .parse_received_status_packet(servo_id, &response)
+                .map(Some),
+            Err(err)
+                if err.kind() == ErrorKind::TimedOut || err.kind() == ErrorKind::WouldBlock =>
+            {
+                let _ = self.port.clear(ClearBuffer::Input);
+                trace!(
+                    target: "arachno_feetech_sts::bus",
+                    servo_id,
+                    expected_len = response_len,
+                    "rx-timeout optional"
+                );
+                Ok(None)
+            }
+            Err(err) => Err(HalError::Communication(format!(
+                "read from servo {} on {} failed: {}",
+                servo_id, self.port_path, err
+            ))),
+        }
+    }
+
+    fn read_response_frame(
+        &mut self,
+        servo_id: u8,
+        response_len: usize,
+    ) -> std::io::Result<Vec<u8>> {
         let mut response = vec![0u8; response_len];
-        if let Err(err) = self.port.read_exact(&mut response) {
+        self.port.read_exact(&mut response).map_err(|err| {
             trace!(
                 target: "arachno_feetech_sts::bus",
                 servo_id,
@@ -326,18 +402,86 @@ impl RealStsBus {
                 error = %err,
                 "rx-error"
             );
-            return Err(HalError::Communication(format!(
-                "read from servo {} on {} failed: {}",
-                servo_id, self.port_path, err
-            )));
-        }
+            err
+        })?;
+        Ok(response)
+    }
+
+    fn parse_received_status_packet(
+        &self,
+        servo_id: u8,
+        response: &[u8],
+    ) -> HalResult<StatusPacket> {
         trace!(
             target: "arachno_feetech_sts::bus",
             servo_id,
-            packet = %format_bytes_hex(&response),
+            packet = %format_bytes_hex(response),
             "rx"
         );
-        parse_status_packet(servo_id, &response)
+        parse_status_packet(servo_id, response)
+    }
+
+    fn validate_write_confirmation(
+        &self,
+        servo_id: u8,
+        register: &ServoRegister,
+        scope: &str,
+        response: &StatusPacket,
+    ) -> HalResult<()> {
+        if !response.params.is_empty() {
+            trace!(
+                target: "arachno_feetech_sts::bus",
+                servo_id,
+                register = register.name,
+                address = register.address,
+                scope,
+                params = %format_bytes_hex(&response.params),
+                "rx-invalid write-confirmation-params"
+            );
+            return Err(HalError::Communication(format!(
+                "write confirmation from servo {} for {} unexpectedly returned {} parameter byte(s)",
+                servo_id,
+                register.name,
+                response.params.len()
+            )));
+        }
+
+        if response.status != 0 {
+            let faults = decode_faults(response.status);
+            trace!(
+                target: "arachno_feetech_sts::bus",
+                servo_id,
+                register = register.name,
+                address = register.address,
+                scope,
+                status = response.status,
+                faults = ?faults,
+                "rx-fault write-confirmation"
+            );
+            return Err(HalError::Communication(format!(
+                "write confirmation from servo {} for {} reported status 0x{:02X} ({})",
+                servo_id,
+                register.name,
+                response.status,
+                if faults.is_empty() {
+                    "unknown fault".to_owned()
+                } else {
+                    faults.join(", ")
+                }
+            )));
+        }
+
+        trace!(
+            target: "arachno_feetech_sts::bus",
+            servo_id,
+            register = register.name,
+            address = register.address,
+            scope,
+            status = response.status,
+            "rx-ok write-confirmation"
+        );
+
+        Ok(())
     }
 
     fn check_servo_ids(&self, servo_ids: &[u8]) -> HalResult<()> {
@@ -436,7 +580,7 @@ impl ServoBus for RealStsBus {
     }
 
     fn sync_write_positions(&mut self, commands: &[JointCommand]) -> HalResult<()> {
-        ensure_runtime_write_allowed(GOAL_POSITION.address, GOAL_POSITION.width_bytes)?;
+        let _ = runtime_writable_register(GOAL_POSITION.address, GOAL_POSITION.width_bytes)?;
         for command in commands {
             if !self.servo_ids.contains(&command.servo_id) {
                 return Err(HalError::DeviceUnavailable(format!(
@@ -462,6 +606,9 @@ impl ServoBus for RealStsBus {
         }
 
         let packet = pack_instruction(0xFE, Instruction::SyncWrite, &params);
+        // Broadcast SYNC_WRITE does not produce per-servo status packets, even when
+        // Status Return Level is 1. Post-write validation therefore still happens
+        // through later feedback reads rather than an immediate write acknowledgement.
         trace!(
             target: "arachno_feetech_sts::bus",
             address = GOAL_POSITION.address,
@@ -675,7 +822,7 @@ fn raw_current_to_ma(raw: u16) -> u16 {
     ((raw as f32) * 6.5).round() as u16
 }
 
-fn ensure_runtime_write_allowed(address: u8, width_bytes: u8) -> HalResult<()> {
+fn runtime_writable_register(address: u8, width_bytes: u8) -> HalResult<&'static ServoRegister> {
     let Some(register) = lookup_register(address, width_bytes) else {
         return Err(HalError::Unsupported(format!(
             "runtime write to unknown register {} ({} byte{}) is not allowed",
@@ -686,7 +833,7 @@ fn ensure_runtime_write_allowed(address: u8, width_bytes: u8) -> HalResult<()> {
     };
 
     if register.area != Eeprom {
-        return Ok(());
+        return Ok(register);
     }
 
     let detail = format!(
@@ -699,7 +846,7 @@ fn ensure_runtime_write_allowed(address: u8, width_bytes: u8) -> HalResult<()> {
     )))
 }
 
-fn ensure_persistent_write_allowed(address: u8, width_bytes: u8) -> HalResult<()> {
+fn persistent_writable_register(address: u8, width_bytes: u8) -> HalResult<&'static ServoRegister> {
     let Some(register) = lookup_register(address, width_bytes) else {
         return Err(HalError::Unsupported(format!(
             "persistent write to unknown register {} ({} byte{}) is not allowed",
@@ -716,7 +863,7 @@ fn ensure_persistent_write_allowed(address: u8, width_bytes: u8) -> HalResult<()
         )));
     }
 
-    Ok(())
+    Ok(register)
 }
 
 fn decode_faults(status: u8) -> Vec<String> {
@@ -745,9 +892,9 @@ fn decode_faults(status: u8) -> Vec<String> {
 mod tests {
     use super::{
         GOAL_POSITION, LOCK_MARK, MAX_TORQUE_LIMIT, PRESENT_TELEMETRY, STATUS_RETURN_LEVEL,
-        TORQUE_ENABLE, TORQUE_LIMIT, calculate_checksum, decode_faults,
-        ensure_persistent_write_allowed, ensure_runtime_write_allowed, load_raw_to_pct,
-        raw_current_to_ma,
+        TORQUE_ENABLE, TORQUE_LIMIT, calculate_checksum, decode_faults, load_raw_to_pct,
+        parse_status_packet, persistent_writable_register, raw_current_to_ma,
+        runtime_writable_register,
     };
 
     #[test]
@@ -771,55 +918,57 @@ mod tests {
     }
 
     #[test]
+    fn parses_empty_write_confirmation_packet() {
+        let packet = [0xFF, 0xFF, 0x01, 0x02, 0x00, 0xFC];
+        let status = parse_status_packet(1, &packet).expect("write confirmation should parse");
+
+        assert_eq!(status.status, 0);
+        assert!(status.params.is_empty());
+    }
+
+    #[test]
     fn runtime_write_rejects_only_eeprom_registers() {
         assert!(
-            ensure_runtime_write_allowed(TORQUE_ENABLE.address, TORQUE_ENABLE.width_bytes).is_ok()
+            runtime_writable_register(TORQUE_ENABLE.address, TORQUE_ENABLE.width_bytes).is_ok()
+        );
+        assert!(runtime_writable_register(TORQUE_LIMIT.address, TORQUE_LIMIT.width_bytes).is_ok());
+        assert!(
+            runtime_writable_register(GOAL_POSITION.address, GOAL_POSITION.width_bytes).is_ok()
         );
         assert!(
-            ensure_runtime_write_allowed(TORQUE_LIMIT.address, TORQUE_LIMIT.width_bytes).is_ok()
-        );
-        assert!(
-            ensure_runtime_write_allowed(GOAL_POSITION.address, GOAL_POSITION.width_bytes).is_ok()
-        );
-        assert!(
-            ensure_runtime_write_allowed(PRESENT_TELEMETRY.address, PRESENT_TELEMETRY.width_bytes)
+            runtime_writable_register(PRESENT_TELEMETRY.address, PRESENT_TELEMETRY.width_bytes)
                 .is_ok()
         );
-        assert!(ensure_runtime_write_allowed(LOCK_MARK.address, LOCK_MARK.width_bytes).is_ok());
+        assert!(runtime_writable_register(LOCK_MARK.address, LOCK_MARK.width_bytes).is_ok());
         assert!(
-            ensure_runtime_write_allowed(MAX_TORQUE_LIMIT.address, MAX_TORQUE_LIMIT.width_bytes)
+            runtime_writable_register(MAX_TORQUE_LIMIT.address, MAX_TORQUE_LIMIT.width_bytes)
                 .is_err()
         );
         assert!(
-            ensure_runtime_write_allowed(
-                STATUS_RETURN_LEVEL.address,
-                STATUS_RETURN_LEVEL.width_bytes
-            )
-            .is_err()
+            runtime_writable_register(STATUS_RETURN_LEVEL.address, STATUS_RETURN_LEVEL.width_bytes)
+                .is_err()
         );
     }
 
     #[test]
     fn persistent_write_rejects_ram_registers() {
         assert!(
-            ensure_persistent_write_allowed(
+            persistent_writable_register(
                 STATUS_RETURN_LEVEL.address,
                 STATUS_RETURN_LEVEL.width_bytes
             )
             .is_ok()
         );
         assert!(
-            ensure_persistent_write_allowed(MAX_TORQUE_LIMIT.address, MAX_TORQUE_LIMIT.width_bytes)
+            persistent_writable_register(MAX_TORQUE_LIMIT.address, MAX_TORQUE_LIMIT.width_bytes)
                 .is_ok()
         );
         assert!(
-            ensure_persistent_write_allowed(TORQUE_ENABLE.address, TORQUE_ENABLE.width_bytes)
-                .is_err()
+            persistent_writable_register(TORQUE_ENABLE.address, TORQUE_ENABLE.width_bytes).is_err()
         );
-        assert!(ensure_persistent_write_allowed(LOCK_MARK.address, LOCK_MARK.width_bytes).is_err());
+        assert!(persistent_writable_register(LOCK_MARK.address, LOCK_MARK.width_bytes).is_err());
         assert!(
-            ensure_persistent_write_allowed(TORQUE_LIMIT.address, TORQUE_LIMIT.width_bytes)
-                .is_err()
+            persistent_writable_register(TORQUE_LIMIT.address, TORQUE_LIMIT.width_bytes).is_err()
         );
     }
 }
