@@ -48,7 +48,7 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
     }
 
     .page {
-      max-width: 1480px;
+      max-width: 1780px;
       margin: 0 auto;
       padding: 24px;
     }
@@ -309,62 +309,6 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
       accent-color: var(--accent);
     }
 
-    .leg-schematic-grid {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 12px;
-    }
-
-    .leg-schematic-card {
-      padding: 16px;
-      background: var(--panel-strong);
-      border-radius: 16px;
-      border: 1px solid rgba(255,255,255,0.06);
-    }
-
-    .leg-schematic-top {
-      display: flex;
-      justify-content: space-between;
-      gap: 12px;
-      align-items: baseline;
-      margin-bottom: 12px;
-    }
-
-    .leg-schematic-top strong {
-      font-size: 1rem;
-    }
-
-    .leg-schematic-top span {
-      color: var(--muted);
-      font-size: 0.9rem;
-    }
-
-    .leg-schematic-svg {
-      width: 100%;
-      height: 10rem;
-      display: block;
-    }
-
-    .leg-schematic-svg.mirror {
-      transform: scaleX(-1);
-    }
-
-    .leg-schematic-metrics {
-      margin-top: 10px;
-      display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 8px;
-      color: var(--muted);
-      font-size: 0.86rem;
-    }
-
-    .leg-schematic-metrics strong {
-      display: block;
-      color: var(--text);
-      font-size: 0.95rem;
-      margin-bottom: 3px;
-    }
-
     .servo-layout {
       margin-top: 18px;
       display: grid;
@@ -378,7 +322,7 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
 
     .servo-map {
       position: relative;
-      min-width: 980px;
+      min-width: 1360px;
       min-height: 760px;
       padding: 28px;
       border-radius: 22px;
@@ -421,7 +365,7 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
       position: absolute;
       inset: 50% auto auto 50%;
       transform: translate(-50%, -50%);
-      width: 18rem;
+      width: 14.5rem;
       height: 25rem;
       display: grid;
       place-items: center;
@@ -454,7 +398,7 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
       gap: 8px;
       align-items: center;
       text-align: center;
-      padding: 0 1.4rem;
+      padding: 0 1rem;
     }
 
     .robot-body-title {
@@ -471,7 +415,7 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
 
     .leg-cluster {
       position: absolute;
-      width: 20rem;
+      width: 40rem;
     }
 
     .leg-cluster::after {
@@ -483,22 +427,22 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
     }
 
     .leg-cluster.left::after {
-      right: -2.2rem;
-      width: 2.2rem;
+      right: -1.9rem;
+      width: 1.9rem;
     }
 
     .leg-cluster.right::after {
-      left: -2.2rem;
-      width: 2.2rem;
+      left: -1.9rem;
+      width: 1.9rem;
       background: linear-gradient(90deg, rgba(255, 146, 84, 0.3), rgba(255,255,255,0.08));
     }
 
-    .leg-cluster.front-left { top: 6%; left: 3%; }
-    .leg-cluster.middle-left { top: 50%; left: 1.4%; transform: translateY(-50%); }
-    .leg-cluster.rear-left { bottom: 6%; left: 3%; }
-    .leg-cluster.front-right { top: 6%; right: 3%; }
-    .leg-cluster.middle-right { top: 50%; right: 1.4%; transform: translateY(-50%); }
-    .leg-cluster.rear-right { bottom: 6%; right: 3%; }
+    .leg-cluster.front-left { top: 6%; left: calc(50% - 50rem); }
+    .leg-cluster.middle-left { top: 50%; left: calc(50% - 50rem); transform: translateY(-50%); }
+    .leg-cluster.rear-left { bottom: 6%; left: calc(50% - 50rem); }
+    .leg-cluster.front-right { top: 6%; right: calc(50% - 50rem); }
+    .leg-cluster.middle-right { top: 50%; right: calc(50% - 50rem); transform: translateY(-50%); }
+    .leg-cluster.rear-right { bottom: 6%; right: calc(50% - 50rem); }
 
     .leg-name {
       margin-bottom: 10px;
@@ -508,14 +452,60 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
       color: rgba(255,255,255,0.54);
     }
 
+    .leg-preview-row {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+      flex: 1.05 1 0;
+      min-width: 0;
+    }
+
+    .leg-preview-shell {
+      padding: 10px 10px 8px;
+      background: rgba(10, 14, 20, 0.62);
+      border-radius: 16px;
+      border: 1px solid rgba(255,255,255,0.06);
+    }
+
+    .leg-preview-shell.center {
+      border-color: rgba(255, 146, 84, 0.18);
+      background:
+        radial-gradient(circle at center, rgba(255, 146, 84, 0.08), transparent 70%),
+        rgba(10, 14, 20, 0.62);
+    }
+
+    .leg-preview-top {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: baseline;
+      margin-bottom: 8px;
+      color: var(--muted);
+      font-size: 0.78rem;
+    }
+
+    .leg-preview-svg {
+      width: 100%;
+      height: 5rem;
+      display: block;
+    }
+
     .leg-chain {
       display: flex;
       gap: 10px;
       align-items: stretch;
+      flex: 1.55 1 0;
+      min-width: 0;
     }
 
     .leg-chain.reverse {
       flex-direction: row-reverse;
+    }
+
+    .leg-cluster-row {
+      display: flex;
+      gap: 10px;
+      align-items: stretch;
     }
 
     .servo-node {
@@ -796,17 +786,7 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
 
     <section class="panel" style="margin-top: 18px;">
       <div class="panel-header">
-        <h2>Leg Schematic</h2>
-        <div class="muted" id="leg-schematic-summary">waiting for live servo feedback</div>
-      </div>
-      <div class="panel-body">
-        <div class="leg-schematic-grid" id="leg-schematic-grid"></div>
-      </div>
-    </section>
-
-    <section class="panel" style="margin-top: 18px;">
-      <div class="panel-header">
-        <h2>Servos</h2>
+        <h2>Servo Layout</h2>
         <div class="muted" id="fault-summary">No servo data yet</div>
       </div>
       <div class="panel-body">
@@ -820,14 +800,14 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
               <div class="robot-body">
                 <div class="robot-body-core">
                   <div class="robot-body-title">Hexapod Layout</div>
-                  <div class="robot-body-note" id="robot-note">Coxa, femur, tibia are drawn from the body outward.</div>
+                  <div class="robot-body-note" id="robot-note">Bird's-eye leg previews show coxa heading and projected reach from femur and tibia.</div>
                 </div>
               </div>
               <div id="servo-map-legs"></div>
             </div>
           </div>
           <div class="servo-orientation">
-            The map follows the robot's physical layout. Left legs are arms 1-3 from front to back, right legs are arms 4-6, and each leg is drawn from inside to outside as coxa, femur, tibia.
+            The map follows the robot's physical layout. Left legs are arms 1-3 from front to back, right legs are arms 4-6. Each cluster combines a top-view live leg preview with the detailed coxa, femur, and tibia telemetry cards.
           </div>
         </div>
       </div>
@@ -853,14 +833,6 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
       "rear_left",
       "front_right",
       "middle_right",
-      "rear_right",
-    ];
-    const LEG_SCHEMATIC_ORDER = [
-      "front_left",
-      "front_right",
-      "middle_left",
-      "middle_right",
-      "rear_left",
       "rear_right",
     ];
     const LEG_META = {
@@ -1279,12 +1251,21 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
       const meta = LEG_META[legKey];
       const sorted = [...servos].sort((left, right) => jointIndexForServo(left) - jointIndexForServo(right));
       const chainClass = meta.side === "left" ? "leg-chain reverse" : "leg-chain";
+      const preview = renderLegPreviewRow(legKey, sorted);
+      const chain = `
+        <div class="${chainClass}">
+          ${sorted.map(renderServoNode).join("")}
+        </div>
+      `;
+      const clusterRow = meta.side === "left"
+        ? `${chain}${preview}`
+        : `${preview}${chain}`;
 
       return `
         <section class="leg-cluster ${meta.placement}">
           <div class="leg-name">${meta.label}</div>
-          <div class="${chainClass}">
-            ${sorted.map(renderServoNode).join("")}
+          <div class="leg-cluster-row">
+            ${clusterRow}
           </div>
         </section>
       `;
@@ -1317,64 +1298,138 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
       };
     }
 
-    function legSchematicPose(servos) {
+    function legBirdPose(legKey, servos) {
+      const meta = LEG_META[legKey];
       const byJoint = Object.fromEntries(servos.map((servo) => [jointIndexForServo(servo), servo]));
       const coxa = clamp(byJoint[1]?.semantic_angle_deg ?? 0, -140, 140);
       const femur = clamp(byJoint[2]?.semantic_angle_deg ?? 0, -140, 140);
       const tibia = clamp(byJoint[3]?.semantic_angle_deg ?? 0, -140, 140);
-      const anchor = { x: 36, y: 86 };
-      const coxaLen = 42;
-      const femurLen = 40;
-      const tibiaLen = 46;
+      const isLeft = meta.side === "left";
+      const anchor = isLeft ? { x: 172, y: 58 } : { x: 48, y: 58 };
+      const baseDegMap = {
+        front_left: 225,
+        middle_left: 180,
+        rear_left: 135,
+        front_right: 315,
+        middle_right: 0,
+        rear_right: 45,
+      };
+      const baseDeg = baseDegMap[legKey] ?? (isLeft ? 180 : 0);
+      const headingDeg = baseDeg + (isLeft ? coxa * 0.42 : -coxa * 0.42);
+      const headingRad = headingDeg * Math.PI / 180;
+      const coxaLen = 18;
+      const femurLen = clamp(14 + (68 - femur) * 0.24, 10, 34);
+      const tibiaLen = clamp(12 + (76 - tibia) * 0.26, 9, 36);
+      const coxaEnd = pointFrom(anchor, coxaLen, headingRad);
+      const femurEnd = pointFrom(coxaEnd, femurLen, headingRad);
+      const tibiaEnd = pointFrom(femurEnd, tibiaLen, headingRad);
+      const bodyGuideStart = isLeft ? { x: 194, y: 58 } : { x: 26, y: 58 };
+      const bodyGuideEnd = isLeft ? { x: 176, y: 58 } : { x: 44, y: 58 };
 
-      const coxaRad = (-coxa * 0.55) * Math.PI / 180;
-      const femurRad = coxaRad + ((40 - femur * 0.42) * Math.PI / 180);
-      const tibiaRad = femurRad + ((46 - tibia * 0.38) * Math.PI / 180);
-
-      const coxaEnd = pointFrom(anchor, coxaLen, coxaRad);
-      const femurEnd = pointFrom(coxaEnd, femurLen, femurRad);
-      const tibiaEnd = pointFrom(femurEnd, tibiaLen, tibiaRad);
-
-      return { anchor, coxaEnd, femurEnd, tibiaEnd, coxa, femur, tibia };
+      return {
+        anchor,
+        coxaEnd,
+        femurEnd,
+        tibiaEnd,
+        bodyGuideStart,
+        bodyGuideEnd,
+        coxa,
+        femur,
+        tibia,
+      };
     }
 
-    function renderLegSchematicCard(legKey, servos) {
+    function legSidePose(legKey, servos) {
       const meta = LEG_META[legKey];
-      const pose = legSchematicPose(servos);
+      const byJoint = Object.fromEntries(servos.map((servo) => [jointIndexForServo(servo), servo]));
+      const femur = clamp(byJoint[2]?.semantic_angle_deg ?? 0, -140, 140);
+      const tibia = clamp(byJoint[3]?.semantic_angle_deg ?? 0, -140, 140);
+      const isLeft = meta.side === 'left';
+      const anchor = isLeft ? { x: 190, y: 78 } : { x: 30, y: 78 };
+      const bodyGuideStart = isLeft ? { x: 210, y: 78 } : { x: 10, y: 78 };
+      const bodyGuideEnd = isLeft ? { x: 192, y: 78 } : { x: 28, y: 78 };
+      const coxaEnd = isLeft ? { x: 160, y: 78 } : { x: 60, y: 78 };
+      const femurShapeDeg = clamp(28 - femur * 0.42, -30, 88);
+      const tibiaShapeDeg = clamp(femurShapeDeg + 34 - tibia * 0.38, -20, 118);
+      const femurRad = ((isLeft ? 180 - femurShapeDeg : femurShapeDeg) * Math.PI) / 180;
+      const tibiaRad = ((isLeft ? 180 - tibiaShapeDeg : tibiaShapeDeg) * Math.PI) / 180;
+      const femurEnd = pointFrom(coxaEnd, 34, femurRad);
+      const tibiaEnd = pointFrom(femurEnd, 38, tibiaRad);
+
+      return {
+        anchor,
+        bodyGuideStart,
+        bodyGuideEnd,
+        coxaEnd,
+        femurEnd,
+        tibiaEnd,
+      };
+    }
+
+    function renderLegBirdPreview(legKey, servos) {
+      const meta = LEG_META[legKey];
+      const pose = legBirdPose(legKey, servos);
       const onlineCount = servos.filter((servo) => servo.online).length;
       const stroke = onlineCount === 3 ? '#ff9254' : (onlineCount > 0 ? '#ffc26b' : '#5a6775');
-      const fill = onlineCount === 3 ? 'rgba(255,146,84,0.16)' : 'rgba(255,255,255,0.05)';
-      const mirror = meta.side === "left" ? "mirror" : "";
+      const fill = onlineCount === 3 ? 'rgba(255,146,84,0.12)' : 'rgba(255,255,255,0.04)';
 
       return `
-        <article class="leg-schematic-card">
-          <div class="leg-schematic-top">
-            <strong>${meta.label}</strong>
+        <div class="leg-preview-shell center">
+          <div class="leg-preview-top">
+            <strong>Top view</strong>
             <span>${onlineCount}/3 online</span>
           </div>
-          <svg class="leg-schematic-svg ${mirror}" viewBox="0 0 240 170" aria-label="${meta.label} live pose">
-            <rect x='10' y='24' width='30' height='124' rx='14' fill='${fill}' stroke='rgba(255,255,255,0.08)' />
+          <svg class="leg-preview-svg" viewBox="0 0 220 116" aria-label="${meta.label} top-view live pose">
+            <path d='M ${pose.bodyGuideStart.x} ${pose.bodyGuideStart.y} L ${pose.bodyGuideEnd.x} ${pose.bodyGuideEnd.y}'
+              fill='none' stroke='rgba(255,255,255,0.14)' stroke-width='10' stroke-linecap='round' />
+            <circle cx='${pose.anchor.x}' cy='${pose.anchor.y}' r='9' fill='${fill}' stroke='rgba(255,255,255,0.10)' />
             <path d='M ${pose.anchor.x} ${pose.anchor.y} L ${pose.coxaEnd.x.toFixed(1)} ${pose.coxaEnd.y.toFixed(1)} L ${pose.femurEnd.x.toFixed(1)} ${pose.femurEnd.y.toFixed(1)} L ${pose.tibiaEnd.x.toFixed(1)} ${pose.tibiaEnd.y.toFixed(1)}'
               fill='none' stroke='${stroke}' stroke-width='9' stroke-linecap='round' stroke-linejoin='round' />
             <circle cx='${pose.anchor.x}' cy='${pose.anchor.y}' r='6.5' fill='#eef3f7' />
             <circle cx='${pose.coxaEnd.x.toFixed(1)}' cy='${pose.coxaEnd.y.toFixed(1)}' r='5.5' fill='#d9e2ec' />
             <circle cx='${pose.femurEnd.x.toFixed(1)}' cy='${pose.femurEnd.y.toFixed(1)}' r='5.2' fill='#c8d3de' />
             <circle cx='${pose.tibiaEnd.x.toFixed(1)}' cy='${pose.tibiaEnd.y.toFixed(1)}' r='5.2' fill='${stroke}' />
+            <circle cx='${pose.tibiaEnd.x.toFixed(1)}' cy='${pose.tibiaEnd.y.toFixed(1)}' r='9' fill='none' stroke='${stroke}' stroke-width='1.6' opacity='0.5' />
           </svg>
-          <div class="leg-schematic-metrics">
-            <div><strong>${fmt(pose.coxa, 1)}°</strong>coxa</div>
-            <div><strong>${fmt(pose.femur, 1)}°</strong>femur</div>
-            <div><strong>${fmt(pose.tibia, 1)}°</strong>tibia</div>
-          </div>
-        </article>
+        </div>
       `;
     }
 
-    function renderLegSchematicGrid(servos) {
-      const grouped = groupServosByLeg(servos);
-      return LEG_SCHEMATIC_ORDER
-        .map((legKey) => renderLegSchematicCard(legKey, grouped[legKey]))
-        .join("");
+    function renderLegSidePreview(legKey, servos) {
+      const meta = LEG_META[legKey];
+      const pose = legSidePose(legKey, servos);
+      const onlineCount = servos.filter((servo) => servo.online).length;
+      const stroke = onlineCount === 3 ? '#7dc8ff' : (onlineCount > 0 ? '#b8dfff' : '#5a6775');
+
+      return `
+        <div class="leg-preview-shell outer">
+          <div class="leg-preview-top">
+            <strong>Side view</strong>
+            <span>${onlineCount}/3</span>
+          </div>
+          <svg class="leg-preview-svg" viewBox="0 0 220 116" aria-label="${meta.label} side-view live pose">
+            <path d='M ${pose.bodyGuideStart.x} ${pose.bodyGuideStart.y} L ${pose.bodyGuideEnd.x} ${pose.bodyGuideEnd.y}'
+              fill='none' stroke='rgba(255,255,255,0.14)' stroke-width='10' stroke-linecap='round' />
+            <path d='M ${pose.anchor.x} ${pose.anchor.y} L ${pose.coxaEnd.x} ${pose.coxaEnd.y} L ${pose.femurEnd.x.toFixed(1)} ${pose.femurEnd.y.toFixed(1)} L ${pose.tibiaEnd.x.toFixed(1)} ${pose.tibiaEnd.y.toFixed(1)}'
+              fill='none' stroke='${stroke}' stroke-width='9' stroke-linecap='round' stroke-linejoin='round' />
+            <circle cx='${pose.anchor.x}' cy='${pose.anchor.y}' r='6.5' fill='#eef3f7' />
+            <circle cx='${pose.coxaEnd.x}' cy='${pose.coxaEnd.y}' r='5.5' fill='#d9e2ec' />
+            <circle cx='${pose.femurEnd.x.toFixed(1)}' cy='${pose.femurEnd.y.toFixed(1)}' r='5.2' fill='#c8d3de' />
+            <circle cx='${pose.tibiaEnd.x.toFixed(1)}' cy='${pose.tibiaEnd.y.toFixed(1)}' r='5.2' fill='${stroke}' />
+          </svg>
+        </div>
+      `;
+    }
+
+    function renderLegPreviewRow(legKey, servos) {
+      const meta = LEG_META[legKey];
+      const centerPreview = renderLegBirdPreview(legKey, servos);
+      const outerPreview = renderLegSidePreview(legKey, servos);
+      return `
+        <div class="leg-preview-row">
+          ${meta.side === 'left' ? `${outerPreview}${centerPreview}` : `${centerPreview}${outerPreview}`}
+        </div>
+      `;
     }
 
     function updateBadge(ok, text) {
@@ -1410,11 +1465,9 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
         const faulted = state.servos.filter((servo) => servo.telemetry && servo.telemetry.faults.length > 0).length;
         const groupedServos = groupServosByLeg(state.servos);
         const liveLegs = LEG_ORDER.filter((legKey) => groupedServos[legKey].filter((servo) => servo.online).length === 3).length;
-        document.getElementById("fault-summary").textContent = `${faulted} servo(s) reporting status flags`;
-        document.getElementById("leg-schematic-summary").textContent = `${liveLegs}/${LEG_ORDER.length} legs fully live`;
+        document.getElementById("fault-summary").textContent = `${liveLegs}/${LEG_ORDER.length} legs fully live · ${faulted} servo(s) reporting status flags`;
         document.getElementById("robot-note").textContent =
           `${state.motion_mode}: ${state.motion_summary} ${state.online_servo_count}/${state.servos.length} joints responding.`;
-        document.getElementById("leg-schematic-grid").innerHTML = renderLegSchematicGrid(state.servos);
         document.getElementById("servo-map-legs").innerHTML = renderServoMap(state.servos);
 
         updateBadge(
