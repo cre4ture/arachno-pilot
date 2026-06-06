@@ -84,6 +84,7 @@ It currently provides:
 - fault-tolerant telemetry cards per configured servo
 - a browser camera stream for the USB V4L2 camera path
 - grouped manual servo control in angles, with `all legs`, left/right, front/middle/rear pairs, tripod groups, and individual legs available from the dashboard
+- a `Copy Current Pose To Clipboard` action that exports the live joint pose as a TOML snippet grouped by leg
 
 This removes the old serial-port ownership conflict where the brain and dashboard could not run together, because there is now only one process touching hardware. The dashboard is intentionally tolerant of partial hardware bring-up: if only one servo replies or a servo reports fault flags, that state is shown directly instead of being hidden behind a generic failure.
 
@@ -128,6 +129,6 @@ cargo run -p arachno-brain -- --config config/robot/jetson-onboard.toml --listen
 cargo check --manifest-path firmware/Cargo.toml -p rp2040-imu-bridge --target thumbv6m-none-eabi
 ```
 
-`arachno-brain` now owns the live hardware-facing telemetry API at `/api/state`, the camera route at `/camera.mjpg`, the rich dashboard UI at `/` and `/dashboard` when started with `--dashboard`, the grouped manual-control API at `/api/manual/*`, and the first hardware motion modes through `--mode telemetry`, `--mode manual`, `--mode lay-down`, `--mode stand-up`, `--mode stand`, and `--mode slow-walk`.
+`arachno-brain` now owns the live hardware-facing telemetry API at `/api/state`, the camera route at `/camera.mjpg`, the rich dashboard UI at `/` and `/dashboard` when started with `--dashboard`, the grouped manual-control API at `/api/manual/*`, the dashboard pose-copy utility, and the first hardware motion modes through `--mode telemetry`, `--mode manual`, `--mode lay-down`, `--mode stand-up`, `--mode stand`, and `--mode slow-walk`.
 
-Servo EEPROM policy lives in `config/robot/servo-config.toml` under `[[servo_eeprom.entries]]`. Only `arachno-calibrate --mode apply-eeprom` writes those persistent registers. Normal runtime writes stay on a RAM-only whitelist in the STS driver, and `arachno-brain` validates the configured EEPROM values before it starts the control worker.
+Servo EEPROM policy lives in `config/robot/servo-config.toml` under `[[servo_eeprom.entries]]`. Only `arachno-calibrate --mode apply-eeprom` writes those persistent registers. Normal runtime writes are blocked from EEPROM registers in the STS driver, and `arachno-brain` validates the configured EEPROM values before it starts the control worker.

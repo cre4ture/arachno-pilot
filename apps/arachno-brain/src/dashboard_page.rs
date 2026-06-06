@@ -789,6 +789,7 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
           <button id="manual-reset-group" type="button">Reset Selected Group</button>
           <button id="manual-reset-all" class="wide" type="button">Reset All Legs To Manual Zero</button>
           <button id="manual-capture" class="wide" type="button">Capture Current Pose As Manual Zero</button>
+          <button id="copy-current-pose" class="wide" type="button">Copy Current Pose To Clipboard</button>
         </div>
       </div>
     </section>
@@ -989,6 +990,67 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
       return (window.__manualGroupValues ?? []).find((group) => group.key === groupKey) ?? null;
     }
 
+    function escapeTomlString(value) {
+      return String(value).replaceAll("\\", "\\\\").replaceAll("\"", "\\\"");
+    }
+
+    function servoByJoint(servos) {
+      return Object.fromEntries(servos.map((servo) => [jointIndexForServo(servo), servo]));
+    }
+
+    function currentPoseToml(state) {
+      const grouped = groupServosByLeg(state?.servos ?? []);
+      const lines = [
+        "[pose]",
+        `captured_at = "${escapeTomlString(new Date().toISOString())}"`,
+        `robot_name = "${escapeTomlString(state?.robot_name ?? "arachno")}"`,
+        `motion_mode = "${escapeTomlString(state?.motion_mode ?? "unknown")}"`,
+        "",
+      ];
+
+      for (const legKey of LEG_ORDER) {
+        const byJoint = servoByJoint(grouped[legKey] ?? []);
+        const meta = LEG_META[legKey];
+        lines.push(`[pose.${legKey}]`);
+        lines.push(`label = "${escapeTomlString(meta.label)}"`);
+        for (const [jointIndex, jointKey] of [[1, "coxa"], [2, "femur"], [3, "tibia"]]) {
+          const servo = byJoint[jointIndex];
+          if (!servo?.telemetry) {
+            lines.push(`# ${jointKey}_ticks unavailable: servo offline or no live feedback`);
+            continue;
+          }
+          lines.push(`${jointKey}_servo_id = ${servo.servo_id}`);
+          lines.push(`${jointKey}_ticks = ${servo.telemetry.present_position_ticks}`);
+          if (Number.isFinite(servo.position_deg)) {
+            lines.push(`${jointKey}_absolute_deg = ${servo.position_deg.toFixed(2)}`);
+          }
+          if (Number.isFinite(servo.semantic_angle_deg)) {
+            lines.push(`${jointKey}_semantic_deg = ${servo.semantic_angle_deg.toFixed(2)}`);
+          }
+        }
+        lines.push("");
+      }
+
+      return lines.join("\n").trimEnd() + "\n";
+    }
+
+    async function copyTextToClipboard(text) {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+        return;
+      }
+
+      const textarea = document.createElement("textarea");
+      textarea.value = text;
+      textarea.setAttribute("readonly", "");
+      textarea.style.position = "fixed";
+      textarea.style.top = "-1000px";
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand("copy");
+      document.body.removeChild(textarea);
+    }
+
     function setManualSlidersFromGroupValue(force = false) {
       const group = currentManualGroupValue();
       if (!group) return;
@@ -1061,6 +1123,16 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
       setManualSlidersFromGroupValue(true);
     }
 
+    async function copyCurrentPose() {
+      const state = window.__latestState;
+      if (!state?.servos?.length) {
+        throw new Error("no live servo state available yet");
+      }
+      await copyTextToClipboard(currentPoseToml(state));
+      document.getElementById("manual-summary").textContent =
+        `copied current pose for ${state.online_servo_count}/${state.servos.length} servos to clipboard`;
+    }
+
     function bindManualControls() {
       if (window.__manualControlsBound) return;
       window.__manualControlsBound = true;
@@ -1085,6 +1157,9 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
         document.getElementById("manual-summary").textContent = String(error);
       }));
       document.getElementById("manual-capture").addEventListener("click", () => captureManualZero().catch((error) => {
+        document.getElementById("manual-summary").textContent = String(error);
+      }));
+      document.getElementById("copy-current-pose").addEventListener("click", () => copyCurrentPose().catch((error) => {
         document.getElementById("manual-summary").textContent = String(error);
       }));
     }
@@ -1314,6 +1389,7 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
         const response = await fetch(stateUrl, { cache: "no-store" });
         if (!response.ok) throw new Error(`state fetch failed: ${response.status}`);
         const state = await response.json();
+        window.__latestState = state;
 
         document.getElementById("deployment-profile").textContent = state.deployment_profile;
         document.getElementById("compute-target").textContent = state.compute_target;
