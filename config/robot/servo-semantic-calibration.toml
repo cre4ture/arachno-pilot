@@ -1,0 +1,43 @@
+[[servos]]
+servo_id = 11
+leg_name = "front_left"
+joint_key = "coxa"
+zero_ticks = 2012
+
+[[servos]]
+servo_id = 12
+leg_name = "front_left"
+joint_key = "femur"
+negative_ticks = 2409
+zero_ticks = 2097
+positive_ticks = 1601
+
+[[servos]]
+servo_id = 21
+leg_name = "middle_left"
+joint_key = "coxa"
+zero_ticks = 2013
+
+[[servos]]
+servo_id = 31
+leg_name = "rear_left"
+joint_key = "coxa"
+zero_ticks = 2012
+
+[[servos]]
+servo_id = 41
+leg_name = "front_right"
+joint_key = "coxa"
+zero_ticks = 2084
+
+[[servos]]
+servo_id = 51
+leg_name = "middle_right"
+joint_key = "coxa"
+zero_ticks = 2084
+
+[[servos]]
+servo_id = 61
+leg_name = "rear_right"
+joint_key = "coxa"
+zero_ticks = 2083

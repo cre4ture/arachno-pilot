@@ -1,7 +1,8 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, VecDeque},
+    fs,
     net::SocketAddr,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::Stdio,
     sync::{Arc, RwLock},
     thread,
@@ -14,9 +15,10 @@ use anyhow::Context;
 use arachno_camera::RobotCamera;
 use arachno_core::{CameraBackend, RobotConfig, TripodGait};
 use arachno_feetech_sts::{
-    RealStsBus, validate_servo_eeprom_profile as validate_bus_servo_eeprom_profile,
+    RealStsBus, set_verified_torque_limit_on_current_position_for_ids,
+    validate_servo_eeprom_profile as validate_bus_servo_eeprom_profile,
 };
-use arachno_hal::{CameraSource, ImuSource, ServoBus};
+use arachno_hal::{CameraSource, ImuSource, ServoBus, read_current_pose};
 use arachno_imu_host::{DeviceInfoProbe, SensorKind, UsbImuBridge};
 use arachno_msg::{ImuTelemetry, JointCommand, ServoTelemetry};
 use axum::{
@@ -43,6 +45,7 @@ const STAND_UP_BODY_RISE_RATIO: f32 = 0.45;
 const MANUAL_COXA_LIMIT_DEG: f32 = 180.0;
 const MANUAL_FEMUR_LIMIT_DEG: f32 = 180.0;
 const MANUAL_TIBIA_LIMIT_DEG: f32 = 180.0;
+const MANUAL_TORQUE_LIMIT_MAX: u16 = 1000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum BrainMode {
@@ -90,6 +93,7 @@ struct AppState {
     config: RobotConfig,
     shared: Arc<RwLock<TelemetryState>>,
     manual: Arc<RwLock<ManualControlState>>,
+    calibration: Arc<RwLock<SemanticCalibrationState>>,
     dashboard_enabled: bool,
 }
 
@@ -111,6 +115,7 @@ struct TelemetryState {
     last_poll_error: Option<String>,
     imu: Option<TelemetryImuState>,
     manual: TelemetryManualState,
+    calibration: TelemetryCalibrationState,
     servos: Vec<TelemetryServoState>,
 }
 
@@ -157,6 +162,16 @@ struct TelemetryManualState {
 }
 
 #[derive(Debug, Clone, Serialize)]
+struct TelemetryCalibrationState {
+    enabled: bool,
+    summary: String,
+    store_path: Option<String>,
+    legs: Vec<CalibrationLegInfo>,
+    joints: Vec<CalibrationJointInfo>,
+    entries: Vec<CalibrationEntryView>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 struct ManualGroupInfo {
     key: String,
     label: String,
@@ -181,6 +196,37 @@ struct ManualJointInfo {
     max_deg: f32,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct CalibrationLegInfo {
+    key: String,
+    label: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct CalibrationJointInfo {
+    key: String,
+    label: String,
+    negative_label: String,
+    zero_label: String,
+    positive_label: String,
+    negative_deg: f32,
+    zero_deg: f32,
+    positive_deg: f32,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct CalibrationEntryView {
+    servo_id: u8,
+    leg_key: String,
+    joint_key: String,
+    negative_ticks: Option<u16>,
+    zero_ticks: Option<u16>,
+    positive_ticks: Option<u16>,
+    reference_count: usize,
+    zero_reference_ticks: Option<f32>,
+    max_reference_error_ticks: Option<f32>,
+}
+
 #[derive(Debug, Clone)]
 struct MotionRuntime {
     mode: BrainMode,
@@ -199,6 +245,45 @@ struct ManualControlState {
     base_pose: Option<BTreeMap<u8, u16>>,
     target_pose: Option<BTreeMap<u8, u16>>,
     summary: String,
+    pending_actions: VecDeque<ManualHardwareAction>,
+}
+
+#[derive(Debug, Clone)]
+enum ManualHardwareAction {
+    SetTorqueLimit {
+        group_key: String,
+        torque_limit: u16,
+    },
+    SyncTargetToCurrent {
+        group_key: String,
+    },
+}
+
+#[derive(Debug, Clone, Default)]
+struct SemanticCalibrationState {
+    path: Option<PathBuf>,
+    entries: BTreeMap<u8, ServoSemanticCalibrationEntry>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct SemanticCalibrationFile {
+    #[serde(default)]
+    servos: Vec<ServoSemanticCalibrationEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ServoSemanticCalibrationEntry {
+    servo_id: u8,
+    #[serde(default)]
+    leg_name: Option<String>,
+    #[serde(default)]
+    joint_key: Option<String>,
+    #[serde(default)]
+    negative_ticks: Option<u16>,
+    #[serde(default)]
+    zero_ticks: Option<u16>,
+    #[serde(default)]
+    positive_ticks: Option<u16>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -214,6 +299,38 @@ struct ManualResetRequest {
     group_key: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct ManualTorqueLimitRequest {
+    group_key: String,
+    torque_limit: u16,
+}
+
+#[derive(Debug, Deserialize)]
+struct ManualSyncTargetRequest {
+    group_key: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum CalibrationReferenceKey {
+    Negative,
+    Zero,
+    Positive,
+}
+
+#[derive(Debug, Deserialize)]
+struct CalibrationCaptureRequest {
+    leg_key: String,
+    joint_key: String,
+    reference_key: CalibrationReferenceKey,
+}
+
+#[derive(Debug, Deserialize)]
+struct CalibrationClearRequest {
+    leg_key: String,
+    joint_key: String,
+}
+
 #[derive(Debug, Serialize)]
 struct ManualCommandResponse {
     summary: String,
@@ -224,7 +341,12 @@ struct ServoPollOutcome {
 }
 
 impl TelemetryState {
-    fn from_config(config: &RobotConfig, mode: BrainMode, manual: &ManualControlState) -> Self {
+    fn from_config(
+        config: &RobotConfig,
+        mode: BrainMode,
+        manual: &ManualControlState,
+        calibration: &SemanticCalibrationState,
+    ) -> Self {
         let labels = servo_labels(config);
         let camera = RobotCamera::new(config.camera.clone());
 
@@ -252,7 +374,8 @@ impl TelemetryState {
             online_servo_count: 0,
             last_poll_error: Some("control worker not started yet".to_owned()),
             imu: telemetry_imu_from_config(config),
-            manual: build_manual_telemetry(config, manual, None),
+            manual: build_manual_telemetry(config, manual, calibration, None),
+            calibration: build_calibration_telemetry(config, calibration),
             servos: config
                 .all_servo_ids()
                 .into_iter()
@@ -282,7 +405,101 @@ impl ManualControlState {
             base_pose: None,
             target_pose: None,
             summary: summary.to_owned(),
+            pending_actions: VecDeque::new(),
         }
+    }
+}
+
+impl SemanticCalibrationState {
+    fn load(path: Option<PathBuf>) -> anyhow::Result<Self> {
+        let Some(path) = path else {
+            return Ok(Self::default());
+        };
+
+        let entries = if path.exists() {
+            let content = fs::read_to_string(&path)
+                .with_context(|| format!("failed to read {}", path.display()))?;
+            let file: SemanticCalibrationFile = toml::from_str(&content)
+                .with_context(|| format!("failed to parse {}", path.display()))?;
+            file.servos
+                .into_iter()
+                .map(|entry| (entry.servo_id, entry))
+                .collect()
+        } else {
+            BTreeMap::new()
+        };
+
+        Ok(Self {
+            path: Some(path),
+            entries,
+        })
+    }
+
+    fn is_enabled(&self) -> bool {
+        self.path.is_some()
+    }
+
+    fn store_path_display(&self) -> Option<String> {
+        self.path.as_ref().map(|path| path.display().to_string())
+    }
+
+    fn entry(&self, servo_id: u8) -> Option<&ServoSemanticCalibrationEntry> {
+        self.entries.get(&servo_id)
+    }
+
+    fn set_reference(
+        &mut self,
+        servo_id: u8,
+        leg_name: &str,
+        joint_key: &str,
+        reference_key: CalibrationReferenceKey,
+        ticks: u16,
+    ) {
+        let entry = self
+            .entries
+            .entry(servo_id)
+            .or_insert_with(|| ServoSemanticCalibrationEntry {
+                servo_id,
+                leg_name: Some(leg_name.to_owned()),
+                joint_key: Some(joint_key.to_owned()),
+                negative_ticks: None,
+                zero_ticks: None,
+                positive_ticks: None,
+            });
+        entry.leg_name = Some(leg_name.to_owned());
+        entry.joint_key = Some(joint_key.to_owned());
+        match reference_key {
+            CalibrationReferenceKey::Negative => entry.negative_ticks = Some(ticks),
+            CalibrationReferenceKey::Zero => entry.zero_ticks = Some(ticks),
+            CalibrationReferenceKey::Positive => entry.positive_ticks = Some(ticks),
+        }
+    }
+
+    fn clear_servo(&mut self, servo_id: u8) {
+        self.entries.remove(&servo_id);
+    }
+
+    fn save(&self) -> anyhow::Result<()> {
+        let Some(path) = &self.path else {
+            return Ok(());
+        };
+
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).with_context(|| {
+                format!(
+                    "failed to create calibration directory {}",
+                    parent.display()
+                )
+            })?;
+        }
+
+        let file = SemanticCalibrationFile {
+            servos: self.entries.values().cloned().collect(),
+        };
+        let content = toml::to_string_pretty(&file)
+            .context("failed to serialize semantic calibration file")?;
+        fs::write(path, content).with_context(|| format!("failed to write {}", path.display()))?;
+        Ok(())
     }
 }
 
@@ -648,18 +865,32 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let manual = Arc::new(RwLock::new(ManualControlState::for_mode(args.mode)));
+    let calibration_path = config
+        .semantic_calibration_store
+        .as_ref()
+        .map(|store| resolve_config_path(&args.config, &store.path));
+    let calibration = Arc::new(RwLock::new(
+        SemanticCalibrationState::load(calibration_path)
+            .context("failed to load semantic calibration state")?,
+    ));
     let initial_manual = manual
         .read()
         .map_err(|_| anyhow::anyhow!("failed to initialize manual control state"))?
+        .clone();
+    let initial_calibration = calibration
+        .read()
+        .map_err(|_| anyhow::anyhow!("failed to initialize semantic calibration state"))?
         .clone();
     let shared = Arc::new(RwLock::new(TelemetryState::from_config(
         &config,
         args.mode,
         &initial_manual,
+        &initial_calibration,
     )));
     spawn_control_worker(
         shared.clone(),
         manual.clone(),
+        calibration.clone(),
         config.clone(),
         args.mode,
         args.walk_seconds,
@@ -672,12 +903,17 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/manual/capture", post(api_manual_capture))
         .route("/api/manual/apply", post(api_manual_apply))
         .route("/api/manual/reset", post(api_manual_reset))
+        .route("/api/manual/torque-limit", post(api_manual_torque_limit))
+        .route("/api/manual/sync-current", post(api_manual_sync_current))
+        .route("/api/calibration/capture", post(api_calibration_capture))
+        .route("/api/calibration/clear", post(api_calibration_clear))
         .route("/camera.mjpg", get(camera_stream))
         .layer(CorsLayer::new().allow_origin(Any))
         .with_state(AppState {
             config: config.clone(),
             shared,
             manual,
+            calibration,
             dashboard_enabled: args.dashboard,
         });
 
@@ -715,6 +951,7 @@ async fn main() -> anyhow::Result<()> {
 fn spawn_control_worker(
     shared: Arc<RwLock<TelemetryState>>,
     manual: Arc<RwLock<ManualControlState>>,
+    calibration: Arc<RwLock<SemanticCalibrationState>>,
     config: RobotConfig,
     mode: BrainMode,
     walk_seconds: Option<f32>,
@@ -765,6 +1002,7 @@ fn spawn_control_worker(
                                 imu_state.clone(),
                                 &motion,
                                 &manual,
+                                &calibration,
                                 Some(format!("failed to open servo bus: {err}")),
                             ),
                         );
@@ -791,6 +1029,7 @@ fn spawn_control_worker(
                             imu_state.clone(),
                             &motion,
                             &manual,
+                            &calibration,
                             Some(format!("failed to enable torque: {err}")),
                         ),
                     );
@@ -836,6 +1075,7 @@ fn spawn_control_worker(
                         imu_state.clone(),
                         &motion,
                         &manual,
+                        &calibration,
                         Some("servo bus needs to be reopened".to_owned()),
                     ),
                 );
@@ -863,6 +1103,35 @@ fn spawn_control_worker(
                 }
             }
 
+            if mode == BrainMode::Manual && motion.fault.is_none() {
+                if let Err(err) = process_pending_manual_action(real_bus, &config, &manual) {
+                    if let Ok(mut control) = manual.write() {
+                        control.summary = format!("manual utility failed: {err}");
+                    }
+                    motion.trip_fault(
+                        format!("manual utility failed: {err}"),
+                        current_pose(&servo_ids, &servo_states),
+                    );
+                    bus = None;
+                    torque_enabled = false;
+                    write_state(
+                        &shared,
+                        build_state_snapshot(
+                            &config,
+                            &servo_ids,
+                            &servo_states,
+                            imu_state.clone(),
+                            &motion,
+                            &manual,
+                            &calibration,
+                            Some(format!("manual utility failed: {err}")),
+                        ),
+                    );
+                    sleep_remaining(tick_started, loop_period);
+                    continue;
+                }
+            }
+
             if let Some(commands) = motion.commands(&config, &gait, Some(&manual)) {
                 if let Err(err) = real_bus.sync_write_positions(&commands) {
                     motion.trip_fault(
@@ -880,6 +1149,7 @@ fn spawn_control_worker(
                             imu_state.clone(),
                             &motion,
                             &manual,
+                            &calibration,
                             Some(format!("sync write failed: {err}")),
                         ),
                     );
@@ -897,6 +1167,7 @@ fn spawn_control_worker(
                     imu_state.clone(),
                     &motion,
                     &manual,
+                    &calibration,
                     None,
                 ),
             );
@@ -996,9 +1267,14 @@ fn build_state_snapshot(
     imu: Option<TelemetryImuState>,
     motion: &MotionRuntime,
     manual: &Arc<RwLock<ManualControlState>>,
+    calibration: &Arc<RwLock<SemanticCalibrationState>>,
     transport_error: Option<String>,
 ) -> TelemetryState {
     let pose = current_pose(servo_ids, servo_states);
+    let calibration_snapshot = calibration
+        .read()
+        .map(|state| state.clone())
+        .unwrap_or_default();
     let servos = servo_ids
         .iter()
         .map(|servo_id| {
@@ -1012,6 +1288,7 @@ fn build_state_snapshot(
             servo.semantic_angle_deg = servo.telemetry.as_ref().and_then(|telemetry| {
                 servo_semantic_angle_deg(
                     config,
+                    &calibration_snapshot,
                     telemetry.servo_id,
                     telemetry.present_position_ticks,
                 )
@@ -1051,7 +1328,8 @@ fn build_state_snapshot(
         online_servo_count,
         last_poll_error,
         imu,
-        manual: manual_snapshot(config, manual, pose.as_ref()),
+        manual: manual_snapshot(config, manual, &calibration_snapshot, pose.as_ref()),
+        calibration: build_calibration_telemetry(config, &calibration_snapshot),
         servos,
     }
 }
@@ -1059,6 +1337,7 @@ fn build_state_snapshot(
 fn build_manual_telemetry(
     config: &RobotConfig,
     control: &ManualControlState,
+    calibration: &SemanticCalibrationState,
     current_pose: Option<&BTreeMap<u8, u16>>,
 ) -> TelemetryManualState {
     TelemetryManualState {
@@ -1067,7 +1346,12 @@ fn build_manual_telemetry(
         base_pose_captured: control.base_pose.is_some(),
         summary: control.summary.clone(),
         groups: manual_group_infos(config),
-        group_values: manual_group_values(config, current_pose, control.base_pose.as_ref()),
+        group_values: manual_group_values(
+            config,
+            calibration,
+            current_pose,
+            control.base_pose.as_ref(),
+        ),
         joints: manual_joint_infos(),
     }
 }
@@ -1075,10 +1359,11 @@ fn build_manual_telemetry(
 fn manual_snapshot(
     config: &RobotConfig,
     manual: &Arc<RwLock<ManualControlState>>,
+    calibration: &SemanticCalibrationState,
     current_pose: Option<&BTreeMap<u8, u16>>,
 ) -> TelemetryManualState {
     match manual.read() {
-        Ok(control) => build_manual_telemetry(config, &control, current_pose),
+        Ok(control) => build_manual_telemetry(config, &control, calibration, current_pose),
         Err(_) => TelemetryManualState {
             enabled: false,
             ready: false,
@@ -1088,6 +1373,69 @@ fn manual_snapshot(
             group_values: Vec::new(),
             joints: manual_joint_infos(),
         },
+    }
+}
+
+fn build_calibration_telemetry(
+    config: &RobotConfig,
+    calibration: &SemanticCalibrationState,
+) -> TelemetryCalibrationState {
+    let entries = config
+        .legs
+        .iter()
+        .flat_map(|leg| {
+            [
+                (leg.coxa_servo_id, "coxa"),
+                (leg.femur_servo_id, "femur"),
+                (leg.tibia_servo_id, "tibia"),
+            ]
+            .into_iter()
+            .filter_map(move |(servo_id, joint_key)| {
+                let entry = calibration.entry(servo_id)?;
+                let reference_count =
+                    [entry.negative_ticks, entry.zero_ticks, entry.positive_ticks]
+                        .into_iter()
+                        .flatten()
+                        .count();
+                Some(CalibrationEntryView {
+                    servo_id,
+                    leg_key: leg.name.clone(),
+                    joint_key: joint_key.to_owned(),
+                    negative_ticks: entry.negative_ticks,
+                    zero_ticks: entry.zero_ticks,
+                    positive_ticks: entry.positive_ticks,
+                    reference_count,
+                    zero_reference_ticks: servo_zero_reference_tick(config, calibration, servo_id),
+                    max_reference_error_ticks: servo_calibration_reference_error_ticks(
+                        config,
+                        calibration,
+                        servo_id,
+                    ),
+                })
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let summary = if calibration.is_enabled() {
+        format!("{} joint calibration profile(s) saved", entries.len())
+    } else {
+        "semantic calibration store disabled in this profile".to_owned()
+    };
+
+    TelemetryCalibrationState {
+        enabled: calibration.is_enabled(),
+        summary,
+        store_path: calibration.store_path_display(),
+        legs: config
+            .legs
+            .iter()
+            .map(|leg| CalibrationLegInfo {
+                key: leg.name.clone(),
+                label: humanize_leg_name(&leg.name),
+            })
+            .collect(),
+        joints: calibration_joint_infos(),
+        entries,
     }
 }
 
@@ -1188,6 +1536,7 @@ fn manual_group_info(key: &str, label: &str, legs: Vec<&str>) -> ManualGroupInfo
 
 fn manual_group_values(
     config: &RobotConfig,
+    calibration: &SemanticCalibrationState,
     current_pose: Option<&BTreeMap<u8, u16>>,
     base_pose: Option<&BTreeMap<u8, u16>>,
 ) -> Vec<ManualGroupValue> {
@@ -1199,33 +1548,70 @@ fn manual_group_values(
     };
 
     let mut groups = vec![
-        manual_group_value(config, "all_legs", current_pose, base_pose),
-        manual_group_value_for_filter(config, "left_side", current_pose, base_pose, |leg| {
-            leg.name.contains("left")
-        }),
-        manual_group_value_for_filter(config, "right_side", current_pose, base_pose, |leg| {
-            leg.name.contains("right")
-        }),
-        manual_group_value_for_filter(config, "front_pair", current_pose, base_pose, |leg| {
-            leg.name.starts_with("front_")
-        }),
-        manual_group_value_for_filter(config, "middle_pair", current_pose, base_pose, |leg| {
-            leg.name.starts_with("middle_")
-        }),
-        manual_group_value_for_filter(config, "rear_pair", current_pose, base_pose, |leg| {
-            leg.name.starts_with("rear_")
-        }),
-        manual_group_value_for_filter(config, "tripod_a", current_pose, base_pose, |leg| {
-            leg.is_tripod_a()
-        }),
-        manual_group_value_for_filter(config, "tripod_b", current_pose, base_pose, |leg| {
-            !leg.is_tripod_a()
-        }),
+        manual_group_value(config, calibration, "all_legs", current_pose, base_pose),
+        manual_group_value_for_filter(
+            config,
+            calibration,
+            "left_side",
+            current_pose,
+            base_pose,
+            |leg| leg.name.contains("left"),
+        ),
+        manual_group_value_for_filter(
+            config,
+            calibration,
+            "right_side",
+            current_pose,
+            base_pose,
+            |leg| leg.name.contains("right"),
+        ),
+        manual_group_value_for_filter(
+            config,
+            calibration,
+            "front_pair",
+            current_pose,
+            base_pose,
+            |leg| leg.name.starts_with("front_"),
+        ),
+        manual_group_value_for_filter(
+            config,
+            calibration,
+            "middle_pair",
+            current_pose,
+            base_pose,
+            |leg| leg.name.starts_with("middle_"),
+        ),
+        manual_group_value_for_filter(
+            config,
+            calibration,
+            "rear_pair",
+            current_pose,
+            base_pose,
+            |leg| leg.name.starts_with("rear_"),
+        ),
+        manual_group_value_for_filter(
+            config,
+            calibration,
+            "tripod_a",
+            current_pose,
+            base_pose,
+            |leg| leg.is_tripod_a(),
+        ),
+        manual_group_value_for_filter(
+            config,
+            calibration,
+            "tripod_b",
+            current_pose,
+            base_pose,
+            |leg| !leg.is_tripod_a(),
+        ),
     ];
 
     groups.extend(config.legs.iter().map(|leg| {
         manual_group_value_for_legs(
             format!("leg:{}", leg.name),
+            config,
+            calibration,
             current_pose,
             base_pose,
             vec![leg],
@@ -1237,12 +1623,15 @@ fn manual_group_values(
 
 fn manual_group_value(
     config: &RobotConfig,
+    calibration: &SemanticCalibrationState,
     key: &str,
     current_pose: &BTreeMap<u8, u16>,
     base_pose: &BTreeMap<u8, u16>,
 ) -> ManualGroupValue {
     manual_group_value_for_legs(
         key.to_owned(),
+        config,
+        calibration,
         current_pose,
         base_pose,
         config.legs.iter().collect(),
@@ -1251,6 +1640,7 @@ fn manual_group_value(
 
 fn manual_group_value_for_filter<F>(
     config: &RobotConfig,
+    calibration: &SemanticCalibrationState,
     key: &str,
     current_pose: &BTreeMap<u8, u16>,
     base_pose: &BTreeMap<u8, u16>,
@@ -1261,6 +1651,8 @@ where
 {
     manual_group_value_for_legs(
         key.to_owned(),
+        config,
+        calibration,
         current_pose,
         base_pose,
         config.legs.iter().filter(|leg| predicate(leg)).collect(),
@@ -1269,19 +1661,44 @@ where
 
 fn manual_group_value_for_legs(
     key: String,
+    config: &RobotConfig,
+    calibration: &SemanticCalibrationState,
     current_pose: &BTreeMap<u8, u16>,
     base_pose: &BTreeMap<u8, u16>,
     legs: Vec<&arachno_core::LegConfig>,
 ) -> ManualGroupValue {
     ManualGroupValue {
         key,
-        coxa_deg: manual_joint_group_average_deg(current_pose, base_pose, &legs, "coxa"),
-        femur_deg: manual_joint_group_average_deg(current_pose, base_pose, &legs, "femur"),
-        tibia_deg: manual_joint_group_average_deg(current_pose, base_pose, &legs, "tibia"),
+        coxa_deg: manual_joint_group_average_deg(
+            config,
+            calibration,
+            current_pose,
+            base_pose,
+            &legs,
+            "coxa",
+        ),
+        femur_deg: manual_joint_group_average_deg(
+            config,
+            calibration,
+            current_pose,
+            base_pose,
+            &legs,
+            "femur",
+        ),
+        tibia_deg: manual_joint_group_average_deg(
+            config,
+            calibration,
+            current_pose,
+            base_pose,
+            &legs,
+            "tibia",
+        ),
     }
 }
 
 fn manual_joint_group_average_deg(
+    config: &RobotConfig,
+    calibration: &SemanticCalibrationState,
     current_pose: &BTreeMap<u8, u16>,
     base_pose: &BTreeMap<u8, u16>,
     legs: &[&arachno_core::LegConfig],
@@ -1290,13 +1707,13 @@ fn manual_joint_group_average_deg(
     let values = legs
         .iter()
         .filter_map(|leg| {
-            let (servo_id, sign) = manual_joint_servo_and_sign(leg, joint_key)?;
+            let servo_id = manual_joint_servo_and_sign(leg, joint_key)?.0;
             let current_ticks = current_pose.get(&servo_id).copied()?;
             let base_ticks = base_pose.get(&servo_id).copied()?;
-            Some(semantic_ticks_to_degrees(
-                i32::from(current_ticks) - i32::from(base_ticks),
-                sign,
-            ))
+            let current_deg =
+                servo_semantic_angle_deg(config, calibration, servo_id, current_ticks)?;
+            let base_deg = servo_semantic_angle_deg(config, calibration, servo_id, base_ticks)?;
+            Some(current_deg - base_deg)
         })
         .collect::<Vec<_>>();
 
@@ -1332,6 +1749,41 @@ fn manual_joint_infos() -> Vec<ManualJointInfo> {
             positive_label: "up".to_owned(),
             min_deg: -MANUAL_TIBIA_LIMIT_DEG,
             max_deg: MANUAL_TIBIA_LIMIT_DEG,
+        },
+    ]
+}
+
+fn calibration_joint_infos() -> Vec<CalibrationJointInfo> {
+    vec![
+        CalibrationJointInfo {
+            key: "coxa".to_owned(),
+            label: "Coxa".to_owned(),
+            negative_label: "back".to_owned(),
+            zero_label: "center".to_owned(),
+            positive_label: "forward".to_owned(),
+            negative_deg: -45.0,
+            zero_deg: 0.0,
+            positive_deg: 45.0,
+        },
+        CalibrationJointInfo {
+            key: "femur".to_owned(),
+            label: "Femur".to_owned(),
+            negative_label: "down".to_owned(),
+            zero_label: "neutral".to_owned(),
+            positive_label: "up".to_owned(),
+            negative_deg: -45.0,
+            zero_deg: 0.0,
+            positive_deg: 45.0,
+        },
+        CalibrationJointInfo {
+            key: "tibia".to_owned(),
+            label: "Tibia".to_owned(),
+            negative_label: "down".to_owned(),
+            zero_label: "neutral".to_owned(),
+            positive_label: "up".to_owned(),
+            negative_deg: -60.0,
+            zero_deg: 0.0,
+            positive_deg: 60.0,
         },
     ]
 }
@@ -1408,7 +1860,7 @@ fn current_pose_from_shared_snapshot(
     current_pose_from_snapshot_servos(&snapshot.servos).ok_or_else(|| {
         manual_api_error(
             StatusCode::CONFLICT,
-            "manual control needs fresh feedback from all configured servos before it can capture or apply angles",
+            "fresh feedback from all configured servos is required before capture or apply actions can run",
         )
     })
 }
@@ -1434,8 +1886,54 @@ fn ensure_manual_enabled(state: &AppState) -> Result<(), (StatusCode, String)> {
     }
 }
 
+fn ensure_calibration_enabled(state: &AppState) -> Result<(), (StatusCode, String)> {
+    let enabled = state
+        .calibration
+        .read()
+        .map_err(|_| {
+            manual_api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "semantic calibration lock poisoned",
+            )
+        })?
+        .is_enabled();
+    if enabled {
+        Ok(())
+    } else {
+        Err(manual_api_error(
+            StatusCode::CONFLICT,
+            "semantic calibration store is disabled for this profile",
+        ))
+    }
+}
+
 fn manual_api_error(status: StatusCode, message: impl Into<String>) -> (StatusCode, String) {
     (status, message.into())
+}
+
+fn resolve_leg<'a>(config: &'a RobotConfig, leg_key: &str) -> Option<&'a arachno_core::LegConfig> {
+    config.legs.iter().find(|leg| leg.name == leg_key)
+}
+
+fn resolve_servo_id_for_joint(leg: &arachno_core::LegConfig, joint_key: &str) -> Option<u8> {
+    match joint_key {
+        "coxa" => Some(leg.coxa_servo_id),
+        "femur" => Some(leg.femur_servo_id),
+        "tibia" => Some(leg.tibia_servo_id),
+        _ => None,
+    }
+}
+
+fn resolve_config_path(base_config_path: &Path, relative_or_absolute: &str) -> PathBuf {
+    let path = PathBuf::from(relative_or_absolute);
+    if path.is_absolute() {
+        path
+    } else {
+        base_config_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(path)
+    }
 }
 
 fn resolve_manual_group<'a>(
@@ -1472,21 +1970,115 @@ fn resolve_manual_group<'a>(
     }
 }
 
+fn manual_group_servo_ids(legs: &[&arachno_core::LegConfig]) -> Vec<u8> {
+    let mut servo_ids = Vec::with_capacity(legs.len() * 3);
+    for leg in legs {
+        servo_ids.push(leg.coxa_servo_id);
+        servo_ids.push(leg.femur_servo_id);
+        servo_ids.push(leg.tibia_servo_id);
+    }
+    servo_ids
+}
+
+fn process_pending_manual_action(
+    bus: &mut RealStsBus,
+    config: &RobotConfig,
+    manual: &Arc<RwLock<ManualControlState>>,
+) -> anyhow::Result<Option<String>> {
+    let (action, target_seed) = {
+        let mut control = manual
+            .write()
+            .map_err(|_| anyhow::anyhow!("manual control lock poisoned"))?;
+        (
+            control.pending_actions.pop_front(),
+            control
+                .target_pose
+                .clone()
+                .or_else(|| control.base_pose.clone()),
+        )
+    };
+    let Some(action) = action else {
+        return Ok(None);
+    };
+
+    let group_key = match &action {
+        ManualHardwareAction::SetTorqueLimit { group_key, .. }
+        | ManualHardwareAction::SyncTargetToCurrent { group_key } => group_key.as_str(),
+    };
+    let (group_label, legs) = resolve_manual_group(config, group_key)
+        .ok_or_else(|| anyhow::anyhow!("unknown manual control group {group_key}"))?;
+    let servo_ids = manual_group_servo_ids(&legs);
+    let current_group_pose = read_current_pose(bus, &servo_ids)
+        .map_err(|err| anyhow::anyhow!("failed to read current pose for {group_label}: {err}"))?;
+
+    let mut next_target_pose = if let Some(seed) = target_seed {
+        seed
+    } else {
+        let all_servo_ids = bus.servo_ids().to_vec();
+        read_current_pose(bus, &all_servo_ids).map_err(|err| {
+            anyhow::anyhow!("failed to read current pose while seeding manual target: {err}")
+        })?
+    };
+    for (&servo_id, &ticks) in &current_group_pose {
+        next_target_pose.insert(servo_id, ticks);
+    }
+
+    let summary = match action {
+        ManualHardwareAction::SetTorqueLimit { torque_limit, .. } => {
+            set_verified_torque_limit_on_current_position_for_ids(bus, &servo_ids, torque_limit)
+                .map_err(|err| {
+                    anyhow::anyhow!(
+                        "failed to apply verified torque limit {} to {}: {}",
+                        torque_limit,
+                        group_label,
+                        err
+                    )
+                })?;
+            format!(
+                "manual utility: synced {} to the live pose and applied torque limit {}",
+                group_label, torque_limit
+            )
+        }
+        ManualHardwareAction::SyncTargetToCurrent { .. } => {
+            format!(
+                "manual utility: synced {} target to the live pose",
+                group_label
+            )
+        }
+    };
+
+    let mut control = manual
+        .write()
+        .map_err(|_| anyhow::anyhow!("manual control lock poisoned"))?;
+    control.target_pose = Some(next_target_pose);
+    control.summary = summary.clone();
+    Ok(Some(summary))
+}
+
 fn set_manual_joint_target(
+    config: &RobotConfig,
+    calibration: &SemanticCalibrationState,
     target_pose: &mut BTreeMap<u8, u16>,
     base_pose: &BTreeMap<u8, u16>,
     leg: &arachno_core::LegConfig,
     joint_key: &str,
     degrees: f32,
 ) {
-    let Some((servo_id, sign)) = manual_joint_servo_and_sign(leg, joint_key) else {
+    let Some((servo_id, _sign)) = manual_joint_servo_and_sign(leg, joint_key) else {
         return;
     };
     let Some(base_ticks) = base_pose.get(&servo_id).copied() else {
         return;
     };
-    let delta_ticks = semantic_degrees_to_ticks(degrees, sign);
-    let next_ticks = (i32::from(base_ticks) + i32::from(delta_ticks)).clamp(0, 4095) as u16;
+    let Some(base_degrees) = servo_semantic_angle_deg(config, calibration, servo_id, base_ticks)
+    else {
+        return;
+    };
+    let Some(next_ticks) =
+        servo_ticks_for_semantic_angle_deg(config, calibration, servo_id, base_degrees + degrees)
+    else {
+        return;
+    };
     target_pose.insert(servo_id, next_ticks);
 }
 
@@ -1514,34 +2106,145 @@ fn manual_joint_servo_and_sign(
     }
 }
 
-fn semantic_degrees_to_ticks(degrees: f32, sign: i16) -> i16 {
-    let delta = degrees * (4096.0 / 360.0);
-    (delta * sign as f32).round() as i16
-}
-
 fn semantic_ticks_to_degrees(delta_ticks: i32, sign: i16) -> f32 {
     delta_ticks as f32 * 360.0 / 4096.0 / sign as f32
 }
 
-fn servo_semantic_angle_deg(config: &RobotConfig, servo_id: u8, present_ticks: u16) -> Option<f32> {
+fn calibration_ticks_per_degree(sign: i16) -> f32 {
+    4096.0 / 360.0 * sign as f32
+}
+
+fn calibration_reference_degrees(
+    joint_key: &str,
+    reference_key: CalibrationReferenceKey,
+) -> Option<f32> {
+    let joint = calibration_joint_infos()
+        .into_iter()
+        .find(|joint| joint.key == joint_key)?;
+    Some(match reference_key {
+        CalibrationReferenceKey::Negative => joint.negative_deg,
+        CalibrationReferenceKey::Zero => joint.zero_deg,
+        CalibrationReferenceKey::Positive => joint.positive_deg,
+    })
+}
+
+fn servo_semantic_metadata(
+    config: &RobotConfig,
+    servo_id: u8,
+) -> Option<(&arachno_core::LegConfig, u16, i16, &'static str)> {
     let leg = config.legs.iter().find(|leg| {
         leg.coxa_servo_id == servo_id
             || leg.femur_servo_id == servo_id
             || leg.tibia_servo_id == servo_id
     })?;
 
-    let (reference_ticks, sign) = if leg.coxa_servo_id == servo_id {
-        (leg.coxa_stand_reference_ticks, leg.coxa_forward_sign())
+    let (reference_ticks, sign, joint_key) = if leg.coxa_servo_id == servo_id {
+        (
+            leg.coxa_stand_reference_ticks,
+            leg.coxa_forward_sign(),
+            "coxa",
+        )
     } else if leg.femur_servo_id == servo_id {
-        (leg.femur_stand_reference_ticks, leg.femur_lift_sign())
+        (
+            leg.femur_stand_reference_ticks,
+            leg.femur_lift_sign(),
+            "femur",
+        )
     } else {
-        (leg.tibia_stand_reference_ticks, leg.tibia_lift_sign())
+        (
+            leg.tibia_stand_reference_ticks,
+            leg.tibia_lift_sign(),
+            "tibia",
+        )
     };
 
+    Some((leg, reference_ticks, sign, joint_key))
+}
+
+fn servo_calibration_implied_zeroes(
+    config: &RobotConfig,
+    calibration: &SemanticCalibrationState,
+    servo_id: u8,
+) -> Option<Vec<f32>> {
+    let (_leg, _reference_ticks, sign, joint_key) = servo_semantic_metadata(config, servo_id)?;
+    let entry = calibration.entry(servo_id)?;
+    let slope = calibration_ticks_per_degree(sign);
+    let mut zeroes = Vec::new();
+    for (reference_key, ticks) in [
+        (CalibrationReferenceKey::Negative, entry.negative_ticks),
+        (CalibrationReferenceKey::Zero, entry.zero_ticks),
+        (CalibrationReferenceKey::Positive, entry.positive_ticks),
+    ] {
+        if let (Some(ticks), Some(degrees)) = (
+            ticks,
+            calibration_reference_degrees(joint_key, reference_key),
+        ) {
+            zeroes.push(ticks as f32 - degrees * slope);
+        }
+    }
+    (!zeroes.is_empty()).then_some(zeroes)
+}
+
+fn servo_zero_reference_tick(
+    config: &RobotConfig,
+    calibration: &SemanticCalibrationState,
+    servo_id: u8,
+) -> Option<f32> {
+    let (_leg, reference_ticks, _sign, _joint_key) = servo_semantic_metadata(config, servo_id)?;
+    let Some(zeroes) = servo_calibration_implied_zeroes(config, calibration, servo_id) else {
+        return Some(reference_ticks as f32);
+    };
+    if zeroes.is_empty() {
+        return Some(reference_ticks as f32);
+    }
+    Some(zeroes.iter().sum::<f32>() / zeroes.len() as f32)
+}
+
+fn servo_calibration_reference_error_ticks(
+    config: &RobotConfig,
+    calibration: &SemanticCalibrationState,
+    servo_id: u8,
+) -> Option<f32> {
+    let zeroes = servo_calibration_implied_zeroes(config, calibration, servo_id)?;
+    if zeroes.is_empty() {
+        return None;
+    }
+    let average = zeroes.iter().sum::<f32>() / zeroes.len() as f32;
+    Some(
+        zeroes
+            .into_iter()
+            .map(|value| (value - average).abs())
+            .fold(0.0, f32::max),
+    )
+}
+
+fn servo_semantic_angle_deg(
+    config: &RobotConfig,
+    calibration: &SemanticCalibrationState,
+    servo_id: u8,
+    present_ticks: u16,
+) -> Option<f32> {
+    let (_leg, _reference_ticks, sign, _joint_key) = servo_semantic_metadata(config, servo_id)?;
+    let zero_tick = servo_zero_reference_tick(config, calibration, servo_id)?;
     Some(semantic_ticks_to_degrees(
-        i32::from(present_ticks) - i32::from(reference_ticks),
+        (present_ticks as f32 - zero_tick).round() as i32,
         sign,
     ))
+}
+
+fn servo_ticks_for_semantic_angle_deg(
+    config: &RobotConfig,
+    calibration: &SemanticCalibrationState,
+    servo_id: u8,
+    degrees: f32,
+) -> Option<u16> {
+    let (_leg, _reference_ticks, sign, _joint_key) = servo_semantic_metadata(config, servo_id)?;
+    let zero_tick = servo_zero_reference_tick(config, calibration, servo_id)?;
+    Some(
+        (zero_tick + degrees * calibration_ticks_per_degree(sign))
+            .round()
+            .clamp(0.0, 4095.0) as u16,
+    )
 }
 
 fn pose_to_commands(pose: &BTreeMap<u8, u16>) -> Vec<JointCommand> {
@@ -1836,11 +2539,41 @@ async fn api_manual_apply(
         .clone()
         .unwrap_or_else(|| base_pose.clone());
     manual.base_pose = Some(base_pose.clone());
+    let calibration = state.calibration.read().map_err(|_| {
+        manual_api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "semantic calibration lock poisoned",
+        )
+    })?;
 
     for leg in legs {
-        set_manual_joint_target(&mut target_pose, &base_pose, leg, "coxa", coxa_deg);
-        set_manual_joint_target(&mut target_pose, &base_pose, leg, "femur", femur_deg);
-        set_manual_joint_target(&mut target_pose, &base_pose, leg, "tibia", tibia_deg);
+        set_manual_joint_target(
+            &state.config,
+            &calibration,
+            &mut target_pose,
+            &base_pose,
+            leg,
+            "coxa",
+            coxa_deg,
+        );
+        set_manual_joint_target(
+            &state.config,
+            &calibration,
+            &mut target_pose,
+            &base_pose,
+            leg,
+            "femur",
+            femur_deg,
+        );
+        set_manual_joint_target(
+            &state.config,
+            &calibration,
+            &mut target_pose,
+            &base_pose,
+            leg,
+            "tibia",
+            tibia_deg,
+        );
     }
 
     let summary = format!(
@@ -1895,6 +2628,147 @@ async fn api_manual_reset(
         summary
     };
 
+    Ok(Json(ManualCommandResponse { summary }))
+}
+
+async fn api_manual_torque_limit(
+    State(state): State<AppState>,
+    Json(request): Json<ManualTorqueLimitRequest>,
+) -> Result<Json<ManualCommandResponse>, (StatusCode, String)> {
+    ensure_manual_enabled(&state)?;
+    let (group_label, _) = resolve_manual_group(&state.config, &request.group_key)
+        .ok_or_else(|| manual_api_error(StatusCode::BAD_REQUEST, "unknown manual control group"))?;
+    let torque_limit = request.torque_limit.min(MANUAL_TORQUE_LIMIT_MAX);
+
+    let mut manual = state.manual.write().map_err(|_| {
+        manual_api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "manual control lock poisoned",
+        )
+    })?;
+    manual
+        .pending_actions
+        .push_back(ManualHardwareAction::SetTorqueLimit {
+            group_key: request.group_key.clone(),
+            torque_limit,
+        });
+    let summary = format!(
+        "queued torque limit {} for {}; the control worker will sync current pose first",
+        torque_limit, group_label
+    );
+    manual.summary = summary.clone();
+
+    Ok(Json(ManualCommandResponse { summary }))
+}
+
+async fn api_manual_sync_current(
+    State(state): State<AppState>,
+    Json(request): Json<ManualSyncTargetRequest>,
+) -> Result<Json<ManualCommandResponse>, (StatusCode, String)> {
+    ensure_manual_enabled(&state)?;
+    let (group_label, _) = resolve_manual_group(&state.config, &request.group_key)
+        .ok_or_else(|| manual_api_error(StatusCode::BAD_REQUEST, "unknown manual control group"))?;
+
+    let mut manual = state.manual.write().map_err(|_| {
+        manual_api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "manual control lock poisoned",
+        )
+    })?;
+    manual
+        .pending_actions
+        .push_back(ManualHardwareAction::SyncTargetToCurrent {
+            group_key: request.group_key.clone(),
+        });
+    let summary = format!(
+        "queued live target sync for {}; the control worker will update the manual target to the current pose",
+        group_label
+    );
+    manual.summary = summary.clone();
+
+    Ok(Json(ManualCommandResponse { summary }))
+}
+
+async fn api_calibration_capture(
+    State(state): State<AppState>,
+    Json(request): Json<CalibrationCaptureRequest>,
+) -> Result<Json<ManualCommandResponse>, (StatusCode, String)> {
+    ensure_calibration_enabled(&state)?;
+    let pose = current_pose_from_shared_snapshot(&state)?;
+    let leg = resolve_leg(&state.config, &request.leg_key)
+        .ok_or_else(|| manual_api_error(StatusCode::BAD_REQUEST, "unknown calibration leg"))?;
+    let servo_id = resolve_servo_id_for_joint(leg, &request.joint_key)
+        .ok_or_else(|| manual_api_error(StatusCode::BAD_REQUEST, "unknown calibration joint"))?;
+    let ticks = pose.get(&servo_id).copied().ok_or_else(|| {
+        manual_api_error(
+            StatusCode::CONFLICT,
+            "selected joint has no fresh live feedback to capture",
+        )
+    })?;
+
+    let mut calibration = state.calibration.write().map_err(|_| {
+        manual_api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "semantic calibration lock poisoned",
+        )
+    })?;
+    calibration.set_reference(
+        servo_id,
+        &leg.name,
+        &request.joint_key,
+        request.reference_key,
+        ticks,
+    );
+    calibration.save().map_err(|err| {
+        manual_api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to persist semantic calibration: {err}"),
+        )
+    })?;
+
+    let reference_label = match request.reference_key {
+        CalibrationReferenceKey::Negative => "negative",
+        CalibrationReferenceKey::Zero => "zero",
+        CalibrationReferenceKey::Positive => "positive",
+    };
+    let summary = format!(
+        "captured {reference_label} reference for {} {} at {} ticks",
+        humanize_leg_name(&leg.name),
+        request.joint_key,
+        ticks
+    );
+    Ok(Json(ManualCommandResponse { summary }))
+}
+
+async fn api_calibration_clear(
+    State(state): State<AppState>,
+    Json(request): Json<CalibrationClearRequest>,
+) -> Result<Json<ManualCommandResponse>, (StatusCode, String)> {
+    ensure_calibration_enabled(&state)?;
+    let leg = resolve_leg(&state.config, &request.leg_key)
+        .ok_or_else(|| manual_api_error(StatusCode::BAD_REQUEST, "unknown calibration leg"))?;
+    let servo_id = resolve_servo_id_for_joint(leg, &request.joint_key)
+        .ok_or_else(|| manual_api_error(StatusCode::BAD_REQUEST, "unknown calibration joint"))?;
+
+    let mut calibration = state.calibration.write().map_err(|_| {
+        manual_api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "semantic calibration lock poisoned",
+        )
+    })?;
+    calibration.clear_servo(servo_id);
+    calibration.save().map_err(|err| {
+        manual_api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to persist semantic calibration: {err}"),
+        )
+    })?;
+
+    let summary = format!(
+        "cleared saved calibration for {} {}",
+        humanize_leg_name(&leg.name),
+        request.joint_key
+    );
     Ok(Json(ManualCommandResponse { summary }))
 }
 

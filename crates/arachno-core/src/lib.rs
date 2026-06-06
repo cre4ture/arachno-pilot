@@ -15,6 +15,8 @@ pub struct RobotConfig {
     #[serde(default)]
     pub servo_store: Option<ServoStoreConfig>,
     #[serde(default)]
+    pub semantic_calibration_store: Option<SemanticCalibrationStoreConfig>,
+    #[serde(default)]
     pub servo_eeprom: ServoEepromConfig,
     #[serde(default)]
     pub bus: BusConfig,
@@ -45,6 +47,11 @@ pub struct RobotMeta {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServoStoreConfig {
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SemanticCalibrationStoreConfig {
     pub path: String,
 }
 

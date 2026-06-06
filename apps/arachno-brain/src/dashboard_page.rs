@@ -209,6 +209,7 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
     }
 
     .manual-card select,
+    .manual-card input,
     .manual-card button,
     .manual-sliders button {
       width: 100%;
@@ -230,6 +231,10 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
     .manual-sliders button:hover {
       transform: translateY(-1px);
       border-color: rgba(255, 146, 84, 0.45);
+    }
+
+    .manual-card input[type="number"] {
+      appearance: textfield;
     }
 
     .manual-card button:disabled,
@@ -292,6 +297,47 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
 
     .manual-actions .wide {
       grid-column: 1 / -1;
+    }
+
+    .calibration-actions-layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1.2fr) minmax(16rem, 0.8fr);
+      gap: 12px;
+      align-items: stretch;
+      margin-top: 4px;
+    }
+
+    .calibration-actions-layout .manual-actions {
+      margin-top: 0;
+      align-content: start;
+    }
+
+    .calibration-reference-card {
+      padding: 16px;
+      background: var(--panel-strong);
+      border-radius: 16px;
+      border: 1px solid rgba(255,255,255,0.06);
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .calibration-reference-sketch {
+      width: 100%;
+      height: 12rem;
+      display: block;
+      border-radius: 14px;
+      background:
+        radial-gradient(circle at center, rgba(255, 146, 84, 0.08), transparent 68%),
+        rgba(7, 11, 16, 0.7);
+      border: 1px solid rgba(255,255,255,0.06);
+    }
+
+    .calibration-reference-caption {
+      color: var(--muted);
+      font-size: 0.86rem;
+      line-height: 1.45;
+      margin-top: -2px;
     }
 
     .manual-live-toggle {
@@ -781,6 +827,53 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
           <button id="manual-capture" class="wide" type="button">Capture Current Pose As Manual Zero</button>
           <button id="copy-current-pose" class="wide" type="button">Copy Current Pose To Clipboard</button>
         </div>
+
+        <div class="manual-grid" style="margin-top: 18px;">
+          <div class="manual-card">
+            <div class="stat-label">Selected Group Torque Limit</div>
+            <input id="manual-torque-limit" type="number" min="0" max="1000" step="1" value="1000" />
+            <div class="stat-note">Applied to the currently selected group after first syncing each target to the live pose.</div>
+          </div>
+          <div class="manual-card">
+            <div class="stat-label">Manual Utility</div>
+            <div class="manual-actions" style="margin-top: 0;">
+              <button id="manual-set-torque-limit" class="wide" type="button">Apply Torque Limit To Selected Group</button>
+              <button id="manual-sync-current" class="wide" type="button">Set Selected Group Target To Current Pose</button>
+            </div>
+            <div class="stat-note">Useful before changing resistance or after physically nudging a leg into a new position.</div>
+          </div>
+        </div>
+
+        <div class="manual-grid" style="margin-top: 18px;">
+          <div class="manual-card">
+            <div class="stat-label">Semantic Calibration Leg</div>
+            <select id="calibration-leg"></select>
+            <div class="stat-note" id="calibration-leg-note">Choose a single leg for joint-angle reference capture.</div>
+          </div>
+          <div class="manual-card">
+            <div class="stat-label">Semantic Calibration Joint</div>
+            <select id="calibration-joint"></select>
+            <div class="stat-note" id="calibration-joint-note">Captured points adjust the zero reference while keeping the 4096/360 slope fixed.</div>
+          </div>
+        </div>
+
+        <div class="calibration-actions-layout">
+          <div class="manual-actions">
+            <button id="calibration-capture-negative" type="button">Capture Negative</button>
+            <button id="calibration-capture-zero" type="button">Capture Zero</button>
+            <button id="calibration-capture-positive" type="button">Capture Positive</button>
+            <button id="calibration-clear-joint" class="wide" type="button">Clear Selected Joint Calibration</button>
+          </div>
+          <div class="calibration-reference-card">
+            <div class="stat-label">Reference Sketch</div>
+            <svg id="calibration-reference-sketch" class="calibration-reference-sketch" viewBox="0 0 280 180" aria-label="Calibration reference sketch"></svg>
+            <div id="calibration-reference-caption" class="calibration-reference-caption">
+              The sketch shows the expected negative, zero, and positive reference poses for the selected joint.
+            </div>
+          </div>
+        </div>
+        <div class="stat-note" id="calibration-summary" style="margin-top: 12px;">semantic calibration unavailable</div>
+        <div class="stat-note" id="calibration-entry-note" style="margin-top: 8px;">No joint selected yet.</div>
       </div>
     </section>
 
@@ -820,6 +913,10 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
     const manualApplyUrl = "/api/manual/apply";
     const manualResetUrl = "/api/manual/reset";
     const manualCaptureUrl = "/api/manual/capture";
+    const manualTorqueLimitUrl = "/api/manual/torque-limit";
+    const manualSyncCurrentUrl = "/api/manual/sync-current";
+    const calibrationCaptureUrl = "/api/calibration/capture";
+    const calibrationClearUrl = "/api/calibration/clear";
     const manualLiveApplyIntervalMs = 200;
     let streamStarted = false;
     let manualGroupsReady = false;
@@ -891,6 +988,12 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
       document.getElementById(`manual-${axis}-value`).textContent = `${sliderValue(axis).toFixed(1)}°`;
     }
 
+    function manualTorqueLimitValue() {
+      const value = Number(document.getElementById("manual-torque-limit").value);
+      if (!Number.isFinite(value)) return 1000;
+      return Math.min(1000, Math.max(0, Math.round(value)));
+    }
+
     function manualLiveApplyEnabled() {
       return document.getElementById("manual-live-apply").checked;
     }
@@ -960,6 +1063,271 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
     function currentManualGroupValue() {
       const groupKey = document.getElementById("manual-group").value;
       return (window.__manualGroupValues ?? []).find((group) => group.key === groupKey) ?? null;
+    }
+
+    function currentCalibrationEntry() {
+      const legKey = document.getElementById("calibration-leg").value;
+      const jointKey = document.getElementById("calibration-joint").value;
+      return (window.__calibrationEntries ?? []).find((entry) => entry.leg_key === legKey && entry.joint_key === jointKey) ?? null;
+    }
+
+    function currentCalibrationJoint() {
+      const jointKey = document.getElementById("calibration-joint").value;
+      return (window.__calibrationJoints ?? []).find((joint) => joint.key === jointKey) ?? null;
+    }
+
+    function currentCalibrationLeg() {
+      return document.getElementById("calibration-leg").value || null;
+    }
+
+    function syncCalibrationLegs(legs) {
+      const select = document.getElementById("calibration-leg");
+      const previous = select.value;
+      select.innerHTML = "";
+      for (const leg of legs ?? []) {
+        const option = document.createElement("option");
+        option.value = leg.key;
+        option.textContent = leg.label;
+        select.appendChild(option);
+      }
+      if (previous && [...select.options].some((option) => option.value === previous)) {
+        select.value = previous;
+      }
+    }
+
+    function syncCalibrationJoints(joints) {
+      const select = document.getElementById("calibration-joint");
+      const previous = select.value;
+      select.innerHTML = "";
+      for (const joint of joints ?? []) {
+        const option = document.createElement("option");
+        option.value = joint.key;
+        option.textContent = joint.label;
+        select.appendChild(option);
+      }
+      if (previous && [...select.options].some((option) => option.value === previous)) {
+        select.value = previous;
+      }
+    }
+
+    function updateCalibrationLabels() {
+      const joint = currentCalibrationJoint();
+      document.getElementById("calibration-leg-note").textContent = joint
+        ? `Capture ${joint.label.toLowerCase()} reference poses one leg at a time.`
+        : "Choose a single leg for joint-angle reference capture.";
+      document.getElementById("calibration-joint-note").textContent = joint
+        ? `${joint.negative_label} ${joint.negative_deg.toFixed(0)}°, ${joint.zero_label} ${joint.zero_deg.toFixed(0)}°, ${joint.positive_label} ${joint.positive_deg.toFixed(0)}°. The slope stays fixed at 4096/360.`
+        : "Captured points adjust the zero reference while keeping the 4096/360 slope fixed.";
+      document.getElementById("calibration-capture-negative").textContent = joint
+        ? `Capture ${joint.negative_label} (${joint.negative_deg.toFixed(0)}°)`
+        : "Capture Negative";
+      document.getElementById("calibration-capture-zero").textContent = joint
+        ? `Capture ${joint.zero_label} (${joint.zero_deg.toFixed(0)}°)`
+        : "Capture Zero";
+      document.getElementById("calibration-capture-positive").textContent = joint
+        ? `Capture ${joint.positive_label} (${joint.positive_deg.toFixed(0)}°)`
+        : "Capture Positive";
+      renderCalibrationReferenceSketch(joint, currentCalibrationLeg());
+    }
+
+    function updateCalibrationEntryNote() {
+      const entry = currentCalibrationEntry();
+      if (!entry) {
+        document.getElementById("calibration-entry-note").textContent =
+          "No saved references for the selected joint yet.";
+        return;
+      }
+
+      const refs = [
+        entry.negative_ticks != null ? `neg ${entry.negative_ticks}` : null,
+        entry.zero_ticks != null ? `zero ${entry.zero_ticks}` : null,
+        entry.positive_ticks != null ? `pos ${entry.positive_ticks}` : null,
+      ].filter(Boolean).join(" | ");
+      const zeroTick = Number.isFinite(entry.zero_reference_ticks)
+        ? `inferred zero ${entry.zero_reference_ticks.toFixed(1)}`
+        : "inferred zero n/a";
+      const spread = Number.isFinite(entry.max_reference_error_ticks)
+        ? `max spread ${entry.max_reference_error_ticks.toFixed(1)} ticks`
+        : "need at least 2 references to validate";
+      document.getElementById("calibration-entry-note").textContent =
+        `${entry.reference_count} reference(s): ${refs || "none"} | ${zeroTick} | ${spread}`;
+    }
+
+    function setCalibrationControlsEnabled(enabled) {
+      document.getElementById("calibration-leg").disabled = !enabled;
+      document.getElementById("calibration-joint").disabled = !enabled;
+      document.getElementById("calibration-capture-negative").disabled = !enabled;
+      document.getElementById("calibration-capture-zero").disabled = !enabled;
+      document.getElementById("calibration-capture-positive").disabled = !enabled;
+      document.getElementById("calibration-clear-joint").disabled = !enabled;
+    }
+
+    function polarPoint(origin, length, degrees) {
+      const rad = degrees * Math.PI / 180;
+      return {
+        x: origin.x + Math.cos(rad) * length,
+        y: origin.y + Math.sin(rad) * length,
+      };
+    }
+
+    function calibrationLegMeta(legKey) {
+      return LEG_META[legKey] ?? { label: "Selected leg", side: "left" };
+    }
+
+    function calibrationSketchForCoxa(joint, legKey) {
+      const meta = calibrationLegMeta(legKey);
+      const isLeft = meta.side === "left";
+      const origin = isLeft ? { x: 188, y: 92 } : { x: 92, y: 92 };
+      const radius = 68;
+      const baseDegMap = {
+        front_left: 225,
+        middle_left: 180,
+        rear_left: 135,
+        front_right: 315,
+        middle_right: 0,
+        rear_right: 45,
+      };
+      const baseDeg = baseDegMap[legKey] ?? (isLeft ? 180 : 0);
+      const scale = 0.42;
+      const angles = {
+        negative: baseDeg + (isLeft ? joint.negative_deg * scale : -joint.negative_deg * scale),
+        zero: baseDeg + (isLeft ? joint.zero_deg * scale : -joint.zero_deg * scale),
+        positive: baseDeg + (isLeft ? joint.positive_deg * scale : -joint.positive_deg * scale),
+      };
+      const negativeEnd = polarPoint(origin, radius, angles.negative);
+      const zeroEnd = polarPoint(origin, radius, angles.zero);
+      const positiveEnd = polarPoint(origin, radius, angles.positive);
+      const bodyGuideStart = isLeft ? { x: 234, y: 92 } : { x: 46, y: 92 };
+      const bodyGuideEnd = isLeft ? { x: 194, y: 92 } : { x: 86, y: 92 };
+      const arcStart = polarPoint(origin, 78, Math.min(angles.negative, angles.positive));
+      const arcEnd = polarPoint(origin, 78, Math.max(angles.negative, angles.positive));
+      const sweep = Math.abs(angles.positive - angles.negative) > 180 ? 1 : 0;
+      return `
+        <path d='M ${bodyGuideStart.x} ${bodyGuideStart.y} L ${bodyGuideEnd.x} ${bodyGuideEnd.y}'
+          fill='none' stroke='rgba(255,255,255,0.14)' stroke-width='14' stroke-linecap='round' />
+        <circle cx="${origin.x}" cy="${origin.y}" r="38" fill="rgba(255,255,255,0.03)" stroke="rgba(255,255,255,0.06)" />
+        <path d="M ${arcStart.x.toFixed(1)} ${arcStart.y.toFixed(1)} A 78 78 0 0 ${sweep} ${arcEnd.x.toFixed(1)} ${arcEnd.y.toFixed(1)}"
+          fill="none" stroke="rgba(255,255,255,0.08)" stroke-dasharray="4 5" />
+        <line x1="${origin.x}" y1="${origin.y}" x2="${negativeEnd.x}" y2="${negativeEnd.y}" stroke="rgba(101, 214, 164, 0.9)" stroke-width="5" stroke-linecap="round" />
+        <line x1="${origin.x}" y1="${origin.y}" x2="${zeroEnd.x}" y2="${zeroEnd.y}" stroke="rgba(255, 146, 84, 0.95)" stroke-width="6" stroke-linecap="round" />
+        <line x1="${origin.x}" y1="${origin.y}" x2="${positiveEnd.x}" y2="${positiveEnd.y}" stroke="rgba(115, 190, 255, 0.92)" stroke-width="5" stroke-linecap="round" />
+        <circle cx="${origin.x}" cy="${origin.y}" r="6" fill="rgba(255,255,255,0.92)" />
+        <text x="${negativeEnd.x + (isLeft ? -48 : 10)}" y="${negativeEnd.y + 10}" fill="rgba(101, 214, 164, 0.98)" font-size="12" letter-spacing="0.08em">${joint.negative_label.toUpperCase()}</text>
+        <text x="${zeroEnd.x + (isLeft ? -14 : 10)}" y="${zeroEnd.y - 10}" fill="rgba(255, 146, 84, 0.98)" font-size="12" letter-spacing="0.08em">${joint.zero_label.toUpperCase()}</text>
+        <text x="${positiveEnd.x + (isLeft ? -48 : 10)}" y="${positiveEnd.y + 10}" fill="rgba(115, 190, 255, 0.98)" font-size="12" letter-spacing="0.08em">${joint.positive_label.toUpperCase()}</text>
+      `;
+    }
+
+    function calibrationSketchForLiftJoint(joint, legKey) {
+      const meta = calibrationLegMeta(legKey);
+      const isLeft = meta.side === "left";
+      const hip = isLeft ? { x: 206, y: 112 } : { x: 74, y: 112 };
+      const coxaEnd = isLeft ? { x: 164, y: 112 } : { x: 116, y: 112 };
+      const bodyGuideStart = isLeft ? { x: 242, y: 112 } : { x: 38, y: 112 };
+      const bodyGuideEnd = isLeft ? { x: 208, y: 112 } : { x: 72, y: 112 };
+      const mapAngle = (degrees) => isLeft ? 180 - degrees : degrees;
+      const femurReferenceDeg = -8;
+      const femurReferenceEnd = pointFrom(
+        coxaEnd,
+        52,
+        mapAngle(femurReferenceDeg) * Math.PI / 180,
+      );
+
+      if (joint.key === "tibia") {
+        const tibiaLength = 58;
+        const tibiaAngles = {
+          negative: 56,
+          zero: 12,
+          positive: -28,
+        };
+        const negativeEnd = pointFrom(
+          femurReferenceEnd,
+          tibiaLength,
+          mapAngle(tibiaAngles.negative) * Math.PI / 180,
+        );
+        const zeroEnd = pointFrom(
+          femurReferenceEnd,
+          tibiaLength,
+          mapAngle(tibiaAngles.zero) * Math.PI / 180,
+        );
+        const positiveEnd = pointFrom(
+          femurReferenceEnd,
+          tibiaLength,
+          mapAngle(tibiaAngles.positive) * Math.PI / 180,
+        );
+        return `
+          <path d='M ${bodyGuideStart.x} ${bodyGuideStart.y} L ${bodyGuideEnd.x} ${bodyGuideEnd.y}'
+            fill='none' stroke='rgba(255,255,255,0.14)' stroke-width='14' stroke-linecap='round' />
+          <line x1="22" y1="${hip.y}" x2="258" y2="${hip.y}" stroke="rgba(255,255,255,0.08)" stroke-dasharray="5 5" />
+          <circle cx="${hip.x}" cy="${hip.y}" r="7" fill="rgba(255,255,255,0.92)" />
+          <line x1="${hip.x}" y1="${hip.y}" x2="${coxaEnd.x}" y2="${coxaEnd.y}" stroke="rgba(255,255,255,0.24)" stroke-width="6" stroke-linecap="round" />
+          <line x1="${coxaEnd.x}" y1="${coxaEnd.y}" x2="${femurReferenceEnd.x}" y2="${femurReferenceEnd.y}" stroke="rgba(255, 146, 84, 0.42)" stroke-width="5" stroke-linecap="round" />
+          <circle cx="${femurReferenceEnd.x}" cy="${femurReferenceEnd.y}" r="4" fill="rgba(255,255,255,0.78)" />
+          <line x1="${femurReferenceEnd.x}" y1="${femurReferenceEnd.y}" x2="${negativeEnd.x}" y2="${negativeEnd.y}" stroke="rgba(101, 214, 164, 0.9)" stroke-width="5" stroke-linecap="round" />
+          <line x1="${femurReferenceEnd.x}" y1="${femurReferenceEnd.y}" x2="${zeroEnd.x}" y2="${zeroEnd.y}" stroke="rgba(255, 146, 84, 0.95)" stroke-width="6" stroke-linecap="round" />
+          <line x1="${femurReferenceEnd.x}" y1="${femurReferenceEnd.y}" x2="${positiveEnd.x}" y2="${positiveEnd.y}" stroke="rgba(115, 190, 255, 0.92)" stroke-width="5" stroke-linecap="round" />
+          <text x="${femurReferenceEnd.x + (isLeft ? -78 : 10)}" y="${femurReferenceEnd.y - 10}" fill="rgba(255, 146, 84, 0.72)" font-size="11" letter-spacing="0.06em">FEMUR ZERO</text>
+          <text x="${negativeEnd.x + (isLeft ? -52 : 8)}" y="${negativeEnd.y + 14}" fill="rgba(101, 214, 164, 0.98)" font-size="12" letter-spacing="0.08em">${joint.negative_label.toUpperCase()}</text>
+          <text x="${zeroEnd.x + (isLeft ? -52 : 8)}" y="${zeroEnd.y - 8}" fill="rgba(255, 146, 84, 0.98)" font-size="12" letter-spacing="0.08em">${joint.zero_label.toUpperCase()}</text>
+          <text x="${positiveEnd.x + (isLeft ? -52 : 8)}" y="${positiveEnd.y - 10}" fill="rgba(115, 190, 255, 0.98)" font-size="12" letter-spacing="0.08em">${joint.positive_label.toUpperCase()}</text>
+        `;
+      }
+
+      const length = 104;
+      const angles = {
+        negative: 30,
+        zero: -8,
+        positive: -46,
+      };
+      const negativeEnd = pointFrom(coxaEnd, length, mapAngle(angles.negative) * Math.PI / 180);
+      const zeroEnd = pointFrom(coxaEnd, length, mapAngle(angles.zero) * Math.PI / 180);
+      const positiveEnd = pointFrom(coxaEnd, length, mapAngle(angles.positive) * Math.PI / 180);
+      return `
+        <path d='M ${bodyGuideStart.x} ${bodyGuideStart.y} L ${bodyGuideEnd.x} ${bodyGuideEnd.y}'
+          fill='none' stroke='rgba(255,255,255,0.14)' stroke-width='14' stroke-linecap='round' />
+        <line x1="22" y1="${hip.y}" x2="258" y2="${hip.y}" stroke="rgba(255,255,255,0.08)" stroke-dasharray="5 5" />
+        <circle cx="${hip.x}" cy="${hip.y}" r="7" fill="rgba(255,255,255,0.92)" />
+        <line x1="${hip.x}" y1="${hip.y}" x2="${coxaEnd.x}" y2="${coxaEnd.y}" stroke="rgba(255,255,255,0.24)" stroke-width="6" stroke-linecap="round" />
+        <line x1="${coxaEnd.x}" y1="${coxaEnd.y}" x2="${negativeEnd.x}" y2="${negativeEnd.y}" stroke="rgba(101, 214, 164, 0.9)" stroke-width="5" stroke-linecap="round" />
+        <line x1="${coxaEnd.x}" y1="${coxaEnd.y}" x2="${zeroEnd.x}" y2="${zeroEnd.y}" stroke="rgba(255, 146, 84, 0.95)" stroke-width="6" stroke-linecap="round" />
+        <line x1="${coxaEnd.x}" y1="${coxaEnd.y}" x2="${positiveEnd.x}" y2="${positiveEnd.y}" stroke="rgba(115, 190, 255, 0.92)" stroke-width="5" stroke-linecap="round" />
+        <text x="${negativeEnd.x + (isLeft ? -52 : 8)}" y="${negativeEnd.y + 14}" fill="rgba(101, 214, 164, 0.98)" font-size="12" letter-spacing="0.08em">${joint.negative_label.toUpperCase()}</text>
+        <text x="${zeroEnd.x + (isLeft ? -52 : 8)}" y="${zeroEnd.y - 8}" fill="rgba(255, 146, 84, 0.98)" font-size="12" letter-spacing="0.08em">${joint.zero_label.toUpperCase()}</text>
+        <text x="${positiveEnd.x + (isLeft ? -52 : 8)}" y="${positiveEnd.y - 10}" fill="rgba(115, 190, 255, 0.98)" font-size="12" letter-spacing="0.08em">${joint.positive_label.toUpperCase()}</text>
+      `;
+    }
+
+    function renderCalibrationReferenceSketch(joint, legKey) {
+      const sketch = document.getElementById("calibration-reference-sketch");
+      const caption = document.getElementById("calibration-reference-caption");
+      if (!sketch || !caption) return;
+
+      if (!joint) {
+        sketch.innerHTML = `
+          <rect x="18" y="18" width="244" height="144" rx="18" fill="rgba(255,255,255,0.02)" stroke="rgba(255,255,255,0.06)" />
+          <text x="140" y="82" text-anchor="middle" fill="rgba(255,255,255,0.82)" font-size="15">Select a joint</text>
+          <text x="140" y="106" text-anchor="middle" fill="rgba(148,164,182,0.92)" font-size="12">to see the expected reference poses</text>
+        `;
+        caption.textContent = "The sketch shows the expected negative, zero, and positive reference poses for the selected joint.";
+        return;
+      }
+
+      const title = `${joint.label} reference positions`;
+      const degrees = `${joint.negative_deg.toFixed(0)}° / ${joint.zero_deg.toFixed(0)}° / ${joint.positive_deg.toFixed(0)}°`;
+      const body = joint.key === "coxa"
+        ? calibrationSketchForCoxa(joint, legKey)
+        : calibrationSketchForLiftJoint(joint, legKey);
+      sketch.innerHTML = `
+        <text x="18" y="22" fill="rgba(255,255,255,0.88)" font-size="13" letter-spacing="0.08em">${title.toUpperCase()}</text>
+        <text x="18" y="40" fill="rgba(148,164,182,0.92)" font-size="11">${degrees}</text>
+        ${body}
+      `;
+      const legLabel = calibrationLegMeta(legKey).label.toLowerCase();
+      caption.textContent = joint.key === "coxa"
+        ? `Top view for the ${legLabel}: negative and positive swing around the zero heading.`
+        : joint.key === "tibia"
+          ? `Outer side view for the ${legLabel}: tibia references are shown relative to the femur zero pose.`
+          : `Outer side view for the ${legLabel}: negative is lower than zero, positive is higher than zero.`;
     }
 
     function escapeTomlString(value) {
@@ -1042,6 +1410,9 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
       document.getElementById("manual-reset-group").disabled = !enabled;
       document.getElementById("manual-reset-all").disabled = !enabled;
       document.getElementById("manual-capture").disabled = !enabled;
+      document.getElementById("manual-set-torque-limit").disabled = !enabled;
+      document.getElementById("manual-sync-current").disabled = !enabled;
+      document.getElementById("manual-torque-limit").disabled = !enabled;
       document.getElementById("manual-live-apply").disabled = !enabled;
       for (const axis of MANUAL_JOINT_KEYS) {
         document.getElementById(`manual-${axis}-slider`).disabled = !enabled;
@@ -1067,6 +1438,23 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
         coxa_deg: sliderValue("coxa"),
         femur_deg: sliderValue("femur"),
         tibia_deg: sliderValue("tibia"),
+      });
+      document.getElementById("manual-summary").textContent = result.summary;
+      await refresh();
+    }
+
+    async function applyManualTorqueLimit() {
+      const result = await postJson(manualTorqueLimitUrl, {
+        group_key: document.getElementById("manual-group").value,
+        torque_limit: manualTorqueLimitValue(),
+      });
+      document.getElementById("manual-summary").textContent = result.summary;
+      await refresh();
+    }
+
+    async function syncManualTargetToCurrent() {
+      const result = await postJson(manualSyncCurrentUrl, {
+        group_key: document.getElementById("manual-group").value,
       });
       document.getElementById("manual-summary").textContent = result.summary;
       await refresh();
@@ -1105,6 +1493,25 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
         `copied current pose for ${state.online_servo_count}/${state.servos.length} servos to clipboard`;
     }
 
+    async function captureCalibrationReference(referenceKey) {
+      const result = await postJson(calibrationCaptureUrl, {
+        leg_key: document.getElementById("calibration-leg").value,
+        joint_key: document.getElementById("calibration-joint").value,
+        reference_key: referenceKey,
+      });
+      document.getElementById("calibration-summary").textContent = result.summary;
+      await refresh();
+    }
+
+    async function clearCalibrationJoint() {
+      const result = await postJson(calibrationClearUrl, {
+        leg_key: document.getElementById("calibration-leg").value,
+        joint_key: document.getElementById("calibration-joint").value,
+      });
+      document.getElementById("calibration-summary").textContent = result.summary;
+      await refresh();
+    }
+
     function bindManualControls() {
       if (window.__manualControlsBound) return;
       window.__manualControlsBound = true;
@@ -1134,6 +1541,32 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
       document.getElementById("copy-current-pose").addEventListener("click", () => copyCurrentPose().catch((error) => {
         document.getElementById("manual-summary").textContent = String(error);
       }));
+      document.getElementById("manual-set-torque-limit").addEventListener("click", () => applyManualTorqueLimit().catch((error) => {
+        document.getElementById("manual-summary").textContent = String(error);
+      }));
+      document.getElementById("manual-sync-current").addEventListener("click", () => syncManualTargetToCurrent().catch((error) => {
+        document.getElementById("manual-summary").textContent = String(error);
+      }));
+      document.getElementById("calibration-leg").addEventListener("change", () => {
+        updateCalibrationLabels();
+        updateCalibrationEntryNote();
+      });
+      document.getElementById("calibration-joint").addEventListener("change", () => {
+        updateCalibrationLabels();
+        updateCalibrationEntryNote();
+      });
+      document.getElementById("calibration-capture-negative").addEventListener("click", () => captureCalibrationReference("negative").catch((error) => {
+        document.getElementById("calibration-summary").textContent = String(error);
+      }));
+      document.getElementById("calibration-capture-zero").addEventListener("click", () => captureCalibrationReference("zero").catch((error) => {
+        document.getElementById("calibration-summary").textContent = String(error);
+      }));
+      document.getElementById("calibration-capture-positive").addEventListener("click", () => captureCalibrationReference("positive").catch((error) => {
+        document.getElementById("calibration-summary").textContent = String(error);
+      }));
+      document.getElementById("calibration-clear-joint").addEventListener("click", () => clearCalibrationJoint().catch((error) => {
+        document.getElementById("calibration-summary").textContent = String(error);
+      }));
     }
 
     function updateManualPanel(manual) {
@@ -1155,6 +1588,18 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
         : "Start arachno-brain with --mode manual to enable dashboard-based servo control.";
 
       setManualControlsEnabled(Boolean(manual?.enabled && manualGroupsReady));
+    }
+
+    function updateCalibrationPanel(calibration) {
+      window.__calibrationEntries = calibration?.entries ?? [];
+      window.__calibrationJoints = calibration?.joints ?? [];
+      bindManualControls();
+      syncCalibrationLegs(calibration?.legs ?? []);
+      syncCalibrationJoints(calibration?.joints ?? []);
+      updateCalibrationLabels();
+      updateCalibrationEntryNote();
+      document.getElementById("calibration-summary").textContent = calibration?.summary ?? "semantic calibration unavailable";
+      setCalibrationControlsEnabled(Boolean(calibration?.enabled));
     }
 
     function updateImuPanel(imu) {
@@ -1461,6 +1906,7 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
         document.getElementById("updated-at").textContent = state.updated_at_ms ? new Date(state.updated_at_ms).toLocaleTimeString() : "never";
         updateImuPanel(state.imu);
         updateManualPanel(state.manual);
+        updateCalibrationPanel(state.calibration);
 
         const faulted = state.servos.filter((servo) => servo.telemetry && servo.telemetry.faults.length > 0).length;
         const groupedServos = groupServosByLeg(state.servos);

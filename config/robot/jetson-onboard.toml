@@ -10,6 +10,9 @@ perception_hz = 20
 [servo_store]
 path = "servo-config.toml"
 
+[semantic_calibration_store]
+path = "servo-semantic-calibration.toml"
+
 [camera]
 name = "Waveshare IMX219-160 IR-CUT"
 backend = "argus"

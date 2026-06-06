@@ -10,11 +10,12 @@ use anyhow::{Context, anyhow, bail};
 use arachno_core::{LegConfig, RobotConfig, ServoEepromEntry, TripodGait};
 use arachno_feetech_sts::{
     LOCK_MARK, RealStsBus, WriteConfirmationMode,
+    set_verified_torque_limit_on_current_position_for_ids as set_verified_bus_torque_limit_on_current_position_for_ids,
     validate_servo_eeprom_entry as validate_bus_servo_eeprom_entry,
     validate_servo_eeprom_entry_value as validate_bus_servo_eeprom_entry_value,
     validate_servo_eeprom_profile as validate_bus_servo_eeprom_profile,
 };
-use arachno_hal::{ServoBus, enable_torque_on_current_position, sync_current_pose};
+use arachno_hal::{ServoBus, enable_torque_on_current_position};
 use arachno_msg::{JointCommand, ServoTelemetry};
 use clap::{Parser, ValueEnum};
 use serde::{Deserialize, Serialize};
@@ -31,10 +32,6 @@ const RANGE_TARGET_TOLERANCE_TICKS: u16 = 18;
 const MOTION_START_TICKS: u16 = 24;
 const FEEDBACK_READ_RETRIES: usize = 3;
 const FEEDBACK_RETRY_SLEEP_MS: u64 = 15;
-const TORQUE_LIMIT_VERIFY_ATTEMPTS: usize = 6;
-const TORQUE_LIMIT_READBACK_ATTEMPTS: usize = 3;
-const TORQUE_LIMIT_VERIFY_SLEEP_MS: u64 = 30;
-const TORQUE_LIMIT_APPLY_SLEEP_MS: u64 = 20;
 const EEPROM_WRITE_SETTLE_MS: u64 = 80;
 const EEPROM_LOCK_SETTLE_MS: u64 = 50;
 const POSITION_SETTLE_CONFIRM_CYCLES: u8 = 2;
@@ -795,73 +792,8 @@ fn set_verified_torque_limit_on_current_position_for_ids(
         torque_limit,
         servo_ids.len()
     );
-    thread::sleep(Duration::from_millis(PHASE_SETTLE_SLEEP_MS));
-
-    for &servo_id in servo_ids {
-        // set position to current position and enable torque, then verify the torque limit is applied correctly by reading it back, with retries to handle potential transient issues
-        sync_current_pose(bus, &[servo_id]).with_context(|| {
-            format!("{label}: failed to sync current position for servo {servo_id}")
-        })?;
-        set_verified_servo_torque_limit(bus, servo_id, torque_limit)
-            .with_context(|| format!("{label}: servo {servo_id}"))?;
-    }
-
-    Ok(())
-}
-
-fn set_verified_servo_torque_limit(
-    bus: &mut RealStsBus,
-    servo_id: u8,
-    expected_torque_limit: u16,
-) -> anyhow::Result<()> {
-    let mut last_error = None;
-
-    for attempt in 1..=TORQUE_LIMIT_VERIFY_ATTEMPTS {
-        match bus.set_servo_torque_limit(servo_id, expected_torque_limit) {
-            Ok(()) => {
-                thread::sleep(Duration::from_millis(TORQUE_LIMIT_APPLY_SLEEP_MS));
-                for read_attempt in 1..=TORQUE_LIMIT_READBACK_ATTEMPTS {
-                    match bus.read_servo_torque_limit(servo_id) {
-                        Ok(observed) if observed == expected_torque_limit => return Ok(()),
-                        Ok(observed) => {
-                            last_error = Some(format!(
-                                "expected torque limit {}, observed {} on attempt {}.{}",
-                                expected_torque_limit, observed, attempt, read_attempt
-                            ));
-                            break;
-                        }
-                        Err(err) => {
-                            let feedback_hint = match read_feedback_with_retries(bus, servo_id) {
-                                Ok(_) => "feedback ok".to_owned(),
-                                Err(feedback_err) => {
-                                    format!("feedback probe failed: {feedback_err}")
-                                }
-                            };
-                            last_error = Some(format!(
-                                "readback failed on attempt {}.{}: {err}; {}",
-                                attempt, read_attempt, feedback_hint
-                            ));
-                            if read_attempt < TORQUE_LIMIT_READBACK_ATTEMPTS {
-                                thread::sleep(Duration::from_millis(TORQUE_LIMIT_VERIFY_SLEEP_MS));
-                            }
-                        }
-                    }
-                }
-            }
-            Err(err) => {
-                last_error = Some(format!("write failed on attempt {}: {err}", attempt));
-            }
-        }
-
-        if attempt < TORQUE_LIMIT_VERIFY_ATTEMPTS {
-            thread::sleep(Duration::from_millis(TORQUE_LIMIT_VERIFY_SLEEP_MS));
-        }
-    }
-
-    bail!(
-        "{}",
-        last_error.unwrap_or_else(|| "torque-limit verification failed".to_owned())
-    )
+    set_verified_bus_torque_limit_on_current_position_for_ids(bus, servo_ids, torque_limit)
+        .with_context(|| label.to_owned())
 }
 
 fn sense_group_bound(

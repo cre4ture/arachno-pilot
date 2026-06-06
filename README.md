@@ -37,6 +37,7 @@ Rust-first starter workspace for a hexapod that can run either on a tethered Lin
 - `config/robot/default.toml`: current local-development default, aligned with the host USB setup for now.
 - `config/robot/servo-config.toml`: shared servo/bus/safety/locomotion map loaded by all deployment profiles.
 - `config/robot/servo-ranges.toml`: measured free-movement envelopes written by the low-torque self-stop calibration scan.
+- `config/robot/servo-semantic-calibration.toml`: dashboard-captured semantic zero-reference corrections for joint-angle display and manual control.
 
 ## Locomotion roadmap
 
@@ -84,7 +85,9 @@ It currently provides:
 - fault-tolerant telemetry cards per configured servo
 - a browser camera stream for the USB V4L2 camera path
 - grouped manual servo control in angles, with `all legs`, left/right, front/middle/rear pairs, tripod groups, and individual legs available from the dashboard
+- manual utility actions to sync the selected group target to the live pose and to apply a verified RAM torque limit to the selected group without fighting the current target position
 - a `Copy Current Pose To Clipboard` action that exports the live joint pose as a TOML snippet grouped by leg
+- semantic joint calibration capture in the dashboard, with named reference poses per leg/joint that correct the zero tick while keeping the `4096/360` slope fixed
 
 This removes the old serial-port ownership conflict where the brain and dashboard could not run together, because there is now only one process touching hardware. The dashboard is intentionally tolerant of partial hardware bring-up: if only one servo replies or a servo reports fault flags, that state is shown directly instead of being hidden behind a generic failure.
 
