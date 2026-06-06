@@ -56,7 +56,7 @@ tibia_stand_reference_ticks = 1850
 coxa_lay_down_ticks = 2005
 femur_lay_down_ticks = 2048
 tibia_lay_down_ticks = 2045
-coxa_forward_sign = 1
+coxa_forward_sign = -1
 femur_lift_sign = -1
 tibia_lift_sign = 1
 
@@ -71,7 +71,7 @@ tibia_stand_reference_ticks = 1850
 coxa_lay_down_ticks = 2014
 femur_lay_down_ticks = 2035
 tibia_lay_down_ticks = 2014
-coxa_forward_sign = 1
+coxa_forward_sign = -1
 femur_lift_sign = -1
 tibia_lift_sign = 1
 
@@ -86,7 +86,7 @@ tibia_stand_reference_ticks = 1850
 coxa_lay_down_ticks = 2146
 femur_lay_down_ticks = 1973
 tibia_lay_down_ticks = 1950
-coxa_forward_sign = 1
+coxa_forward_sign = -1
 femur_lift_sign = -1
 tibia_lift_sign = 1
 
@@ -101,7 +101,7 @@ tibia_stand_reference_ticks = 2250
 coxa_lay_down_ticks = 2238
 femur_lay_down_ticks = 2117
 tibia_lay_down_ticks = 2154
-coxa_forward_sign = -1
+coxa_forward_sign = 1
 femur_lift_sign = 1
 tibia_lift_sign = -1
 
@@ -116,7 +116,7 @@ tibia_stand_reference_ticks = 2250
 coxa_lay_down_ticks = 2104
 femur_lay_down_ticks = 2073
 tibia_lay_down_ticks = 2090
-coxa_forward_sign = -1
+coxa_forward_sign = 1
 femur_lift_sign = 1
 tibia_lift_sign = -1
 
@@ -131,6 +131,6 @@ tibia_stand_reference_ticks = 2250
 coxa_lay_down_ticks = 1724
 femur_lay_down_ticks = 2073
 tibia_lay_down_ticks = 2094
-coxa_forward_sign = -1
+coxa_forward_sign = 1
 femur_lift_sign = 1
 tibia_lift_sign = -1
