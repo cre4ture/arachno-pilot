@@ -971,12 +971,23 @@ impl MotionRuntime {
                     } else {
                         let gait_elapsed = elapsed - settle;
                         let cycle_seconds = config.locomotion.tripod.cycle_seconds.max(0.5);
+                        let startup_blend = config
+                            .locomotion
+                            .tripod
+                            .startup_blend_seconds
+                            .max(0.0);
                         let phase = (gait_elapsed / cycle_seconds).fract();
+                        let amplitude_scale = if startup_blend <= f32::EPSILON {
+                            1.0
+                        } else {
+                            smoothstep((gait_elapsed / startup_blend).clamp(0.0, 1.0))
+                        };
                         self.summary = format!(
-                            "slow tripod {} gait active; phase {:.2} / cycle {:.1}s",
+                            "slow tripod {} gait active; phase {:.2} / cycle {:.1}s / blend {:.0}%",
                             self.mode.walk_label(),
                             phase,
-                            cycle_seconds
+                            cycle_seconds,
+                            amplitude_scale * 100.0,
                         );
                         walk_pose_from_base(
                             config,
@@ -984,6 +995,7 @@ impl MotionRuntime {
                             &base_pose,
                             phase,
                             self.mode.walk_direction_sign(),
+                            amplitude_scale,
                         )
                     }
                 }
@@ -2660,6 +2672,7 @@ fn walk_pose_from_base(
     base_pose: &BTreeMap<u8, u16>,
     phase: f32,
     direction_sign: f32,
+    amplitude_scale: f32,
 ) -> BTreeMap<u8, u16> {
     let mut commanded = BTreeMap::new();
 
@@ -2695,7 +2708,9 @@ fn walk_pose_from_base(
         };
         let (coxa_delta_deg, lift_ratio) = leg_cycle_shape_deg(leg_phase, profile.coxa_swing_deg);
         let gait_delta = LegPoseAngles {
-            coxa_deg: coxa_delta_deg * direction_sign,
+            // Ramp in horizontal stride first; keep vertical lift fully active so the feet
+            // still unload and clear the ground during walk startup.
+            coxa_deg: coxa_delta_deg * direction_sign * amplitude_scale,
             femur_deg: profile.femur_lift_deg * lift_ratio,
             tibia_deg: profile.tibia_lift_deg * lift_ratio,
         };

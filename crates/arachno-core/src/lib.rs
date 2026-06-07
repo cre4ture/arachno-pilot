@@ -196,6 +196,8 @@ pub struct StandConfig {
 pub struct TripodWalkConfig {
     #[serde(default = "default_tripod_settle_seconds")]
     pub settle_seconds: f32,
+    #[serde(default = "default_tripod_startup_blend_seconds")]
+    pub startup_blend_seconds: f32,
     #[serde(default = "default_tripod_cycle_seconds")]
     pub cycle_seconds: f32,
     #[serde(default = "default_stride_ticks")]
@@ -473,6 +475,7 @@ impl Default for TripodWalkConfig {
     fn default() -> Self {
         Self {
             settle_seconds: default_tripod_settle_seconds(),
+            startup_blend_seconds: default_tripod_startup_blend_seconds(),
             cycle_seconds: default_tripod_cycle_seconds(),
             stride_ticks: default_stride_ticks(),
             femur_lift_ticks: default_femur_lift_ticks(),
@@ -779,6 +782,10 @@ fn default_stand_settle_seconds() -> f32 {
 
 fn default_tripod_settle_seconds() -> f32 {
     2.5
+}
+
+fn default_tripod_startup_blend_seconds() -> f32 {
+    1.5
 }
 
 fn default_tripod_cycle_seconds() -> f32 {
