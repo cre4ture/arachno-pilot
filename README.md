@@ -53,7 +53,7 @@ Implemented now:
 - `stand-up`: raises the femurs first, lowers the tibias to replant the feet, then lifts the body with coordinated femur+tibia motion before aligning the coxae
 - `stand`: settles into and holds the configured stand-reference pose
 - `manual`: captures the current robot pose as a zero-reference and accepts grouped semantic angle commands from the dashboard in `forward/back` and `up/down` space
-- `slow-walk`: a cautious tripod gait that applies small offsets around the measured standing pose
+- `slow-walk`: a cautious tripod gait that now derives semantic swing and lift amplitudes from the calibrated stand pose, leg lengths, and angle-to-tick conversion instead of using tiny fixed tick offsets
 - `sense-ranges`: lowers torque limit, drives tibia/femur/coxa toward full-range endpoints, and writes the self-stopped travel envelopes to TOML
   It validates the configured EEPROM profile first and refuses to start the scan if any servo does not match.
   Use `--skip-initial-lay-down` to resume a partially completed scan from the robot's current posture.

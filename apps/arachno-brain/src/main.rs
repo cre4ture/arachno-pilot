@@ -15,7 +15,6 @@ use anyhow::Context;
 use arachno_camera::RobotCamera;
 use arachno_core::{
     CameraBackend, LegPoseAngles, LegSideViewPose, LegTopViewPose, RobotConfig, SemanticPoseKind,
-    TripodGait,
 };
 use arachno_feetech_sts::{
     RealStsBus, set_verified_torque_limit_on_current_position_for_ids,
@@ -834,7 +833,6 @@ impl MotionRuntime {
     fn commands(
         &mut self,
         config: &RobotConfig,
-        gait: &TripodGait,
         calibration: &SemanticCalibrationState,
         manual: Option<&Arc<RwLock<ManualControlState>>>,
     ) -> Option<Vec<JointCommand>> {
@@ -947,7 +945,7 @@ impl MotionRuntime {
                             "slow tripod gait active; phase {:.2} / cycle {:.1}s",
                             phase, cycle_seconds
                         );
-                        walk_pose_from_base(config, gait, &base_pose, phase)
+                        walk_pose_from_base(config, calibration, &base_pose, phase)
                     }
                 }
                 BrainMode::Telemetry => unreachable!(),
@@ -1126,7 +1124,6 @@ fn spawn_control_worker(
     thread::spawn(move || {
         let labels = servo_labels(&config);
         let servo_ids = config.all_servo_ids();
-        let gait = TripodGait;
         let mut bus = None::<RealStsBus>;
         let mut torque_enabled = false;
         let mut imu_bridge = None::<UsbImuBridge>;
@@ -1312,9 +1309,7 @@ fn spawn_control_worker(
                 .read()
                 .map(|state| state.clone())
                 .unwrap_or_default();
-            if let Some(commands) =
-                motion.commands(&config, &gait, &calibration_snapshot, Some(&manual))
-            {
+            if let Some(commands) = motion.commands(&config, &calibration_snapshot, Some(&manual)) {
                 if let Err(err) = real_bus.sync_write_positions(&commands) {
                     warn!(error = %err, command_count = commands.len(), "failed to send motion commands");
                     motion.trip_fault(
@@ -2311,9 +2306,7 @@ fn resolved_leg_pose_with_calibration(
     leg: &arachno_core::LegConfig,
     kind: SemanticPoseKind,
 ) -> ResolvedLegPose {
-    let semantic = config
-        .pose_for_leg(kind, &leg.name)
-        .unwrap_or_else(|| legacy_pose_angles(config, calibration, leg, kind));
+    let semantic = configured_pose_angles(config, calibration, leg, kind);
 
     ResolvedLegPose {
         coxa_ticks: servo_ticks_for_semantic_angle_deg(
@@ -2338,6 +2331,17 @@ fn resolved_leg_pose_with_calibration(
         )
         .unwrap_or_else(|| leg.tibia_zero_reference_ticks()),
     }
+}
+
+fn configured_pose_angles(
+    config: &RobotConfig,
+    calibration: &SemanticCalibrationState,
+    leg: &arachno_core::LegConfig,
+    kind: SemanticPoseKind,
+) -> LegPoseAngles {
+    config
+        .pose_for_leg(kind, &leg.name)
+        .unwrap_or_else(|| legacy_pose_angles(config, calibration, leg, kind))
 }
 
 fn legacy_pose_angles(
@@ -2367,8 +2371,97 @@ struct ResolvedLegPose {
     tibia_ticks: u16,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct DerivedTripodProfile {
+    coxa_swing_deg: f32,
+    femur_lift_deg: f32,
+    tibia_lift_deg: f32,
+}
+
+fn derive_tripod_profile(
+    config: &RobotConfig,
+    leg: &arachno_core::LegConfig,
+    stand_reference: LegPoseAngles,
+) -> DerivedTripodProfile {
+    let gait = &config.locomotion.tripod;
+    let stand_side = leg.side_view_pose(stand_reference.femur_deg, stand_reference.tibia_deg);
+    let horizontal_reach_cm = (stand_side.tibia_end.x - stand_side.coxa_end.x)
+        .abs()
+        .max(1.0);
+    let coxa_radius_cm = (leg.coxa_length_cm() + horizontal_reach_cm).max(1.0);
+    let derived_stride_cm = (horizontal_reach_cm * 0.28).clamp(4.0, 8.0);
+    let stride_cm = derived_stride_cm.max(legacy_semantic_delta_deg(gait.stride_ticks));
+    let coxa_ratio = ((stride_cm * 0.5) / coxa_radius_cm).clamp(0.0, 0.45);
+    let derived_coxa_swing_deg = coxa_ratio.asin().to_degrees().clamp(6.0, 18.0);
+
+    let desired_step_height_cm = (leg.tibia_length_cm() * 0.14).clamp(1.8, 4.0);
+    let (derived_femur_lift_deg, derived_tibia_lift_deg, _achieved_step_height_cm) =
+        derive_leg_lift_deltas(leg, stand_reference, desired_step_height_cm);
+
+    DerivedTripodProfile {
+        coxa_swing_deg: derived_coxa_swing_deg.max(legacy_semantic_delta_deg(gait.stride_ticks)),
+        femur_lift_deg: derived_femur_lift_deg
+            .max(legacy_semantic_delta_deg(gait.femur_lift_ticks)),
+        tibia_lift_deg: derived_tibia_lift_deg
+            .max(legacy_semantic_delta_deg(gait.tibia_lift_ticks)),
+    }
+}
+
+fn derive_leg_lift_deltas(
+    leg: &arachno_core::LegConfig,
+    stand_reference: LegPoseAngles,
+    target_step_height_cm: f32,
+) -> (f32, f32, f32) {
+    let stand_pose = leg.side_view_pose(stand_reference.femur_deg, stand_reference.tibia_deg);
+    let stand_tip = stand_pose.tibia_end;
+    let mut best = None::<(f32, f32, f32, f32)>;
+
+    for femur_lift_deg in (4..=28).map(|value| value as f32) {
+        for tibia_lift_deg in (6..=42).map(|value| value as f32) {
+            let lifted_pose = leg.side_view_pose(
+                stand_reference.femur_deg + femur_lift_deg,
+                stand_reference.tibia_deg + tibia_lift_deg,
+            );
+            let step_height_cm = (stand_tip.y - lifted_pose.tibia_end.y).max(0.0);
+            let horizontal_shift_cm = (lifted_pose.tibia_end.x - stand_tip.x).abs();
+            let shape_bias = (tibia_lift_deg - femur_lift_deg * 1.6).abs();
+            let shortfall = (target_step_height_cm - step_height_cm).max(0.0);
+            let overshoot = (step_height_cm - target_step_height_cm).max(0.0);
+            let cost =
+                shortfall * 4.0 + overshoot * 1.5 + horizontal_shift_cm * 0.7 + shape_bias * 0.08;
+            let candidate = (cost, femur_lift_deg, tibia_lift_deg, step_height_cm);
+            if best.map(|current| cost < current.0).unwrap_or(true) {
+                best = Some(candidate);
+            }
+        }
+    }
+
+    best.map(|(_, femur_lift_deg, tibia_lift_deg, achieved_height_cm)| {
+        (femur_lift_deg, tibia_lift_deg, achieved_height_cm)
+    })
+    .unwrap_or((12.0, 18.0, 0.0))
+}
+
+fn legacy_semantic_delta_deg(delta_ticks: i16) -> f32 {
+    delta_ticks.abs() as f32 * 360.0 / 4096.0
+}
+
 fn semantic_ticks_to_degrees(delta_ticks: i32, sign: i16) -> f32 {
     delta_ticks as f32 * 360.0 / 4096.0 / sign as f32
+}
+
+fn leg_cycle_shape_deg(phase: f32, coxa_swing_deg: f32) -> (f32, f32) {
+    if phase < 0.5 {
+        let t = phase / 0.5;
+        let eased = smoothstep(t);
+        let coxa = lerp_f32(-coxa_swing_deg, coxa_swing_deg, eased);
+        let lift = (std::f32::consts::PI * t).sin().max(0.0);
+        (coxa, lift)
+    } else {
+        let t = (phase - 0.5) / 0.5;
+        let coxa = lerp_f32(coxa_swing_deg, -coxa_swing_deg, t);
+        (coxa, 0.0)
+    }
 }
 
 fn calibration_ticks_per_degree(sign: i16) -> f32 {
@@ -2521,23 +2614,78 @@ fn pose_to_commands(pose: &BTreeMap<u8, u16>) -> Vec<JointCommand> {
 
 fn walk_pose_from_base(
     config: &RobotConfig,
-    gait: &TripodGait,
+    calibration: &SemanticCalibrationState,
     base_pose: &BTreeMap<u8, u16>,
     phase: f32,
 ) -> BTreeMap<u8, u16> {
-    let stand_reference_pose = gait.stand_reference_pose(config);
-    let walk_pose = gait.slow_walk_pose(config, phase);
     let mut commanded = BTreeMap::new();
 
-    for (&servo_id, &walk_ticks) in &walk_pose {
-        let stand_ticks = stand_reference_pose
-            .get(&servo_id)
-            .copied()
-            .unwrap_or(walk_ticks);
-        let base_ticks = base_pose.get(&servo_id).copied().unwrap_or(stand_ticks);
-        let delta_ticks = i32::from(walk_ticks) - i32::from(stand_ticks);
-        let target_ticks = (i32::from(base_ticks) + delta_ticks).clamp(0, 4095) as u16;
-        commanded.insert(servo_id, target_ticks);
+    for leg in &config.legs {
+        let stand_reference =
+            configured_pose_angles(config, calibration, leg, SemanticPoseKind::StandReference);
+        let base_semantic = LegPoseAngles {
+            coxa_deg: base_pose
+                .get(&leg.coxa_servo_id)
+                .and_then(|ticks| {
+                    servo_semantic_angle_deg(config, calibration, leg.coxa_servo_id, *ticks)
+                })
+                .unwrap_or(stand_reference.coxa_deg),
+            femur_deg: base_pose
+                .get(&leg.femur_servo_id)
+                .and_then(|ticks| {
+                    servo_semantic_angle_deg(config, calibration, leg.femur_servo_id, *ticks)
+                })
+                .unwrap_or(stand_reference.femur_deg),
+            tibia_deg: base_pose
+                .get(&leg.tibia_servo_id)
+                .and_then(|ticks| {
+                    servo_semantic_angle_deg(config, calibration, leg.tibia_servo_id, *ticks)
+                })
+                .unwrap_or(stand_reference.tibia_deg),
+        };
+
+        let profile = derive_tripod_profile(config, leg, stand_reference);
+        let leg_phase = if leg.is_tripod_a() {
+            phase
+        } else {
+            (phase + 0.5).fract()
+        };
+        let (coxa_delta_deg, lift_ratio) = leg_cycle_shape_deg(leg_phase, profile.coxa_swing_deg);
+        let gait_delta = LegPoseAngles {
+            coxa_deg: coxa_delta_deg,
+            femur_deg: profile.femur_lift_deg * lift_ratio,
+            tibia_deg: profile.tibia_lift_deg * lift_ratio,
+        };
+        let target_semantic = LegPoseAngles {
+            coxa_deg: base_semantic.coxa_deg + gait_delta.coxa_deg,
+            femur_deg: base_semantic.femur_deg + gait_delta.femur_deg,
+            tibia_deg: base_semantic.tibia_deg + gait_delta.tibia_deg,
+        };
+
+        if let Some(ticks) = servo_ticks_for_semantic_angle_deg(
+            config,
+            calibration,
+            leg.coxa_servo_id,
+            target_semantic.coxa_deg,
+        ) {
+            commanded.insert(leg.coxa_servo_id, ticks);
+        }
+        if let Some(ticks) = servo_ticks_for_semantic_angle_deg(
+            config,
+            calibration,
+            leg.femur_servo_id,
+            target_semantic.femur_deg,
+        ) {
+            commanded.insert(leg.femur_servo_id, ticks);
+        }
+        if let Some(ticks) = servo_ticks_for_semantic_angle_deg(
+            config,
+            calibration,
+            leg.tibia_servo_id,
+            target_semantic.tibia_deg,
+        ) {
+            commanded.insert(leg.tibia_servo_id, ticks);
+        }
     }
 
     commanded
@@ -2709,6 +2857,10 @@ fn offset_ticks(start_ticks: u16, delta_ticks: i16) -> u16 {
 fn smoothstep(t: f32) -> f32 {
     let t = t.clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
+}
+
+fn lerp_f32(start: f32, end: f32, t: f32) -> f32 {
+    start + (end - start) * t
 }
 
 fn is_reopen_error(message: &str) -> bool {
