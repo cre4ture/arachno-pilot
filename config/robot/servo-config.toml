@@ -1,5 +1,6 @@
 # Shared servo map, bus, safety, and locomotion settings for the physical hexapod.
 # Deployment profiles load this file through [servo_store].
+# Kinematic lengths are expressed in centimeters via *_length_cm.
 
 [bus.feetech]
 port = "/dev/serial/by-id/usb-1a86_USB_Single_Serial_5B79033507-if00"
@@ -56,9 +57,16 @@ tibia_stand_reference_ticks = 1850
 coxa_lay_down_ticks = 2005
 femur_lay_down_ticks = 2048
 tibia_lay_down_ticks = 2045
+coxa_zero_pose_ticks = 2005
+femur_zero_pose_ticks = 2048
+tibia_zero_pose_ticks = 2045
 coxa_forward_sign = -1
 femur_lift_sign = -1
 tibia_lift_sign = 1
+coxa_zero_heading_deg = 45.0
+coxa_length_cm = 3.0
+femur_length_cm = 8.5
+tibia_length_cm = 14.5
 
 [[legs]]
 name = "middle_left"
@@ -71,9 +79,16 @@ tibia_stand_reference_ticks = 1850
 coxa_lay_down_ticks = 2014
 femur_lay_down_ticks = 2035
 tibia_lay_down_ticks = 2014
+coxa_zero_pose_ticks = 2014
+femur_zero_pose_ticks = 2035
+tibia_zero_pose_ticks = 2014
 coxa_forward_sign = -1
 femur_lift_sign = -1
 tibia_lift_sign = 1
+coxa_zero_heading_deg = 0.0
+coxa_length_cm = 3.0
+femur_length_cm = 8.5
+tibia_length_cm = 14.5
 
 [[legs]]
 name = "rear_left"
@@ -86,9 +101,16 @@ tibia_stand_reference_ticks = 1850
 coxa_lay_down_ticks = 2146
 femur_lay_down_ticks = 1973
 tibia_lay_down_ticks = 1950
+coxa_zero_pose_ticks = 2146
+femur_zero_pose_ticks = 1973
+tibia_zero_pose_ticks = 1950
 coxa_forward_sign = -1
 femur_lift_sign = -1
 tibia_lift_sign = 1
+coxa_zero_heading_deg = -45.0
+coxa_length_cm = 3.0
+femur_length_cm = 8.5
+tibia_length_cm = 14.5
 
 [[legs]]
 name = "front_right"
@@ -101,9 +123,16 @@ tibia_stand_reference_ticks = 2250
 coxa_lay_down_ticks = 2238
 femur_lay_down_ticks = 2117
 tibia_lay_down_ticks = 2154
+coxa_zero_pose_ticks = 2238
+femur_zero_pose_ticks = 2117
+tibia_zero_pose_ticks = 2154
 coxa_forward_sign = 1
 femur_lift_sign = 1
 tibia_lift_sign = -1
+coxa_zero_heading_deg = 45.0
+coxa_length_cm = 3.0
+femur_length_cm = 8.5
+tibia_length_cm = 14.5
 
 [[legs]]
 name = "middle_right"
@@ -116,9 +145,16 @@ tibia_stand_reference_ticks = 2250
 coxa_lay_down_ticks = 2104
 femur_lay_down_ticks = 2073
 tibia_lay_down_ticks = 2090
+coxa_zero_pose_ticks = 2104
+femur_zero_pose_ticks = 2073
+tibia_zero_pose_ticks = 2090
 coxa_forward_sign = 1
 femur_lift_sign = 1
 tibia_lift_sign = -1
+coxa_zero_heading_deg = 0.0
+coxa_length_cm = 3.0
+femur_length_cm = 8.5
+tibia_length_cm = 14.5
 
 [[legs]]
 name = "rear_right"
@@ -131,6 +167,13 @@ tibia_stand_reference_ticks = 2250
 coxa_lay_down_ticks = 1724
 femur_lay_down_ticks = 2073
 tibia_lay_down_ticks = 2094
+coxa_zero_pose_ticks = 1724
+femur_zero_pose_ticks = 2073
+tibia_zero_pose_ticks = 2094
 coxa_forward_sign = 1
 femur_lift_sign = 1
 tibia_lift_sign = -1
+coxa_zero_heading_deg = -45.0
+coxa_length_cm = 3.0
+femur_length_cm = 8.5
+tibia_length_cm = 14.5

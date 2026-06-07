@@ -2,42 +2,131 @@
 servo_id = 11
 leg_name = "front_left"
 joint_key = "coxa"
-zero_ticks = 2012
+negative_ticks = 2642
+zero_ticks = 2125
+positive_ticks = 1619
 
 [[servos]]
 servo_id = 12
 leg_name = "front_left"
 joint_key = "femur"
 negative_ticks = 2409
-zero_ticks = 2097
-positive_ticks = 1601
+zero_ticks = 2061
+positive_ticks = 1553
+
+[[servos]]
+servo_id = 13
+leg_name = "front_left"
+joint_key = "tibia"
+zero_ticks = 2036
+positive_ticks = 2717
 
 [[servos]]
 servo_id = 21
 leg_name = "middle_left"
 joint_key = "coxa"
-zero_ticks = 2013
+negative_ticks = 2681
+zero_ticks = 2168
+positive_ticks = 1657
+
+[[servos]]
+servo_id = 22
+leg_name = "middle_left"
+joint_key = "femur"
+zero_ticks = 2052
+positive_ticks = 1546
+
+[[servos]]
+servo_id = 23
+leg_name = "middle_left"
+joint_key = "tibia"
+zero_ticks = 2033
+positive_ticks = 2715
 
 [[servos]]
 servo_id = 31
 leg_name = "rear_left"
 joint_key = "coxa"
-zero_ticks = 2012
+negative_ticks = 2715
+zero_ticks = 2230
+positive_ticks = 1692
+
+[[servos]]
+servo_id = 32
+leg_name = "rear_left"
+joint_key = "femur"
+zero_ticks = 2059
+positive_ticks = 1547
+
+[[servos]]
+servo_id = 33
+leg_name = "rear_left"
+joint_key = "tibia"
+zero_ticks = 2052
+positive_ticks = 2734
 
 [[servos]]
 servo_id = 41
 leg_name = "front_right"
 joint_key = "coxa"
-zero_ticks = 2084
+negative_ticks = 1540
+zero_ticks = 2062
+positive_ticks = 2563
+
+[[servos]]
+servo_id = 42
+leg_name = "front_right"
+joint_key = "femur"
+zero_ticks = 2055
+positive_ticks = 2556
+
+[[servos]]
+servo_id = 43
+leg_name = "front_right"
+joint_key = "tibia"
+zero_ticks = 2061
+positive_ticks = 1381
 
 [[servos]]
 servo_id = 51
 leg_name = "middle_right"
 joint_key = "coxa"
-zero_ticks = 2084
+negative_ticks = 1425
+zero_ticks = 1933
+positive_ticks = 2446
+
+[[servos]]
+servo_id = 52
+leg_name = "middle_right"
+joint_key = "femur"
+zero_ticks = 2039
+positive_ticks = 2546
+
+[[servos]]
+servo_id = 53
+leg_name = "middle_right"
+joint_key = "tibia"
+zero_ticks = 2053
+positive_ticks = 1371
 
 [[servos]]
 servo_id = 61
 leg_name = "rear_right"
 joint_key = "coxa"
-zero_ticks = 2083
+negative_ticks = 1442
+zero_ticks = 1927
+positive_ticks = 2470
+
+[[servos]]
+servo_id = 62
+leg_name = "rear_right"
+joint_key = "femur"
+zero_ticks = 2060
+positive_ticks = 2570
+
+[[servos]]
+servo_id = 63
+leg_name = "rear_right"
+joint_key = "tibia"
+zero_ticks = 2094
+positive_ticks = 1413

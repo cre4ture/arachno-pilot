@@ -258,7 +258,6 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
 
     .slider-top {
       display: flex;
-      justify-content: space-between;
       gap: 12px;
       align-items: baseline;
       margin-bottom: 10px;
@@ -266,9 +265,31 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
 
     .slider-top strong {
       font-size: 1rem;
+      min-width: 4.8rem;
     }
 
-    .slider-top span {
+    .slider-value-box {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--accent);
+      font-weight: 700;
+      min-width: 8.25rem;
+    }
+
+    .slider-value-box input {
+      width: 5.75rem;
+      border: 1px solid rgba(255,255,255,0.1);
+      background: rgba(7, 11, 16, 0.88);
+      color: var(--accent);
+      border-radius: 10px;
+      padding: 6px 8px;
+      font: inherit;
+      font-weight: 700;
+      text-align: right;
+    }
+
+    .slider-value-box span {
       color: var(--accent);
       font-weight: 700;
     }
@@ -279,13 +300,65 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
       margin: 0;
     }
 
+    .slider-main-row {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr) auto;
+      gap: 12px;
+      align-items: center;
+    }
+
+    .slider-track {
+      min-width: 0;
+    }
+
     .slider-legend {
       display: flex;
       justify-content: space-between;
       gap: 12px;
       color: var(--muted);
       font-size: 0.9rem;
-      margin-top: 10px;
+      margin-top: 8px;
+    }
+
+    .slider-jump {
+      display: grid;
+      grid-template-columns: 5.75rem auto;
+      gap: 10px;
+      align-items: center;
+      min-width: 0;
+    }
+
+    .slider-jump input {
+      width: 100%;
+      border: 1px solid rgba(255,255,255,0.1);
+      background: rgba(7, 11, 16, 0.88);
+      color: var(--text);
+      border-radius: 10px;
+      padding: 8px 10px;
+      font: inherit;
+    }
+
+    .slider-jump button {
+      min-width: 6.2rem;
+      border: 1px solid rgba(255,255,255,0.1);
+      background: rgba(7, 11, 16, 0.88);
+      color: var(--text);
+      border-radius: 10px;
+      padding: 8px 12px;
+      font: inherit;
+      cursor: pointer;
+      transition: transform 120ms ease, border-color 120ms ease, background 120ms ease;
+    }
+
+    .slider-jump button:hover {
+      transform: translateY(-1px);
+      border-color: rgba(255, 146, 84, 0.45);
+    }
+
+    .slider-jump button:disabled {
+      cursor: not-allowed;
+      opacity: 0.55;
+      transform: none;
     }
 
     .manual-actions {
@@ -608,6 +681,14 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
       color: rgba(255,255,255,0.84);
     }
 
+    .servo-node-angle-kind {
+      margin-top: 3px;
+      font-size: 0.68rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: rgba(148, 164, 182, 0.88);
+    }
+
     .servo-mini-grid {
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -760,6 +841,35 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
 
     <section class="panel" style="margin-top: 18px;">
       <div class="panel-header">
+        <h2>Servo Layout</h2>
+        <div class="muted" id="fault-summary">No servo data yet</div>
+      </div>
+      <div class="panel-body">
+        <div class="servo-layout">
+          <div class="servo-map-shell">
+            <div class="servo-map">
+              <div class="axis-label axis-front">Front</div>
+              <div class="axis-label axis-left">Left</div>
+              <div class="axis-label axis-right">Right</div>
+              <div class="axis-label axis-rear">Rear</div>
+              <div class="robot-body">
+                <div class="robot-body-core">
+                  <div class="robot-body-title">Hexapod Layout</div>
+                  <div class="robot-body-note" id="robot-note">Bird's-eye leg previews show coxa heading and projected reach from femur and tibia.</div>
+                </div>
+              </div>
+              <div id="servo-map-legs"></div>
+            </div>
+          </div>
+          <div class="servo-orientation">
+            The map follows the robot's physical layout. Left legs are arms 1-3 from front to back, right legs are arms 4-6. Each cluster combines a top-view live leg preview with the detailed coxa, femur, and tibia telemetry cards.
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" style="margin-top: 18px;">
+      <div class="panel-header">
         <h2>Manual Control</h2>
         <div class="muted" id="manual-summary">manual control disabled</div>
       </div>
@@ -768,7 +878,7 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
           <div class="manual-card">
             <div class="stat-label">Leg Group</div>
             <select id="manual-group"></select>
-            <div class="stat-note" id="manual-group-note">Choose a leg group, then apply semantic angle offsets in degrees.</div>
+            <div class="stat-note" id="manual-group-note">Choose a leg group, then set semantic joint angles in degrees.</div>
           </div>
           <div class="manual-card">
             <div class="stat-label">Manual Mode</div>
@@ -781,42 +891,75 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
           <label class="slider-field">
             <div class="slider-top">
               <strong id="manual-coxa-label">Coxa</strong>
-              <span id="manual-coxa-value">0.0°</span>
             </div>
-            <input id="manual-coxa-slider" type="range" min="-180" max="180" step="0.5" value="0" />
-            <div class="slider-legend">
-              <span id="manual-coxa-negative">back</span>
-              <span id="manual-coxa-positive">forward</span>
+            <div class="slider-main-row">
+              <div class="slider-value-box">
+                <input id="manual-coxa-input" type="number" min="-180" max="180" step="0.1" value="0.0" />
+                <span>°</span>
+              </div>
+              <div class="slider-track">
+                <input id="manual-coxa-slider" type="range" min="-180" max="180" step="0.5" value="0" />
+                <div class="slider-legend">
+                  <span id="manual-coxa-negative">back</span>
+                  <span id="manual-coxa-positive">forward</span>
+                </div>
+              </div>
+              <div class="slider-jump">
+                <input id="manual-coxa-jump" type="number" step="0.1" value="5.0" aria-label="Relative coxa angle jump in degrees" />
+                <button id="manual-coxa-jump-apply" type="button">Jump</button>
+              </div>
             </div>
           </label>
 
           <label class="slider-field">
             <div class="slider-top">
               <strong id="manual-femur-label">Femur</strong>
-              <span id="manual-femur-value">0.0°</span>
             </div>
-            <input id="manual-femur-slider" type="range" min="-180" max="180" step="0.5" value="0" />
-            <div class="slider-legend">
-              <span id="manual-femur-negative">down</span>
-              <span id="manual-femur-positive">up</span>
+            <div class="slider-main-row">
+              <div class="slider-value-box">
+                <input id="manual-femur-input" type="number" min="-180" max="180" step="0.1" value="0.0" />
+                <span>°</span>
+              </div>
+              <div class="slider-track">
+                <input id="manual-femur-slider" type="range" min="-180" max="180" step="0.5" value="0" />
+                <div class="slider-legend">
+                  <span id="manual-femur-negative">down</span>
+                  <span id="manual-femur-positive">up</span>
+                </div>
+              </div>
+              <div class="slider-jump">
+                <input id="manual-femur-jump" type="number" step="0.1" value="5.0" aria-label="Relative femur angle jump in degrees" />
+                <button id="manual-femur-jump-apply" type="button">Jump</button>
+              </div>
             </div>
           </label>
 
           <label class="slider-field">
             <div class="slider-top">
               <strong id="manual-tibia-label">Tibia</strong>
-              <span id="manual-tibia-value">0.0°</span>
             </div>
-            <input id="manual-tibia-slider" type="range" min="-180" max="180" step="0.5" value="0" />
-            <div class="slider-legend">
-              <span id="manual-tibia-negative">down</span>
-              <span id="manual-tibia-positive">up</span>
+            <div class="slider-main-row">
+              <div class="slider-value-box">
+                <input id="manual-tibia-input" type="number" min="-180" max="180" step="0.1" value="0.0" />
+                <span>°</span>
+              </div>
+              <div class="slider-track">
+                <input id="manual-tibia-slider" type="range" min="-180" max="180" step="0.5" value="0" />
+                <div class="slider-legend">
+                  <span id="manual-tibia-negative">down</span>
+                  <span id="manual-tibia-positive">up</span>
+                </div>
+              </div>
+              <div class="slider-jump">
+                <input id="manual-tibia-jump" type="number" step="0.1" value="5.0" aria-label="Relative tibia angle jump in degrees" />
+                <button id="manual-tibia-jump-apply" type="button">Jump</button>
+              </div>
             </div>
           </label>
         </div>
 
         <label class="manual-live-toggle">
-          <input id="manual-live-apply" type="checkbox" />
+          <input id="manual-live-apply" type="checkbox" checked />
           <span>Apply slider movement immediately while dragging</span>
         </label>
 
@@ -831,6 +974,13 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
         <div class="manual-grid" style="margin-top: 18px;">
           <div class="manual-card">
             <div class="stat-label">Selected Group Torque Limit</div>
+            <select id="manual-torque-target">
+              <option value="all">All joints</option>
+              <option value="coxa">Coxa only</option>
+              <option value="femur">Femur only</option>
+              <option value="tibia">Tibia only</option>
+            </select>
+            <div class="stat-note">Choose whether the limit applies to all joints in the selected group or only one joint type.</div>
             <input id="manual-torque-limit" type="number" min="0" max="1000" step="1" value="1000" />
             <div class="stat-note">Applied to the currently selected group after first syncing each target to the live pose.</div>
           </div>
@@ -863,6 +1013,7 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
             <button id="calibration-capture-zero" type="button">Capture Zero</button>
             <button id="calibration-capture-positive" type="button">Capture Positive</button>
             <button id="calibration-clear-joint" class="wide" type="button">Clear Selected Joint Calibration</button>
+            <button id="calibration-reload" class="wide" type="button">Reload Calibration File</button>
           </div>
           <div class="calibration-reference-card">
             <div class="stat-label">Reference Sketch</div>
@@ -876,35 +1027,6 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
         <div class="stat-note" id="calibration-entry-note" style="margin-top: 8px;">No joint selected yet.</div>
       </div>
     </section>
-
-    <section class="panel" style="margin-top: 18px;">
-      <div class="panel-header">
-        <h2>Servo Layout</h2>
-        <div class="muted" id="fault-summary">No servo data yet</div>
-      </div>
-      <div class="panel-body">
-        <div class="servo-layout">
-          <div class="servo-map-shell">
-            <div class="servo-map">
-              <div class="axis-label axis-front">Front</div>
-              <div class="axis-label axis-left">Left</div>
-              <div class="axis-label axis-right">Right</div>
-              <div class="axis-label axis-rear">Rear</div>
-              <div class="robot-body">
-                <div class="robot-body-core">
-                  <div class="robot-body-title">Hexapod Layout</div>
-                  <div class="robot-body-note" id="robot-note">Bird's-eye leg previews show coxa heading and projected reach from femur and tibia.</div>
-                </div>
-              </div>
-              <div id="servo-map-legs"></div>
-            </div>
-          </div>
-          <div class="servo-orientation">
-            The map follows the robot's physical layout. Left legs are arms 1-3 from front to back, right legs are arms 4-6. Each cluster combines a top-view live leg preview with the detailed coxa, femur, and tibia telemetry cards.
-          </div>
-        </div>
-      </div>
-    </section>
   </div>
 
   <script>
@@ -915,8 +1037,10 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
     const manualCaptureUrl = "/api/manual/capture";
     const manualTorqueLimitUrl = "/api/manual/torque-limit";
     const manualSyncCurrentUrl = "/api/manual/sync-current";
+    const manualJumpUrl = "/api/manual/jump";
     const calibrationCaptureUrl = "/api/calibration/capture";
     const calibrationClearUrl = "/api/calibration/clear";
+    const calibrationReloadUrl = "/api/calibration/reload";
     const manualLiveApplyIntervalMs = 200;
     let streamStarted = false;
     let manualGroupsReady = false;
@@ -984,14 +1108,36 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
       return Number(document.getElementById(`manual-${axis}-slider`).value);
     }
 
+    function sliderRange(axis) {
+      const slider = document.getElementById(`manual-${axis}-slider`);
+      return {
+        min: Number(slider.min),
+        max: Number(slider.max),
+      };
+    }
+
+    function clampManualAxisValue(axis, value) {
+      const { min, max } = sliderRange(axis);
+      return Math.min(max, Math.max(min, value));
+    }
+
     function updateSliderReadout(axis) {
-      document.getElementById(`manual-${axis}-value`).textContent = `${sliderValue(axis).toFixed(1)}°`;
+      document.getElementById(`manual-${axis}-input`).value = sliderValue(axis).toFixed(1);
     }
 
     function manualTorqueLimitValue() {
       const value = Number(document.getElementById("manual-torque-limit").value);
       if (!Number.isFinite(value)) return 1000;
       return Math.min(1000, Math.max(0, Math.round(value)));
+    }
+
+    function manualTorqueTargetValue() {
+      return document.getElementById("manual-torque-target").value || "all";
+    }
+
+    function manualJumpValue(axis) {
+      const value = Number(document.getElementById(`manual-${axis}-jump`).value);
+      return Number.isFinite(value) ? value : 0;
     }
 
     function manualLiveApplyEnabled() {
@@ -1024,9 +1170,14 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
     function syncManualSliderSpecs(joints) {
       for (const joint of joints ?? []) {
         const slider = document.getElementById(`manual-${joint.key}-slider`);
+        const input = document.getElementById(`manual-${joint.key}-input`);
         if (!slider) continue;
         slider.min = String(joint.min_deg);
         slider.max = String(joint.max_deg);
+        if (input) {
+          input.min = String(joint.min_deg);
+          input.max = String(joint.max_deg);
+        }
         document.getElementById(`manual-${joint.key}-label`).textContent = joint.label;
         document.getElementById(`manual-${joint.key}-negative`).textContent = joint.negative_label;
         document.getElementById(`manual-${joint.key}-positive`).textContent = joint.positive_label;
@@ -1057,7 +1208,7 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
       const selected = (groups ?? []).find((group) => group.key === select.value) ?? groups?.[0];
       note.textContent = selected
         ? `${selected.label}: ${selected.legs.join(", ")}`
-        : "Choose a leg group, then apply semantic angle offsets in degrees.";
+        : "Choose a leg group, then set semantic joint angles in degrees.";
     }
 
     function currentManualGroupValue() {
@@ -1068,6 +1219,7 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
     function currentCalibrationEntry() {
       const legKey = document.getElementById("calibration-leg").value;
       const jointKey = document.getElementById("calibration-joint").value;
+      if (legKey === "all") return null;
       return (window.__calibrationEntries ?? []).find((entry) => entry.leg_key === legKey && entry.joint_key === jointKey) ?? null;
     }
 
@@ -1112,9 +1264,12 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
 
     function updateCalibrationLabels() {
       const joint = currentCalibrationJoint();
+      const legKey = currentCalibrationLeg();
       document.getElementById("calibration-leg-note").textContent = joint
-        ? `Capture ${joint.label.toLowerCase()} reference poses one leg at a time.`
-        : "Choose a single leg for joint-angle reference capture.";
+        ? legKey === "all"
+          ? `Capture ${joint.label.toLowerCase()} reference poses across all legs at once.`
+          : `Capture ${joint.label.toLowerCase()} reference poses one leg at a time.`
+        : "Choose a leg target for joint-angle reference capture.";
       document.getElementById("calibration-joint-note").textContent = joint
         ? `${joint.negative_label} ${joint.negative_deg.toFixed(0)}°, ${joint.zero_label} ${joint.zero_deg.toFixed(0)}°, ${joint.positive_label} ${joint.positive_deg.toFixed(0)}°. The slope stays fixed at 4096/360.`
         : "Captured points adjust the zero reference while keeping the 4096/360 slope fixed.";
@@ -1131,6 +1286,11 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
     }
 
     function updateCalibrationEntryNote() {
+      if (currentCalibrationLeg() === "all") {
+        document.getElementById("calibration-entry-note").textContent =
+          "Batch mode: capture or clear the selected joint reference across all legs.";
+        return;
+      }
       const entry = currentCalibrationEntry();
       if (!entry) {
         document.getElementById("calibration-entry-note").textContent =
@@ -1160,6 +1320,7 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
       document.getElementById("calibration-capture-zero").disabled = !enabled;
       document.getElementById("calibration-capture-positive").disabled = !enabled;
       document.getElementById("calibration-clear-joint").disabled = !enabled;
+      document.getElementById("calibration-reload").disabled = !enabled;
     }
 
     function polarPoint(origin, length, degrees) {
@@ -1412,10 +1573,14 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
       document.getElementById("manual-capture").disabled = !enabled;
       document.getElementById("manual-set-torque-limit").disabled = !enabled;
       document.getElementById("manual-sync-current").disabled = !enabled;
+      document.getElementById("manual-torque-target").disabled = !enabled;
       document.getElementById("manual-torque-limit").disabled = !enabled;
       document.getElementById("manual-live-apply").disabled = !enabled;
       for (const axis of MANUAL_JOINT_KEYS) {
         document.getElementById(`manual-${axis}-slider`).disabled = !enabled;
+        document.getElementById(`manual-${axis}-input`).disabled = !enabled;
+        document.getElementById(`manual-${axis}-jump`).disabled = !enabled;
+        document.getElementById(`manual-${axis}-jump-apply`).disabled = !enabled;
       }
     }
 
@@ -1446,6 +1611,7 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
     async function applyManualTorqueLimit() {
       const result = await postJson(manualTorqueLimitUrl, {
         group_key: document.getElementById("manual-group").value,
+        target: manualTorqueTargetValue(),
         torque_limit: manualTorqueLimitValue(),
       });
       document.getElementById("manual-summary").textContent = result.summary;
@@ -1458,6 +1624,32 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
       });
       document.getElementById("manual-summary").textContent = result.summary;
       await refresh();
+      setManualSlidersFromGroupValue(true);
+    }
+
+    function setManualAxisFromInput(axis) {
+      const input = document.getElementById(`manual-${axis}-input`);
+      const slider = document.getElementById(`manual-${axis}-slider`);
+      const value = Number(input.value);
+      if (!Number.isFinite(value)) {
+        updateSliderReadout(axis);
+        return;
+      }
+      const clamped = clampManualAxisValue(axis, value);
+      slider.value = String(clamped);
+      updateSliderReadout(axis);
+    }
+
+    async function applyManualAxisJump(axis) {
+      const delta = manualJumpValue(axis);
+      const result = await postJson(manualJumpUrl, {
+        group_key: document.getElementById("manual-group").value,
+        joint_key: axis,
+        delta_deg: delta,
+      });
+      document.getElementById("manual-summary").textContent = result.summary;
+      await refresh();
+      setManualSlidersFromGroupValue(true);
     }
 
     async function resetManualGroup() {
@@ -1512,13 +1704,46 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
       await refresh();
     }
 
+    async function reloadCalibrationFile() {
+      const result = await postJson(calibrationReloadUrl, {});
+      document.getElementById("calibration-summary").textContent = result.summary;
+      await refresh();
+    }
+
     function bindManualControls() {
       if (window.__manualControlsBound) return;
       window.__manualControlsBound = true;
       for (const axis of MANUAL_JOINT_KEYS) {
-        document.getElementById(`manual-${axis}-slider`).addEventListener("input", () => {
+        const slider = document.getElementById(`manual-${axis}-slider`);
+        slider.addEventListener("input", () => {
           updateSliderReadout(axis);
           scheduleLiveManualApply();
+        });
+        slider.addEventListener("change", () => {
+          updateSliderReadout(axis);
+        });
+        const input = document.getElementById(`manual-${axis}-input`);
+        input.addEventListener("input", () => {
+          setManualAxisFromInput(axis);
+          scheduleLiveManualApply();
+        });
+        input.addEventListener("change", () => {
+          setManualAxisFromInput(axis);
+        });
+        const jumpInput = document.getElementById(`manual-${axis}-jump`);
+        const jumpButton = document.getElementById(`manual-${axis}-jump-apply`);
+        jumpButton.addEventListener("click", () => {
+          applyManualAxisJump(axis).catch((error) => {
+            document.getElementById("manual-summary").textContent = String(error);
+          });
+        });
+        jumpInput.addEventListener("keydown", (event) => {
+          if (event.key === "Enter") {
+            event.preventDefault();
+            applyManualAxisJump(axis).catch((error) => {
+              document.getElementById("manual-summary").textContent = String(error);
+            });
+          }
         });
         updateSliderReadout(axis);
       }
@@ -1567,6 +1792,9 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
       document.getElementById("calibration-clear-joint").addEventListener("click", () => clearCalibrationJoint().catch((error) => {
         document.getElementById("calibration-summary").textContent = String(error);
       }));
+      document.getElementById("calibration-reload").addEventListener("click", () => reloadCalibrationFile().catch((error) => {
+        document.getElementById("calibration-summary").textContent = String(error);
+      }));
     }
 
     function updateManualPanel(manual) {
@@ -1583,8 +1811,8 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
         : "disabled";
       document.getElementById("manual-mode-note").textContent = manual?.enabled
         ? (manual.base_pose_captured
-            ? "Manual zero is captured. Sliders apply semantic angles relative to that pose."
-            : "Waiting for full servo feedback or press capture once all servos are online.")
+            ? "Manual zero is captured for reset actions. Sliders show absolute semantic angles."
+            : "Sliders show absolute semantic angles. Capture the current pose if you want reset-to-zero behavior.")
         : "Start arachno-brain with --mode manual to enable dashboard-based servo control.";
 
       setManualControlsEnabled(Boolean(manual?.enabled && manualGroupsReady));
@@ -1670,6 +1898,8 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
       const temp = telemetry?.present_temperature_c != null ? `${telemetry.present_temperature_c} °C` : "n/a";
       const stateLabel = telemetry ? (telemetry.moving ? "moving" : "ready") : "offline";
       const errorText = compactError(servo.error);
+      const displayAngle = servo.semantic_angle_deg ?? servo.position_deg;
+      const displayAngleLabel = servo.semantic_angle_deg != null ? "semantic" : "absolute";
 
       return `
         <article class="${classes.join(" ")}">
@@ -1677,7 +1907,8 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
             <div>
               <div class="joint-name">${jointLabel}</div>
               <div class="servo-node-id">${servo.servo_id}</div>
-              <div class="servo-node-pos">${servo.position_deg != null ? `${fmt(servo.position_deg, 1)}°` : "n/a"}</div>
+              <div class="servo-node-pos">${displayAngle != null ? `${fmt(displayAngle, 1)}°` : "n/a"}</div>
+              <div class="servo-node-angle-kind">${displayAngleLabel}</div>
             </div>
             <div class="servo-mini-state">${stateLabel}</div>
           </div>
@@ -1743,80 +1974,68 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
       };
     }
 
-    function legBirdPose(legKey, servos) {
-      const meta = LEG_META[legKey];
-      const byJoint = Object.fromEntries(servos.map((servo) => [jointIndexForServo(servo), servo]));
-      const coxa = clamp(byJoint[1]?.semantic_angle_deg ?? 0, -140, 140);
-      const femur = clamp(byJoint[2]?.semantic_angle_deg ?? 0, -140, 140);
-      const tibia = clamp(byJoint[3]?.semantic_angle_deg ?? 0, -140, 140);
-      const isLeft = meta.side === "left";
-      const anchor = isLeft ? { x: 172, y: 58 } : { x: 48, y: 58 };
-      const baseDegMap = {
-        front_left: 225,
-        middle_left: 180,
-        rear_left: 135,
-        front_right: 315,
-        middle_right: 0,
-        rear_right: 45,
-      };
-      const baseDeg = baseDegMap[legKey] ?? (isLeft ? 180 : 0);
-      const headingDeg = baseDeg + (isLeft ? coxa * 0.42 : -coxa * 0.42);
-      const headingRad = headingDeg * Math.PI / 180;
-      const coxaLen = 18;
-      const femurLen = clamp(14 + (68 - femur) * 0.24, 10, 34);
-      const tibiaLen = clamp(12 + (76 - tibia) * 0.26, 9, 36);
-      const coxaEnd = pointFrom(anchor, coxaLen, headingRad);
-      const femurEnd = pointFrom(coxaEnd, femurLen, headingRad);
-      const tibiaEnd = pointFrom(femurEnd, tibiaLen, headingRad);
-      const bodyGuideStart = isLeft ? { x: 194, y: 58 } : { x: 26, y: 58 };
-      const bodyGuideEnd = isLeft ? { x: 176, y: 58 } : { x: 44, y: 58 };
+    function currentLegPreview(legKey) {
+      return (window.__legPreviews ?? []).find((preview) => preview.leg_key === legKey) ?? null;
+    }
+
+    function fitPreviewPose(rawPose, width = 220, height = 116) {
+      const points = [rawPose.anchor, rawPose.coxa_end, rawPose.femur_end, rawPose.tibia_end];
+      const minX = Math.min(...points.map((point) => point.x));
+      const maxX = Math.max(...points.map((point) => point.x));
+      const minY = Math.min(...points.map((point) => point.y));
+      const maxY = Math.max(...points.map((point) => point.y));
+      const spanX = Math.max(maxX - minX, 1);
+      const spanY = Math.max(maxY - minY, 1);
+      const marginX = 26;
+      const marginY = 18;
+      const scale = Math.min(
+        (width - marginX * 2) / spanX,
+        (height - marginY * 2) / spanY,
+      );
+      const offsetX = (width - spanX * scale) / 2 - minX * scale;
+      const offsetY = (height - spanY * scale) / 2 - minY * scale;
+      const mapPoint = (point) => ({
+        x: offsetX + point.x * scale,
+        y: offsetY + point.y * scale,
+      });
 
       return {
-        anchor,
-        coxaEnd,
-        femurEnd,
-        tibiaEnd,
-        bodyGuideStart,
-        bodyGuideEnd,
-        coxa,
-        femur,
-        tibia,
+        anchor: mapPoint(rawPose.anchor),
+        coxaEnd: mapPoint(rawPose.coxa_end),
+        femurEnd: mapPoint(rawPose.femur_end),
+        tibiaEnd: mapPoint(rawPose.tibia_end),
       };
     }
 
-    function legSidePose(legKey, servos) {
-      const meta = LEG_META[legKey];
-      const byJoint = Object.fromEntries(servos.map((servo) => [jointIndexForServo(servo), servo]));
-      const femur = clamp(byJoint[2]?.semantic_angle_deg ?? 0, -140, 140);
-      const tibia = clamp(byJoint[3]?.semantic_angle_deg ?? 0, -140, 140);
-      const isLeft = meta.side === 'left';
-      const anchor = isLeft ? { x: 190, y: 78 } : { x: 30, y: 78 };
-      const bodyGuideStart = isLeft ? { x: 210, y: 78 } : { x: 10, y: 78 };
-      const bodyGuideEnd = isLeft ? { x: 192, y: 78 } : { x: 28, y: 78 };
-      const coxaEnd = isLeft ? { x: 160, y: 78 } : { x: 60, y: 78 };
-      const femurShapeDeg = clamp(28 - femur * 0.42, -30, 88);
-      const tibiaShapeDeg = clamp(femurShapeDeg + 34 - tibia * 0.38, -20, 118);
-      const femurRad = ((isLeft ? 180 - femurShapeDeg : femurShapeDeg) * Math.PI) / 180;
-      const tibiaRad = ((isLeft ? 180 - tibiaShapeDeg : tibiaShapeDeg) * Math.PI) / 180;
-      const femurEnd = pointFrom(coxaEnd, 34, femurRad);
-      const tibiaEnd = pointFrom(femurEnd, 38, tibiaRad);
-
-      return {
-        anchor,
-        bodyGuideStart,
-        bodyGuideEnd,
-        coxaEnd,
-        femurEnd,
-        tibiaEnd,
-      };
+    function previewPlaceholder(title, count, label) {
+      return `
+        <div class="leg-preview-shell ${label}">
+          <div class="leg-preview-top">
+            <strong>${title}</strong>
+            <span>${count}/3</span>
+          </div>
+          <svg class="leg-preview-svg" viewBox="0 0 220 116" aria-label="${title} pose unavailable">
+            <rect x="28" y="22" width="164" height="72" rx="16" fill="rgba(255,255,255,0.03)" stroke="rgba(255,255,255,0.08)" />
+            <text x="110" y="58" text-anchor="middle" fill="rgba(238,243,247,0.78)" font-size="12">preview unavailable</text>
+            <text x="110" y="76" text-anchor="middle" fill="rgba(148,164,182,0.92)" font-size="11">need fresh semantic telemetry</text>
+          </svg>
+        </div>
+      `;
     }
 
     function renderLegBirdPreview(legKey, servos) {
       const meta = LEG_META[legKey];
-      const pose = legBirdPose(legKey, servos);
       const onlineCount = servos.filter((servo) => servo.online).length;
+      const rawPose = currentLegPreview(legKey)?.top_view;
+      if (!rawPose) {
+        return previewPlaceholder("Top view", onlineCount, "center");
+      }
+      const pose = fitPreviewPose(rawPose);
       const stroke = onlineCount === 3 ? '#ff9254' : (onlineCount > 0 ? '#ffc26b' : '#5a6775');
       const fill = onlineCount === 3 ? 'rgba(255,146,84,0.12)' : 'rgba(255,255,255,0.04)';
+      const inwardDx = Math.sign(pose.anchor.x - pose.coxaEnd.x) || (meta.side === "left" ? 1 : -1);
+      const bodyGuideStart = { x: pose.anchor.x + inwardDx * 20, y: pose.anchor.y };
+      const bodyGuideEnd = { x: pose.anchor.x + inwardDx * 4, y: pose.anchor.y };
 
       return `
         <div class="leg-preview-shell center">
@@ -1825,7 +2044,7 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
             <span>${onlineCount}/3 online</span>
           </div>
           <svg class="leg-preview-svg" viewBox="0 0 220 116" aria-label="${meta.label} top-view live pose">
-            <path d='M ${pose.bodyGuideStart.x} ${pose.bodyGuideStart.y} L ${pose.bodyGuideEnd.x} ${pose.bodyGuideEnd.y}'
+            <path d='M ${bodyGuideStart.x.toFixed(1)} ${bodyGuideStart.y.toFixed(1)} L ${bodyGuideEnd.x.toFixed(1)} ${bodyGuideEnd.y.toFixed(1)}'
               fill='none' stroke='rgba(255,255,255,0.14)' stroke-width='10' stroke-linecap='round' />
             <circle cx='${pose.anchor.x}' cy='${pose.anchor.y}' r='9' fill='${fill}' stroke='rgba(255,255,255,0.10)' />
             <path d='M ${pose.anchor.x} ${pose.anchor.y} L ${pose.coxaEnd.x.toFixed(1)} ${pose.coxaEnd.y.toFixed(1)} L ${pose.femurEnd.x.toFixed(1)} ${pose.femurEnd.y.toFixed(1)} L ${pose.tibiaEnd.x.toFixed(1)} ${pose.tibiaEnd.y.toFixed(1)}'
@@ -1842,9 +2061,16 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
 
     function renderLegSidePreview(legKey, servos) {
       const meta = LEG_META[legKey];
-      const pose = legSidePose(legKey, servos);
       const onlineCount = servos.filter((servo) => servo.online).length;
+      const rawPose = currentLegPreview(legKey)?.side_view;
+      if (!rawPose) {
+        return previewPlaceholder("Side view", onlineCount, "outer");
+      }
+      const pose = fitPreviewPose(rawPose);
       const stroke = onlineCount === 3 ? '#7dc8ff' : (onlineCount > 0 ? '#b8dfff' : '#5a6775');
+      const inwardDx = Math.sign(pose.anchor.x - pose.coxaEnd.x) || (meta.side === "left" ? 1 : -1);
+      const bodyGuideStart = { x: pose.anchor.x + inwardDx * 20, y: pose.anchor.y };
+      const bodyGuideEnd = { x: pose.anchor.x + inwardDx * 4, y: pose.anchor.y };
 
       return `
         <div class="leg-preview-shell outer">
@@ -1853,7 +2079,7 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
             <span>${onlineCount}/3</span>
           </div>
           <svg class="leg-preview-svg" viewBox="0 0 220 116" aria-label="${meta.label} side-view live pose">
-            <path d='M ${pose.bodyGuideStart.x} ${pose.bodyGuideStart.y} L ${pose.bodyGuideEnd.x} ${pose.bodyGuideEnd.y}'
+            <path d='M ${bodyGuideStart.x.toFixed(1)} ${bodyGuideStart.y.toFixed(1)} L ${bodyGuideEnd.x.toFixed(1)} ${bodyGuideEnd.y.toFixed(1)}'
               fill='none' stroke='rgba(255,255,255,0.14)' stroke-width='10' stroke-linecap='round' />
             <path d='M ${pose.anchor.x} ${pose.anchor.y} L ${pose.coxaEnd.x} ${pose.coxaEnd.y} L ${pose.femurEnd.x.toFixed(1)} ${pose.femurEnd.y.toFixed(1)} L ${pose.tibiaEnd.x.toFixed(1)} ${pose.tibiaEnd.y.toFixed(1)}'
               fill='none' stroke='${stroke}' stroke-width='9' stroke-linecap='round' stroke-linejoin='round' />
@@ -1890,6 +2116,7 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
         if (!response.ok) throw new Error(`state fetch failed: ${response.status}`);
         const state = await response.json();
         window.__latestState = state;
+        window.__legPreviews = state.leg_previews ?? [];
 
         document.getElementById("deployment-profile").textContent = state.deployment_profile;
         document.getElementById("compute-target").textContent = state.compute_target;

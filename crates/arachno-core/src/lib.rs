@@ -192,11 +192,47 @@ pub struct LegConfig {
     #[serde(default)]
     pub tibia_lay_down_ticks: Option<u16>,
     #[serde(default)]
+    pub coxa_zero_pose_ticks: Option<u16>,
+    #[serde(default)]
+    pub femur_zero_pose_ticks: Option<u16>,
+    #[serde(default)]
+    pub tibia_zero_pose_ticks: Option<u16>,
+    #[serde(default)]
     pub coxa_forward_sign: i8,
     #[serde(default)]
     pub femur_lift_sign: i8,
     #[serde(default)]
     pub tibia_lift_sign: i8,
+    #[serde(default)]
+    pub coxa_zero_heading_deg: Option<f32>,
+    #[serde(default, alias = "coxa_length")]
+    pub coxa_length_cm: Option<f32>,
+    #[serde(default, alias = "femur_length")]
+    pub femur_length_cm: Option<f32>,
+    #[serde(default, alias = "tibia_length")]
+    pub tibia_length_cm: Option<f32>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct LegPoint2 {
+    pub x: f32,
+    pub y: f32,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct LegTopViewPose {
+    pub anchor: LegPoint2,
+    pub coxa_end: LegPoint2,
+    pub femur_end: LegPoint2,
+    pub tibia_end: LegPoint2,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct LegSideViewPose {
+    pub anchor: LegPoint2,
+    pub coxa_end: LegPoint2,
+    pub femur_end: LegPoint2,
+    pub tibia_end: LegPoint2,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -400,6 +436,110 @@ impl LegConfig {
             "front_left" | "middle_right" | "rear_left"
         )
     }
+
+    pub fn is_left_side(&self) -> bool {
+        self.name.contains("left")
+    }
+
+    pub fn coxa_zero_pose_ticks(&self) -> u16 {
+        self.coxa_zero_pose_ticks
+            .or(self.coxa_lay_down_ticks)
+            .unwrap_or(self.coxa_stand_reference_ticks)
+    }
+
+    pub fn femur_zero_pose_ticks(&self) -> u16 {
+        self.femur_zero_pose_ticks
+            .or(self.femur_lay_down_ticks)
+            .unwrap_or(self.femur_stand_reference_ticks)
+    }
+
+    pub fn tibia_zero_pose_ticks(&self) -> u16 {
+        self.tibia_zero_pose_ticks
+            .or(self.tibia_lay_down_ticks)
+            .unwrap_or(self.tibia_stand_reference_ticks)
+    }
+
+    pub fn coxa_zero_heading_deg(&self) -> f32 {
+        self.coxa_zero_heading_deg
+            .unwrap_or_else(|| default_coxa_zero_heading_deg(&self.name))
+    }
+
+    pub fn coxa_length_cm(&self) -> f32 {
+        self.coxa_length_cm.unwrap_or(DEFAULT_COXA_LENGTH_CM)
+    }
+
+    pub fn femur_length_cm(&self) -> f32 {
+        self.femur_length_cm.unwrap_or(DEFAULT_FEMUR_LENGTH_CM)
+    }
+
+    pub fn tibia_length_cm(&self) -> f32 {
+        self.tibia_length_cm.unwrap_or(DEFAULT_TIBIA_LENGTH_CM)
+    }
+
+    pub fn body_heading_deg_for_coxa(&self, semantic_coxa_deg: f32) -> f32 {
+        let local_heading = self.coxa_zero_heading_deg() + semantic_coxa_deg;
+        if self.is_left_side() {
+            180.0 + local_heading
+        } else {
+            -local_heading
+        }
+        .rem_euclid(360.0)
+    }
+
+    pub fn top_view_pose(
+        &self,
+        semantic_coxa_deg: f32,
+        semantic_femur_deg: f32,
+        semantic_tibia_deg: f32,
+    ) -> LegTopViewPose {
+        let heading_rad = self
+            .body_heading_deg_for_coxa(semantic_coxa_deg)
+            .to_radians();
+        let anchor = LegPoint2 { x: 0.0, y: 0.0 };
+        let coxa_end = offset_point(anchor, heading_rad, self.coxa_length_cm());
+        let femur_projection = self.femur_length_cm() * semantic_femur_deg.to_radians().cos();
+        let tibia_projection = self.tibia_length_cm()
+            * (semantic_femur_deg + semantic_tibia_deg).to_radians().cos();
+        let femur_end = offset_point(coxa_end, heading_rad, femur_projection);
+        let tibia_end = offset_point(femur_end, heading_rad, tibia_projection);
+        LegTopViewPose {
+            anchor,
+            coxa_end,
+            femur_end,
+            tibia_end,
+        }
+    }
+
+    pub fn side_view_pose(
+        &self,
+        semantic_femur_deg: f32,
+        semantic_tibia_deg: f32,
+    ) -> LegSideViewPose {
+        let outward_sign = if self.is_left_side() { -1.0 } else { 1.0 };
+        let anchor = LegPoint2 { x: 0.0, y: 0.0 };
+        let coxa_end = LegPoint2 {
+            x: outward_sign * self.coxa_length_cm(),
+            y: 0.0,
+        };
+        let femur_end = offset_side_point(
+            coxa_end,
+            outward_sign,
+            semantic_femur_deg,
+            self.femur_length_cm(),
+        );
+        let tibia_end = offset_side_point(
+            femur_end,
+            outward_sign,
+            semantic_femur_deg + semantic_tibia_deg,
+            self.tibia_length_cm(),
+        );
+        LegSideViewPose {
+            anchor,
+            coxa_end,
+            femur_end,
+            tibia_end,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -446,12 +586,28 @@ impl TripodGait {
         pose
     }
 
+    pub fn zero_pose(&self, config: &RobotConfig) -> BTreeMap<u8, u16> {
+        let mut pose = BTreeMap::new();
+
+        for leg in &config.legs {
+            pose.insert(leg.coxa_servo_id, leg.coxa_zero_pose_ticks());
+            pose.insert(leg.femur_servo_id, leg.femur_zero_pose_ticks());
+            pose.insert(leg.tibia_servo_id, leg.tibia_zero_pose_ticks());
+        }
+
+        pose
+    }
+
     pub fn stand_commands(&self, config: &RobotConfig) -> Vec<JointCommand> {
         pose_to_commands(&self.stand_reference_pose(config))
     }
 
     pub fn lay_down_commands(&self, config: &RobotConfig) -> Vec<JointCommand> {
         pose_to_commands(&self.lay_down_pose(config))
+    }
+
+    pub fn zero_pose_commands(&self, config: &RobotConfig) -> Vec<JointCommand> {
+        pose_to_commands(&self.zero_pose(config))
     }
 
     pub fn slow_walk_pose(&self, config: &RobotConfig, phase: f32) -> BTreeMap<u8, u16> {
@@ -539,6 +695,10 @@ fn default_tibia_lift_ticks() -> i16 {
     18
 }
 
+const DEFAULT_COXA_LENGTH_CM: f32 = 18.0;
+const DEFAULT_FEMUR_LENGTH_CM: f32 = 34.0;
+const DEFAULT_TIBIA_LENGTH_CM: f32 = 38.0;
+
 fn pose_to_commands(pose: &BTreeMap<u8, u16>) -> Vec<JointCommand> {
     pose.iter()
         .map(|(&servo_id, &position_ticks)| JointCommand {
@@ -583,6 +743,36 @@ fn lerp_i16(start: i16, end: i16, t: f32) -> i16 {
 fn smoothstep(t: f32) -> f32 {
     let t = t.clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
+}
+
+fn default_coxa_zero_heading_deg(name: &str) -> f32 {
+    if name.starts_with("front_") {
+        45.0
+    } else if name.starts_with("rear_") {
+        -45.0
+    } else {
+        0.0
+    }
+}
+
+fn offset_point(start: LegPoint2, angle_rad: f32, length: f32) -> LegPoint2 {
+    LegPoint2 {
+        x: start.x + angle_rad.cos() * length,
+        y: start.y + angle_rad.sin() * length,
+    }
+}
+
+fn offset_side_point(
+    start: LegPoint2,
+    outward_sign: f32,
+    semantic_deg: f32,
+    length: f32,
+) -> LegPoint2 {
+    let angle_rad = (-semantic_deg).to_radians();
+    LegPoint2 {
+        x: start.x + outward_sign * angle_rad.cos() * length,
+        y: start.y + angle_rad.sin() * length,
+    }
 }
 
 fn offset_ticks(start_ticks: u16, delta: i16) -> u16 {
