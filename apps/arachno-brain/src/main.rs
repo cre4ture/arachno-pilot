@@ -41,6 +41,8 @@ const IMU_BRIDGE_BAUD_RATE: u32 = 115_200;
 const IMU_PROBE_TIMEOUT_MS: u64 = 1_000;
 const TELEMETRY_LOOP_MS: u64 = 250;
 const LOW_VOLTAGE_STRIKES_TO_TRIP: u8 = 6;
+const BODY_ATTITUDE_STRIKES_TO_TRIP: u8 = 3;
+const BODY_ATTITUDE_ACCEL_NORM_TOLERANCE_MPS2: f32 = 2.5;
 const STAND_UP_FEMUR_PREP_RATIO: f32 = 0.20;
 const STAND_UP_TIBIA_PLANT_RATIO: f32 = 0.20;
 const STAND_UP_BODY_RISE_RATIO: f32 = 0.45;
@@ -244,6 +246,7 @@ struct MotionRuntime {
     armed_at: Option<Instant>,
     initial_pose: Option<BTreeMap<u8, u16>>,
     hold_pose: Option<BTreeMap<u8, u16>>,
+    body_attitude_strikes: u8,
     low_voltage_strikes: BTreeMap<u8, u8>,
     summary: String,
     fault: Option<String>,
@@ -652,6 +655,7 @@ impl MotionRuntime {
             armed_at: None,
             initial_pose: None,
             hold_pose: None,
+            body_attitude_strikes: 0,
             low_voltage_strikes: BTreeMap::new(),
             summary: summary.to_owned(),
             fault: None,
@@ -667,6 +671,7 @@ impl MotionRuntime {
         self.armed_at = Some(Instant::now());
         self.initial_pose = Some(pose.clone());
         self.hold_pose = Some(pose);
+        self.body_attitude_strikes = 0;
         self.summary = match self.mode {
             BrainMode::Manual => "manual control armed at the measured robot pose".to_owned(),
             BrainMode::LayDown => "starting lay-down transition".to_owned(),
@@ -688,6 +693,7 @@ impl MotionRuntime {
     fn disarm(&mut self, message: impl Into<String>) {
         self.armed_at = None;
         self.initial_pose = None;
+        self.body_attitude_strikes = 0;
         self.summary = message.into();
     }
 
@@ -738,21 +744,48 @@ impl MotionRuntime {
         imu_state: Option<&TelemetryImuState>,
     ) -> Option<String> {
         if let Some(imu) = imu_state {
-            if let Some(roll_deg) = imu.roll_deg {
+            let attitude_reason = if let Some(roll_deg) = imu.roll_deg {
                 if roll_deg.abs() > config.safety.max_body_roll_deg {
-                    return Some(format!(
+                    Some(format!(
                         "body roll {:.1} deg exceeded limit {:.1} deg",
                         roll_deg, config.safety.max_body_roll_deg
-                    ));
+                    ))
+                } else {
+                    None
                 }
+            } else {
+                None
             }
-            if let Some(pitch_deg) = imu.pitch_deg {
-                if pitch_deg.abs() > config.safety.max_body_pitch_deg {
-                    return Some(format!(
+            .or_else(|| {
+                let pitch_deg = imu.pitch_deg?;
+                (pitch_deg.abs() > config.safety.max_body_pitch_deg).then(|| {
+                    format!(
                         "body pitch {:.1} deg exceeded limit {:.1} deg",
                         pitch_deg, config.safety.max_body_pitch_deg
-                    ));
+                    )
+                })
+            });
+
+            if let Some(reason) = attitude_reason {
+                let accel_near_gravity = imu
+                    .accel_norm_mps2
+                    .map(|norm| {
+                        (norm - 9.81).abs() <= BODY_ATTITUDE_ACCEL_NORM_TOLERANCE_MPS2
+                    })
+                    .unwrap_or(true);
+                if accel_near_gravity {
+                    self.body_attitude_strikes = self.body_attitude_strikes.saturating_add(1);
+                    if self.body_attitude_strikes >= BODY_ATTITUDE_STRIKES_TO_TRIP {
+                        return Some(format!(
+                            "{} for {} consecutive samples",
+                            reason, BODY_ATTITUDE_STRIKES_TO_TRIP
+                        ));
+                    }
+                } else {
+                    self.body_attitude_strikes = 0;
                 }
+            } else {
+                self.body_attitude_strikes = 0;
             }
         }
 
