@@ -28,7 +28,7 @@ Current implementation:
 - `arachno-brain --mode stand-up` raises the femurs first, lowers the tibias to replant the feet, then lifts the body with coordinated femur+tibia motion before aligning the coxae
 - `arachno-brain --mode stand` settles into and holds the configured stand-reference pose
 - hard safety checks monitor roll, pitch, voltage, and temperature while load/current remain visible in telemetry
-- `config/robot/servo-config.toml` is the single source of truth for servo bus settings, safety limits, locomotion tuning, servo IDs, and stored standing/lay-down ticks
+- `config/robot/servo-config.toml` is the single source of truth for servo bus settings, safety limits, locomotion tuning, servo IDs, and semantic zero-reference ticks, while `config/robot/servo-poses.toml` holds named logical-angle poses such as `stand_reference`, `lay_down`, and `zero_pose`
 
 ## Phase 2: Non-Learning Walking Baseline
 

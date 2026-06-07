@@ -13,7 +13,10 @@ mod dashboard_page;
 
 use anyhow::Context;
 use arachno_camera::RobotCamera;
-use arachno_core::{CameraBackend, LegSideViewPose, LegTopViewPose, RobotConfig, TripodGait};
+use arachno_core::{
+    CameraBackend, LegPoseAngles, LegSideViewPose, LegTopViewPose, RobotConfig, SemanticPoseKind,
+    TripodGait,
+};
 use arachno_feetech_sts::{
     RealStsBus, set_verified_torque_limit_on_current_position_for_ids,
     validate_servo_eeprom_profile as validate_bus_servo_eeprom_profile,
@@ -769,9 +772,7 @@ impl MotionRuntime {
             if let Some(reason) = attitude_reason {
                 let accel_near_gravity = imu
                     .accel_norm_mps2
-                    .map(|norm| {
-                        (norm - 9.81).abs() <= BODY_ATTITUDE_ACCEL_NORM_TOLERANCE_MPS2
-                    })
+                    .map(|norm| (norm - 9.81).abs() <= BODY_ATTITUDE_ACCEL_NORM_TOLERANCE_MPS2)
                     .unwrap_or(true);
                 if accel_near_gravity {
                     self.body_attitude_strikes = self.body_attitude_strikes.saturating_add(1);
@@ -834,6 +835,7 @@ impl MotionRuntime {
         &mut self,
         config: &RobotConfig,
         gait: &TripodGait,
+        calibration: &SemanticCalibrationState,
         manual: Option<&Arc<RwLock<ManualControlState>>>,
     ) -> Option<Vec<JointCommand>> {
         if self.mode == BrainMode::Telemetry {
@@ -844,7 +846,7 @@ impl MotionRuntime {
             .initial_pose
             .clone()
             .or_else(|| self.hold_pose.clone())
-            .unwrap_or_else(|| self.fallback_pose(config, gait));
+            .unwrap_or_else(|| self.fallback_pose(config, calibration));
 
         let target_pose = if self.fault.is_some() {
             self.hold_pose.clone().unwrap_or_else(|| base_pose.clone())
@@ -878,7 +880,8 @@ impl MotionRuntime {
                     }
                 }
                 BrainMode::LayDown => {
-                    let target = gait.lay_down_pose(config);
+                    let target =
+                        named_pose_with_calibration(config, calibration, SemanticPoseKind::LayDown);
                     let duration = config.locomotion.lay_down.duration_seconds.max(0.5);
                     let progress = (elapsed / duration).clamp(0.0, 1.0);
                     self.summary = if progress < 1.0 {
@@ -889,7 +892,8 @@ impl MotionRuntime {
                     interpolate_pose(&base_pose, &target, smoothstep(progress))
                 }
                 BrainMode::StandUp => {
-                    let (pose, summary) = staged_stand_up_pose(config, gait, &base_pose, elapsed);
+                    let (pose, summary) =
+                        staged_stand_up_pose(config, calibration, &base_pose, elapsed);
                     self.summary = summary;
                     pose
                 }
@@ -906,7 +910,11 @@ impl MotionRuntime {
                     };
                     interpolate_pose(
                         &base_pose,
-                        &gait.stand_reference_pose(config),
+                        &named_pose_with_calibration(
+                            config,
+                            calibration,
+                            SemanticPoseKind::StandReference,
+                        ),
                         smoothstep(progress),
                     )
                 }
@@ -950,12 +958,20 @@ impl MotionRuntime {
         Some(pose_to_commands(&target_pose))
     }
 
-    fn fallback_pose(&self, config: &RobotConfig, gait: &TripodGait) -> BTreeMap<u8, u16> {
+    fn fallback_pose(
+        &self,
+        config: &RobotConfig,
+        calibration: &SemanticCalibrationState,
+    ) -> BTreeMap<u8, u16> {
         match self.mode {
-            BrainMode::Manual => gait.stand_reference_pose(config),
-            BrainMode::LayDown | BrainMode::StandUp => gait.lay_down_pose(config),
+            BrainMode::Manual => {
+                named_pose_with_calibration(config, calibration, SemanticPoseKind::StandReference)
+            }
+            BrainMode::LayDown | BrainMode::StandUp => {
+                named_pose_with_calibration(config, calibration, SemanticPoseKind::LayDown)
+            }
             BrainMode::Stand | BrainMode::SlowWalk | BrainMode::Telemetry => {
-                gait.stand_reference_pose(config)
+                named_pose_with_calibration(config, calibration, SemanticPoseKind::StandReference)
             }
         }
     }
@@ -1292,7 +1308,13 @@ fn spawn_control_worker(
                 }
             }
 
-            if let Some(commands) = motion.commands(&config, &gait, Some(&manual)) {
+            let calibration_snapshot = calibration
+                .read()
+                .map(|state| state.clone())
+                .unwrap_or_default();
+            if let Some(commands) =
+                motion.commands(&config, &gait, &calibration_snapshot, Some(&manual))
+            {
                 if let Err(err) = real_bus.sync_write_positions(&commands) {
                     warn!(error = %err, command_count = commands.len(), "failed to send motion commands");
                     motion.trip_fault(
@@ -2266,6 +2288,85 @@ fn manual_joint_servo_and_sign(
     }
 }
 
+fn named_pose_with_calibration(
+    config: &RobotConfig,
+    calibration: &SemanticCalibrationState,
+    kind: SemanticPoseKind,
+) -> BTreeMap<u8, u16> {
+    let mut pose = BTreeMap::new();
+
+    for leg in &config.legs {
+        let resolved = resolved_leg_pose_with_calibration(config, calibration, leg, kind);
+        pose.insert(leg.coxa_servo_id, resolved.coxa_ticks);
+        pose.insert(leg.femur_servo_id, resolved.femur_ticks);
+        pose.insert(leg.tibia_servo_id, resolved.tibia_ticks);
+    }
+
+    pose
+}
+
+fn resolved_leg_pose_with_calibration(
+    config: &RobotConfig,
+    calibration: &SemanticCalibrationState,
+    leg: &arachno_core::LegConfig,
+    kind: SemanticPoseKind,
+) -> ResolvedLegPose {
+    let semantic = config
+        .pose_for_leg(kind, &leg.name)
+        .unwrap_or_else(|| legacy_pose_angles(config, calibration, leg, kind));
+
+    ResolvedLegPose {
+        coxa_ticks: servo_ticks_for_semantic_angle_deg(
+            config,
+            calibration,
+            leg.coxa_servo_id,
+            semantic.coxa_deg,
+        )
+        .unwrap_or_else(|| leg.coxa_zero_reference_ticks()),
+        femur_ticks: servo_ticks_for_semantic_angle_deg(
+            config,
+            calibration,
+            leg.femur_servo_id,
+            semantic.femur_deg,
+        )
+        .unwrap_or_else(|| leg.femur_zero_reference_ticks()),
+        tibia_ticks: servo_ticks_for_semantic_angle_deg(
+            config,
+            calibration,
+            leg.tibia_servo_id,
+            semantic.tibia_deg,
+        )
+        .unwrap_or_else(|| leg.tibia_zero_reference_ticks()),
+    }
+}
+
+fn legacy_pose_angles(
+    config: &RobotConfig,
+    calibration: &SemanticCalibrationState,
+    leg: &arachno_core::LegConfig,
+    kind: SemanticPoseKind,
+) -> LegPoseAngles {
+    let Some((coxa_ticks, femur_ticks, tibia_ticks)) = leg.legacy_pose_ticks(kind) else {
+        return LegPoseAngles::default();
+    };
+
+    LegPoseAngles {
+        coxa_deg: servo_semantic_angle_deg(config, calibration, leg.coxa_servo_id, coxa_ticks)
+            .unwrap_or(0.0),
+        femur_deg: servo_semantic_angle_deg(config, calibration, leg.femur_servo_id, femur_ticks)
+            .unwrap_or(0.0),
+        tibia_deg: servo_semantic_angle_deg(config, calibration, leg.tibia_servo_id, tibia_ticks)
+            .unwrap_or(0.0),
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ResolvedLegPose {
+    coxa_ticks: u16,
+    femur_ticks: u16,
+    tibia_ticks: u16,
+}
+
 fn semantic_ticks_to_degrees(delta_ticks: i32, sign: i16) -> f32 {
     delta_ticks as f32 * 360.0 / 4096.0 / sign as f32
 }
@@ -2299,11 +2400,23 @@ fn servo_semantic_metadata(
     })?;
 
     let (reference_ticks, sign, joint_key) = if leg.coxa_servo_id == servo_id {
-        (leg.coxa_zero_pose_ticks(), leg.coxa_forward_sign(), "coxa")
+        (
+            leg.coxa_zero_reference_ticks(),
+            leg.coxa_forward_sign(),
+            "coxa",
+        )
     } else if leg.femur_servo_id == servo_id {
-        (leg.femur_zero_pose_ticks(), leg.femur_lift_sign(), "femur")
+        (
+            leg.femur_zero_reference_ticks(),
+            leg.femur_lift_sign(),
+            "femur",
+        )
     } else {
-        (leg.tibia_zero_pose_ticks(), leg.tibia_lift_sign(), "tibia")
+        (
+            leg.tibia_zero_reference_ticks(),
+            leg.tibia_lift_sign(),
+            "tibia",
+        )
     };
 
     Some((leg, reference_ticks, sign, joint_key))
@@ -2432,11 +2545,12 @@ fn walk_pose_from_base(
 
 fn staged_stand_up_pose(
     config: &RobotConfig,
-    gait: &TripodGait,
+    calibration: &SemanticCalibrationState,
     base_pose: &BTreeMap<u8, u16>,
     elapsed: f32,
 ) -> (BTreeMap<u8, u16>, String) {
-    let stand_reference_pose = gait.stand_reference_pose(config);
+    let stand_reference_pose =
+        named_pose_with_calibration(config, calibration, SemanticPoseKind::StandReference);
     let duration = config.locomotion.stand_up.duration_seconds.max(0.5);
     let progress = (elapsed / duration).clamp(0.0, 1.0);
 
@@ -2447,9 +2561,10 @@ fn staged_stand_up_pose(
         );
     }
 
-    let femur_lift_pose = femur_lift_pose(config, base_pose);
-    let foot_plant_pose = foot_plant_pose(config, base_pose, &femur_lift_pose);
-    let body_raise_pose = body_raise_pose(config, base_pose, &stand_reference_pose);
+    let lay_down_pose = named_pose_with_calibration(config, calibration, SemanticPoseKind::LayDown);
+    let femur_lift_pose = femur_lift_pose(config, &lay_down_pose, base_pose);
+    let foot_plant_pose = foot_plant_pose(config, &lay_down_pose, base_pose, &femur_lift_pose);
+    let body_raise_pose = body_raise_pose(config, &lay_down_pose, base_pose, &stand_reference_pose);
 
     let femur_phase = (duration * STAND_UP_FEMUR_PREP_RATIO).max(0.1);
     let tibia_phase = (duration * STAND_UP_TIBIA_PLANT_RATIO).max(0.1);
@@ -2495,15 +2610,20 @@ fn staged_stand_up_pose(
     }
 }
 
-fn femur_lift_pose(config: &RobotConfig, base_pose: &BTreeMap<u8, u16>) -> BTreeMap<u8, u16> {
+fn femur_lift_pose(
+    config: &RobotConfig,
+    lay_down_pose: &BTreeMap<u8, u16>,
+    base_pose: &BTreeMap<u8, u16>,
+) -> BTreeMap<u8, u16> {
     let femur_ticks = stand_up_femur_prep_ticks(config);
     let mut pose = base_pose.clone();
 
     for leg in &config.legs {
-        let base_femur = base_pose.get(&leg.femur_servo_id).copied().unwrap_or(
-            leg.femur_lay_down_ticks
-                .unwrap_or(leg.femur_stand_reference_ticks),
-        );
+        let base_femur = base_pose
+            .get(&leg.femur_servo_id)
+            .copied()
+            .or_else(|| lay_down_pose.get(&leg.femur_servo_id).copied())
+            .unwrap_or_else(|| leg.femur_zero_reference_ticks());
         pose.insert(
             leg.femur_servo_id,
             offset_ticks(base_femur, leg.femur_lift_sign() * femur_ticks),
@@ -2515,6 +2635,7 @@ fn femur_lift_pose(config: &RobotConfig, base_pose: &BTreeMap<u8, u16>) -> BTree
 
 fn foot_plant_pose(
     config: &RobotConfig,
+    lay_down_pose: &BTreeMap<u8, u16>,
     base_pose: &BTreeMap<u8, u16>,
     femur_lift_pose: &BTreeMap<u8, u16>,
 ) -> BTreeMap<u8, u16> {
@@ -2522,10 +2643,11 @@ fn foot_plant_pose(
     let mut pose = femur_lift_pose.clone();
 
     for leg in &config.legs {
-        let base_tibia = base_pose.get(&leg.tibia_servo_id).copied().unwrap_or(
-            leg.tibia_lay_down_ticks
-                .unwrap_or(leg.tibia_stand_reference_ticks),
-        );
+        let base_tibia = base_pose
+            .get(&leg.tibia_servo_id)
+            .copied()
+            .or_else(|| lay_down_pose.get(&leg.tibia_servo_id).copied())
+            .unwrap_or_else(|| leg.tibia_zero_reference_ticks());
         pose.insert(
             leg.tibia_servo_id,
             offset_ticks(base_tibia, -leg.tibia_lift_sign() * tibia_ticks),
@@ -2537,16 +2659,18 @@ fn foot_plant_pose(
 
 fn body_raise_pose(
     config: &RobotConfig,
+    lay_down_pose: &BTreeMap<u8, u16>,
     base_pose: &BTreeMap<u8, u16>,
     stand_reference_pose: &BTreeMap<u8, u16>,
 ) -> BTreeMap<u8, u16> {
     let mut pose = stand_reference_pose.clone();
 
     for leg in &config.legs {
-        let base_coxa = base_pose.get(&leg.coxa_servo_id).copied().unwrap_or(
-            leg.coxa_lay_down_ticks
-                .unwrap_or(leg.coxa_stand_reference_ticks),
-        );
+        let base_coxa = base_pose
+            .get(&leg.coxa_servo_id)
+            .copied()
+            .or_else(|| lay_down_pose.get(&leg.coxa_servo_id).copied())
+            .unwrap_or_else(|| leg.coxa_zero_reference_ticks());
         pose.insert(leg.coxa_servo_id, base_coxa);
     }
 

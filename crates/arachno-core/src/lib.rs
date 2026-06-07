@@ -15,7 +15,11 @@ pub struct RobotConfig {
     #[serde(default)]
     pub servo_store: Option<ServoStoreConfig>,
     #[serde(default)]
+    pub pose_store: Option<PoseStoreConfig>,
+    #[serde(default)]
     pub semantic_calibration_store: Option<SemanticCalibrationStoreConfig>,
+    #[serde(default)]
+    pub poses: SemanticPoseSet,
     #[serde(default)]
     pub servo_eeprom: ServoEepromConfig,
     #[serde(default)]
@@ -51,8 +55,37 @@ pub struct ServoStoreConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PoseStoreConfig {
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SemanticCalibrationStoreConfig {
     pub path: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SemanticPoseSet {
+    #[serde(default, alias = "home")]
+    pub stand_reference: BTreeMap<String, LegPoseAngles>,
+    #[serde(default)]
+    pub lay_down: BTreeMap<String, LegPoseAngles>,
+    #[serde(default, alias = "zero")]
+    pub zero_pose: BTreeMap<String, LegPoseAngles>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+pub struct LegPoseAngles {
+    pub coxa_deg: f32,
+    pub femur_deg: f32,
+    pub tibia_deg: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SemanticPoseKind {
+    StandReference,
+    LayDown,
+    ZeroPose,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -179,24 +212,24 @@ pub struct LegConfig {
     pub coxa_servo_id: u8,
     pub femur_servo_id: u8,
     pub tibia_servo_id: u8,
-    #[serde(alias = "coxa_home_ticks")]
-    pub coxa_stand_reference_ticks: u16,
-    #[serde(alias = "femur_home_ticks")]
-    pub femur_stand_reference_ticks: u16,
-    #[serde(alias = "tibia_home_ticks")]
-    pub tibia_stand_reference_ticks: u16,
+    #[serde(default, alias = "coxa_home_ticks")]
+    pub coxa_stand_reference_ticks: Option<u16>,
+    #[serde(default, alias = "femur_home_ticks")]
+    pub femur_stand_reference_ticks: Option<u16>,
+    #[serde(default, alias = "tibia_home_ticks")]
+    pub tibia_stand_reference_ticks: Option<u16>,
     #[serde(default)]
     pub coxa_lay_down_ticks: Option<u16>,
     #[serde(default)]
     pub femur_lay_down_ticks: Option<u16>,
     #[serde(default)]
     pub tibia_lay_down_ticks: Option<u16>,
-    #[serde(default)]
-    pub coxa_zero_pose_ticks: Option<u16>,
-    #[serde(default)]
-    pub femur_zero_pose_ticks: Option<u16>,
-    #[serde(default)]
-    pub tibia_zero_pose_ticks: Option<u16>,
+    #[serde(default, alias = "coxa_zero_pose_ticks")]
+    pub coxa_zero_reference_ticks: Option<u16>,
+    #[serde(default, alias = "femur_zero_pose_ticks")]
+    pub femur_zero_reference_ticks: Option<u16>,
+    #[serde(default, alias = "tibia_zero_pose_ticks")]
+    pub tibia_zero_reference_ticks: Option<u16>,
     #[serde(default)]
     pub coxa_forward_sign: i8,
     #[serde(default)]
@@ -246,6 +279,16 @@ pub struct SharedServoConfigFile {
     #[serde(default)]
     pub locomotion: Option<LocomotionConfig>,
     pub legs: Vec<LegConfig>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SharedPoseConfigFile {
+    #[serde(default, alias = "home")]
+    pub stand_reference: BTreeMap<String, LegPoseAngles>,
+    #[serde(default)]
+    pub lay_down: BTreeMap<String, LegPoseAngles>,
+    #[serde(default, alias = "zero")]
+    pub zero_pose: BTreeMap<String, LegPoseAngles>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -325,6 +368,16 @@ impl RobotConfig {
             config.legs = servo_file.legs;
         }
 
+        if let Some(pose_store) = &config.pose_store {
+            let pose_path = resolve_config_path(path, &pose_store.path);
+            let pose_file: SharedPoseConfigFile = read_toml(&pose_path)?;
+            config.poses = SemanticPoseSet {
+                stand_reference: pose_file.stand_reference,
+                lay_down: pose_file.lay_down,
+                zero_pose: pose_file.zero_pose,
+            };
+        }
+
         if config.legs.is_empty() {
             return Err(ConfigLoadError::MissingServoStore {
                 path: path.to_path_buf(),
@@ -339,6 +392,26 @@ impl RobotConfig {
             .iter()
             .flat_map(|leg| [leg.coxa_servo_id, leg.femur_servo_id, leg.tibia_servo_id])
             .collect()
+    }
+
+    pub fn pose_for_leg(&self, kind: SemanticPoseKind, leg_name: &str) -> Option<LegPoseAngles> {
+        match kind {
+            SemanticPoseKind::StandReference => self.poses.stand_reference.get(leg_name).copied(),
+            SemanticPoseKind::LayDown => self
+                .poses
+                .lay_down
+                .get(leg_name)
+                .copied()
+                .or_else(|| self.poses.zero_pose.get(leg_name).copied())
+                .or(Some(LegPoseAngles::default())),
+            SemanticPoseKind::ZeroPose => self
+                .poses
+                .zero_pose
+                .get(leg_name)
+                .copied()
+                .or_else(|| self.poses.lay_down.get(leg_name).copied())
+                .or(Some(LegPoseAngles::default())),
+        }
     }
 }
 
@@ -419,14 +492,20 @@ impl LegConfig {
     pub fn femur_lift_sign(&self) -> i16 {
         resolve_sign(
             self.femur_lift_sign,
-            toward_center_sign(self.femur_stand_reference_ticks),
+            toward_center_sign(
+                self.femur_stand_reference_ticks
+                    .unwrap_or(self.femur_zero_reference_ticks()),
+            ),
         )
     }
 
     pub fn tibia_lift_sign(&self) -> i16 {
         resolve_sign(
             self.tibia_lift_sign,
-            toward_center_sign(self.tibia_stand_reference_ticks),
+            toward_center_sign(
+                self.tibia_stand_reference_ticks
+                    .unwrap_or(self.tibia_zero_reference_ticks()),
+            ),
         )
     }
 
@@ -441,22 +520,69 @@ impl LegConfig {
         self.name.contains("left")
     }
 
-    pub fn coxa_zero_pose_ticks(&self) -> u16 {
-        self.coxa_zero_pose_ticks
+    pub fn coxa_zero_reference_ticks(&self) -> u16 {
+        self.coxa_zero_reference_ticks
             .or(self.coxa_lay_down_ticks)
-            .unwrap_or(self.coxa_stand_reference_ticks)
+            .or(self.coxa_stand_reference_ticks)
+            .unwrap_or(DEFAULT_REFERENCE_TICKS)
     }
 
-    pub fn femur_zero_pose_ticks(&self) -> u16 {
-        self.femur_zero_pose_ticks
+    pub fn femur_zero_reference_ticks(&self) -> u16 {
+        self.femur_zero_reference_ticks
             .or(self.femur_lay_down_ticks)
-            .unwrap_or(self.femur_stand_reference_ticks)
+            .or(self.femur_stand_reference_ticks)
+            .unwrap_or(DEFAULT_REFERENCE_TICKS)
     }
 
-    pub fn tibia_zero_pose_ticks(&self) -> u16 {
-        self.tibia_zero_pose_ticks
+    pub fn tibia_zero_reference_ticks(&self) -> u16 {
+        self.tibia_zero_reference_ticks
             .or(self.tibia_lay_down_ticks)
-            .unwrap_or(self.tibia_stand_reference_ticks)
+            .or(self.tibia_stand_reference_ticks)
+            .unwrap_or(DEFAULT_REFERENCE_TICKS)
+    }
+
+    pub fn legacy_pose_ticks(&self, kind: SemanticPoseKind) -> Option<(u16, u16, u16)> {
+        match kind {
+            SemanticPoseKind::StandReference => Some((
+                self.coxa_stand_reference_ticks?,
+                self.femur_stand_reference_ticks?,
+                self.tibia_stand_reference_ticks?,
+            )),
+            SemanticPoseKind::LayDown => {
+                let (coxa_stand, femur_stand, tibia_stand) =
+                    self.legacy_pose_ticks(SemanticPoseKind::StandReference)?;
+                Some((
+                    self.coxa_lay_down_ticks.unwrap_or(coxa_stand),
+                    self.femur_lay_down_ticks.unwrap_or(femur_stand),
+                    self.tibia_lay_down_ticks.unwrap_or(tibia_stand),
+                ))
+            }
+            SemanticPoseKind::ZeroPose => Some((
+                self.coxa_zero_reference_ticks(),
+                self.femur_zero_reference_ticks(),
+                self.tibia_zero_reference_ticks(),
+            )),
+        }
+    }
+
+    pub fn pose_ticks_from_angles(&self, pose: LegPoseAngles) -> (u16, u16, u16) {
+        (
+            semantic_degrees_to_ticks(
+                self.coxa_zero_reference_ticks(),
+                self.coxa_forward_sign(),
+                pose.coxa_deg,
+            ),
+            semantic_degrees_to_ticks(
+                self.femur_zero_reference_ticks(),
+                self.femur_lift_sign(),
+                pose.femur_deg,
+            ),
+            semantic_degrees_to_ticks(
+                self.tibia_zero_reference_ticks(),
+                self.tibia_lift_sign(),
+                pose.tibia_deg,
+            ),
+        )
     }
 
     pub fn coxa_zero_heading_deg(&self) -> f32 {
@@ -498,8 +624,8 @@ impl LegConfig {
         let anchor = LegPoint2 { x: 0.0, y: 0.0 };
         let coxa_end = offset_point(anchor, heading_rad, self.coxa_length_cm());
         let femur_projection = self.femur_length_cm() * semantic_femur_deg.to_radians().cos();
-        let tibia_projection = self.tibia_length_cm()
-            * (semantic_femur_deg + semantic_tibia_deg).to_radians().cos();
+        let tibia_projection =
+            self.tibia_length_cm() * (semantic_femur_deg + semantic_tibia_deg).to_radians().cos();
         let femur_end = offset_point(coxa_end, heading_rad, femur_projection);
         let tibia_end = offset_point(femur_end, heading_rad, tibia_projection);
         LegTopViewPose {
@@ -547,15 +673,7 @@ pub struct TripodGait;
 
 impl TripodGait {
     pub fn stand_reference_pose(&self, config: &RobotConfig) -> BTreeMap<u8, u16> {
-        let mut pose = BTreeMap::new();
-
-        for leg in &config.legs {
-            pose.insert(leg.coxa_servo_id, leg.coxa_stand_reference_ticks);
-            pose.insert(leg.femur_servo_id, leg.femur_stand_reference_ticks);
-            pose.insert(leg.tibia_servo_id, leg.tibia_stand_reference_ticks);
-        }
-
-        pose
+        named_pose_ticks(config, SemanticPoseKind::StandReference)
     }
 
     pub fn stand_pose(&self, config: &RobotConfig) -> BTreeMap<u8, u16> {
@@ -563,39 +681,11 @@ impl TripodGait {
     }
 
     pub fn lay_down_pose(&self, config: &RobotConfig) -> BTreeMap<u8, u16> {
-        let mut pose = BTreeMap::new();
-
-        for leg in &config.legs {
-            pose.insert(
-                leg.coxa_servo_id,
-                leg.coxa_lay_down_ticks
-                    .unwrap_or(leg.coxa_stand_reference_ticks),
-            );
-            pose.insert(
-                leg.femur_servo_id,
-                leg.femur_lay_down_ticks
-                    .unwrap_or(leg.femur_stand_reference_ticks),
-            );
-            pose.insert(
-                leg.tibia_servo_id,
-                leg.tibia_lay_down_ticks
-                    .unwrap_or(leg.tibia_stand_reference_ticks),
-            );
-        }
-
-        pose
+        named_pose_ticks(config, SemanticPoseKind::LayDown)
     }
 
     pub fn zero_pose(&self, config: &RobotConfig) -> BTreeMap<u8, u16> {
-        let mut pose = BTreeMap::new();
-
-        for leg in &config.legs {
-            pose.insert(leg.coxa_servo_id, leg.coxa_zero_pose_ticks());
-            pose.insert(leg.femur_servo_id, leg.femur_zero_pose_ticks());
-            pose.insert(leg.tibia_servo_id, leg.tibia_zero_pose_ticks());
-        }
-
-        pose
+        named_pose_ticks(config, SemanticPoseKind::ZeroPose)
     }
 
     pub fn stand_commands(&self, config: &RobotConfig) -> Vec<JointCommand> {
@@ -632,17 +722,29 @@ impl TripodGait {
             pose.insert(
                 leg.coxa_servo_id,
                 offset_ticks(
-                    leg.coxa_stand_reference_ticks,
+                    pose.get(&leg.coxa_servo_id)
+                        .copied()
+                        .unwrap_or_else(|| leg.coxa_zero_reference_ticks()),
                     leg.coxa_forward_sign() * coxa_offset,
                 ),
             );
             pose.insert(
                 leg.femur_servo_id,
-                offset_ticks(leg.femur_stand_reference_ticks, femur_offset),
+                offset_ticks(
+                    pose.get(&leg.femur_servo_id)
+                        .copied()
+                        .unwrap_or_else(|| leg.femur_zero_reference_ticks()),
+                    femur_offset,
+                ),
             );
             pose.insert(
                 leg.tibia_servo_id,
-                offset_ticks(leg.tibia_stand_reference_ticks, tibia_offset),
+                offset_ticks(
+                    pose.get(&leg.tibia_servo_id)
+                        .copied()
+                        .unwrap_or_else(|| leg.tibia_zero_reference_ticks()),
+                    tibia_offset,
+                ),
             );
         }
 
@@ -698,6 +800,43 @@ fn default_tibia_lift_ticks() -> i16 {
 const DEFAULT_COXA_LENGTH_CM: f32 = 18.0;
 const DEFAULT_FEMUR_LENGTH_CM: f32 = 34.0;
 const DEFAULT_TIBIA_LENGTH_CM: f32 = 38.0;
+const DEFAULT_REFERENCE_TICKS: u16 = 2048;
+
+fn named_pose_ticks(config: &RobotConfig, kind: SemanticPoseKind) -> BTreeMap<u8, u16> {
+    let mut pose = BTreeMap::new();
+
+    for leg in &config.legs {
+        let (coxa_ticks, femur_ticks, tibia_ticks) = resolved_leg_pose_ticks(config, leg, kind);
+        pose.insert(leg.coxa_servo_id, coxa_ticks);
+        pose.insert(leg.femur_servo_id, femur_ticks);
+        pose.insert(leg.tibia_servo_id, tibia_ticks);
+    }
+
+    pose
+}
+
+fn resolved_leg_pose_ticks(
+    config: &RobotConfig,
+    leg: &LegConfig,
+    kind: SemanticPoseKind,
+) -> (u16, u16, u16) {
+    if let Some(pose) = config.pose_for_leg(kind, &leg.name) {
+        return leg.pose_ticks_from_angles(pose);
+    }
+
+    leg.legacy_pose_ticks(kind).unwrap_or((
+        leg.coxa_zero_reference_ticks(),
+        leg.femur_zero_reference_ticks(),
+        leg.tibia_zero_reference_ticks(),
+    ))
+}
+
+fn semantic_degrees_to_ticks(reference_ticks: u16, sign: i16, degrees: f32) -> u16 {
+    let delta_ticks = degrees * 4096.0 / 360.0 * sign as f32;
+    (reference_ticks as f32 + delta_ticks)
+        .round()
+        .clamp(0.0, 4095.0) as u16
+}
 
 fn pose_to_commands(pose: &BTreeMap<u8, u16>) -> Vec<JointCommand> {
     pose.iter()
@@ -798,6 +937,7 @@ mod tests {
 
         let main_config = temp_dir.join("host-usb.toml");
         let servo_config = temp_dir.join("servo-config.toml");
+        let pose_config = temp_dir.join("servo-poses.toml");
 
         fs::write(
             &main_config,
@@ -813,6 +953,9 @@ perception_hz = 20
 
 [servo_store]
 path = "servo-config.toml"
+
+[pose_store]
+path = "servo-poses.toml"
 
 [camera]
 name = "usb camera"
@@ -883,6 +1026,22 @@ tibia_lift_sign = 1
         )
         .expect("failed to write shared servo config");
 
+        fs::write(
+            &pose_config,
+            r#"
+[stand_reference.front_left]
+coxa_deg = 1.0
+femur_deg = 52.5
+tibia_deg = -120.0
+
+[lay_down.front_left]
+coxa_deg = 0.0
+femur_deg = 0.0
+tibia_deg = 0.0
+"#,
+        )
+        .expect("failed to write shared pose config");
+
         let config = RobotConfig::load_from_path(&main_config).expect("config should load");
 
         assert_eq!(config.bus.feetech.port, "/dev/ttyACM-test");
@@ -895,6 +1054,12 @@ tibia_lift_sign = 1
         assert_eq!(config.locomotion.stand_up.duration_seconds, 12.0);
         assert_eq!(config.legs.len(), 1);
         assert_eq!(config.legs[0].name, "front_left");
+        let stand_reference_pose = config
+            .pose_for_leg(SemanticPoseKind::StandReference, "front_left")
+            .expect("pose store should provide a stand-reference pose");
+        assert_eq!(stand_reference_pose.coxa_deg, 1.0);
+        assert_eq!(stand_reference_pose.femur_deg, 52.5);
+        assert_eq!(stand_reference_pose.tibia_deg, -120.0);
 
         fs::remove_dir_all(&temp_dir).expect("failed to clean temp config dir");
     }

@@ -424,6 +424,9 @@ fn validate_servo_eeprom_profile(
 fn check_poses(config: &RobotConfig, args: &Args) -> anyhow::Result<()> {
     let ranges_path = resolve_output_path(&args.ranges);
     let report = load_range_report(&ranges_path)?;
+    let gait = TripodGait;
+    let stand_reference_pose = gait.stand_reference_pose(config);
+    let lay_down_pose = gait.lay_down_pose(config);
 
     println!("pose check for {}", config.robot.name);
     println!("deployment profile: {}", config.deployment.profile);
@@ -445,9 +448,12 @@ fn check_poses(config: &RobotConfig, args: &Args) -> anyhow::Result<()> {
 
         warnings += print_joint_check(
             "coxa",
-            leg.coxa_stand_reference_ticks,
-            leg.coxa_lay_down_ticks
-                .unwrap_or(leg.coxa_stand_reference_ticks),
+            *stand_reference_pose
+                .get(&leg.coxa_servo_id)
+                .with_context(|| format!("missing coxa stand pose for leg {}", leg.name))?,
+            *lay_down_pose
+                .get(&leg.coxa_servo_id)
+                .with_context(|| format!("missing coxa lay pose for leg {}", leg.name))?,
             measured
                 .coxa
                 .as_ref()
@@ -455,9 +461,12 @@ fn check_poses(config: &RobotConfig, args: &Args) -> anyhow::Result<()> {
         );
         warnings += print_joint_check(
             "femur",
-            leg.femur_stand_reference_ticks,
-            leg.femur_lay_down_ticks
-                .unwrap_or(leg.femur_stand_reference_ticks),
+            *stand_reference_pose
+                .get(&leg.femur_servo_id)
+                .with_context(|| format!("missing femur stand pose for leg {}", leg.name))?,
+            *lay_down_pose
+                .get(&leg.femur_servo_id)
+                .with_context(|| format!("missing femur lay pose for leg {}", leg.name))?,
             measured
                 .femur
                 .as_ref()
@@ -465,9 +474,12 @@ fn check_poses(config: &RobotConfig, args: &Args) -> anyhow::Result<()> {
         );
         warnings += print_joint_check(
             "tibia",
-            leg.tibia_stand_reference_ticks,
-            leg.tibia_lay_down_ticks
-                .unwrap_or(leg.tibia_stand_reference_ticks),
+            *stand_reference_pose
+                .get(&leg.tibia_servo_id)
+                .with_context(|| format!("missing tibia stand pose for leg {}", leg.name))?,
+            *lay_down_pose
+                .get(&leg.tibia_servo_id)
+                .with_context(|| format!("missing tibia lay pose for leg {}", leg.name))?,
             measured
                 .tibia
                 .as_ref()
@@ -1074,6 +1086,8 @@ fn build_suggested_pose_report(
     ranges_path: &Path,
     report: &RangeScanReport,
 ) -> anyhow::Result<SuggestedPoseReport> {
+    let gait = TripodGait;
+    let lay_down_pose = gait.lay_down_pose(config);
     let measured_legs = report
         .legs
         .iter()
@@ -1085,7 +1099,7 @@ fn build_suggested_pose_report(
         let measured = measured_legs
             .get(leg.name.as_str())
             .with_context(|| format!("missing measured ranges for leg {}", leg.name))?;
-        legs.push(build_suggested_leg_pose(leg, measured)?);
+        legs.push(build_suggested_leg_pose(leg, measured, &lay_down_pose)?);
     }
 
     Ok(SuggestedPoseReport {
@@ -1101,6 +1115,7 @@ fn build_suggested_pose_report(
 fn build_suggested_leg_pose(
     leg: &LegConfig,
     measured: &LegRangeReport,
+    lay_down_pose: &BTreeMap<u8, u16>,
 ) -> anyhow::Result<SuggestedLegPose> {
     let coxa = measured
         .coxa
@@ -1130,18 +1145,21 @@ fn build_suggested_leg_pose(
         ),
         coxa_lay_down_ticks: suggested_lay_down_ticks(
             coxa,
-            leg.coxa_lay_down_ticks
-                .unwrap_or(leg.coxa_stand_reference_ticks),
+            *lay_down_pose
+                .get(&leg.coxa_servo_id)
+                .with_context(|| format!("missing coxa lay pose for leg {}", leg.name))?,
         ),
         femur_lay_down_ticks: suggested_lay_down_ticks(
             femur,
-            leg.femur_lay_down_ticks
-                .unwrap_or(leg.femur_stand_reference_ticks),
+            *lay_down_pose
+                .get(&leg.femur_servo_id)
+                .with_context(|| format!("missing femur lay pose for leg {}", leg.name))?,
         ),
         tibia_lay_down_ticks: suggested_lay_down_ticks(
             tibia,
-            leg.tibia_lay_down_ticks
-                .unwrap_or(leg.tibia_stand_reference_ticks),
+            *lay_down_pose
+                .get(&leg.tibia_servo_id)
+                .with_context(|| format!("missing tibia lay pose for leg {}", leg.name))?,
         ),
     })
 }

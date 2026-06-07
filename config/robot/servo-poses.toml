@@ -1,0 +1,93 @@
+# Named robot poses expressed as logical joint angles in degrees.
+# These are interpreted relative to each servo's semantic zero calibration.
+# The current zero-pose matches the stretched lay-down pose for easy calibration.
+
+[stand_reference.front_left]
+coxa_deg = -0.2
+femur_deg = 54.8
+tibia_deg = -123.0
+
+[stand_reference.middle_left]
+coxa_deg = 0.1
+femur_deg = 51.1
+tibia_deg = -122.6
+
+[stand_reference.rear_left]
+coxa_deg = 1.4
+femur_deg = 51.7
+tibia_deg = -121.4
+
+[stand_reference.front_right]
+coxa_deg = -0.7
+femur_deg = 50.8
+tibia_deg = -121.6
+
+[stand_reference.middle_right]
+coxa_deg = 0.4
+femur_deg = 50.8
+tibia_deg = -122.4
+
+[stand_reference.rear_right]
+coxa_deg = 1.5
+femur_deg = 50.1
+tibia_deg = -123.2
+
+[lay_down.front_left]
+coxa_deg = 0.0
+femur_deg = 0.0
+tibia_deg = 0.0
+
+[lay_down.middle_left]
+coxa_deg = 0.0
+femur_deg = 0.0
+tibia_deg = 0.0
+
+[lay_down.rear_left]
+coxa_deg = 0.0
+femur_deg = 0.0
+tibia_deg = 0.0
+
+[lay_down.front_right]
+coxa_deg = 0.0
+femur_deg = 0.0
+tibia_deg = 0.0
+
+[lay_down.middle_right]
+coxa_deg = 0.0
+femur_deg = 0.0
+tibia_deg = 0.0
+
+[lay_down.rear_right]
+coxa_deg = 0.0
+femur_deg = 0.0
+tibia_deg = 0.0
+
+[zero_pose.front_left]
+coxa_deg = 0.0
+femur_deg = 0.0
+tibia_deg = 0.0
+
+[zero_pose.middle_left]
+coxa_deg = 0.0
+femur_deg = 0.0
+tibia_deg = 0.0
+
+[zero_pose.rear_left]
+coxa_deg = 0.0
+femur_deg = 0.0
+tibia_deg = 0.0
+
+[zero_pose.front_right]
+coxa_deg = 0.0
+femur_deg = 0.0
+tibia_deg = 0.0
+
+[zero_pose.middle_right]
+coxa_deg = 0.0
+femur_deg = 0.0
+tibia_deg = 0.0
+
+[zero_pose.rear_right]
+coxa_deg = 0.0
+femur_deg = 0.0
+tibia_deg = 0.0

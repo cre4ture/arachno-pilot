@@ -26,7 +26,8 @@ Rust-first starter workspace for a hexapod that can run either on a tethered Lin
 - `native/`: narrow C++ bridge area for TensorRT, Argus, or vendor SDK shims.
 - `firmware/`: embedded Rust workspace for microcontroller-side bridge firmware.
 - `config/robot`: robot and hardware configuration files.
-- `config/robot/servo-config.toml`: single source of truth for Feetech bus settings, expected EEPROM values, safety limits, locomotion tuning, servo IDs, stored poses, and joint direction signs.
+- `config/robot/servo-config.toml`: single source of truth for Feetech bus settings, expected EEPROM values, safety limits, locomotion tuning, servo IDs, semantic zero-reference ticks, and joint direction signs.
+- `config/robot/servo-poses.toml`: named robot poses stored as logical joint angles in degrees.
 - `docs/architecture.md`: the recommended runtime and integration model.
 - `docs/roadmap.md`: staged locomotion and learning roadmap for the spider.
 
@@ -36,6 +37,7 @@ Rust-first starter workspace for a hexapod that can run either on a tethered Lin
 - `config/robot/jetson-onboard.toml`: Jetson mounted on the robot, with the CSI camera connected locally.
 - `config/robot/default.toml`: current local-development default, aligned with the host USB setup for now.
 - `config/robot/servo-config.toml`: shared servo/bus/safety/locomotion map loaded by all deployment profiles.
+- `config/robot/servo-poses.toml`: shared semantic pose map loaded by all deployment profiles.
 - `config/robot/servo-ranges.toml`: measured free-movement envelopes written by the low-torque self-stop calibration scan.
 - `config/robot/servo-semantic-calibration.toml`: dashboard-captured semantic zero-reference corrections for joint-angle display and manual control.
 
@@ -56,8 +58,8 @@ Implemented now:
   It validates the configured EEPROM profile first and refuses to start the scan if any servo does not match.
   Use `--skip-initial-lay-down` to resume a partially completed scan from the robot's current posture.
   The run also emits a mixed workflow + low-level STS trace log next to the output TOML by default, or to a custom path via `--trace-output`.
-- `check-poses`: compares configured `stand_reference` and `lay-down` ticks in `servo-config.toml` against measured bounds from `servo-ranges.toml`
-- `suggest-poses`: generates candidate `stand_reference` and `lay-down` ticks from the measured ranges without changing runtime behavior
+- `check-poses`: compares the currently resolved `stand_reference` and `lay-down` poses against measured bounds from `servo-ranges.toml`
+- `suggest-poses`: generates candidate `stand_reference` and `lay-down` ticks from the measured ranges for pose tuning
 - shared hard safety checks for roll, pitch, bus voltage, and temperature, with servo load still exposed in telemetry
 - `arachno-brain` validates the configured EEPROM profile on startup and refuses to start if any servo does not match
 
