@@ -880,12 +880,13 @@ impl MotionRuntime {
             }
 
             if let Some(temp_c) = telemetry.present_temperature_c
-                && temp_c > config.safety.max_servo_temp_c {
-                    return Some(format!(
-                        "servo {} temperature {} C exceeded {} C",
-                        telemetry.servo_id, temp_c, config.safety.max_servo_temp_c
-                    ));
-                }
+                && temp_c > config.safety.max_servo_temp_c
+            {
+                return Some(format!(
+                    "servo {} temperature {} C exceeded {} C",
+                    telemetry.servo_id, temp_c, config.safety.max_servo_temp_c
+                ));
+            }
         }
 
         None
@@ -1007,11 +1008,7 @@ impl MotionRuntime {
                     } else {
                         let gait_elapsed = elapsed - settle;
                         let cycle_seconds = config.locomotion.tripod.cycle_seconds.max(0.5);
-                        let startup_blend = config
-                            .locomotion
-                            .tripod
-                            .startup_blend_seconds
-                            .max(0.0);
+                        let startup_blend = config.locomotion.tripod.startup_blend_seconds.max(0.0);
                         let phase = (gait_elapsed / cycle_seconds).fract();
                         let amplitude_scale = if startup_blend <= f32::EPSILON {
                             1.0
@@ -1359,71 +1356,75 @@ fn spawn_control_worker(
                 }
             }
 
-            if mode.requires_torque() && motion.fault.is_none()
+            if mode.requires_torque()
+                && motion.fault.is_none()
                 && let Some(reason) =
                     motion.check_safety(&config, &servo_ids, &servo_states, imu_state.as_ref())
-                {
-                    motion.trip_fault(reason, current_pose(&servo_ids, &servo_states));
-                }
+            {
+                motion.trip_fault(reason, current_pose(&servo_ids, &servo_states));
+            }
 
-            if mode == BrainMode::Manual && motion.fault.is_none()
-                && let Err(err) = process_pending_manual_action(real_bus, &config, &manual) {
-                    if let Ok(mut control) = manual.write() {
-                        control.summary = format!("manual utility failed: {err}");
-                    }
-                    warn!(error = %err, "manual utility failed");
-                    motion.trip_fault(
-                        format!("manual utility failed: {err}"),
-                        current_pose(&servo_ids, &servo_states),
-                    );
-                    bus = None;
-                    torque_enabled = false;
-                    write_state(
-                        &shared,
-                        build_state_snapshot(
-                            &config,
-                            &servo_ids,
-                            &servo_states,
-                            imu_state.clone(),
-                            &motion,
-                            &manual,
-                            &calibration,
-                            Some(format!("manual utility failed: {err}")),
-                        ),
-                    );
-                    sleep_remaining(tick_started, loop_period);
-                    continue;
+            if mode == BrainMode::Manual
+                && motion.fault.is_none()
+                && let Err(err) = process_pending_manual_action(real_bus, &config, &manual)
+            {
+                if let Ok(mut control) = manual.write() {
+                    control.summary = format!("manual utility failed: {err}");
                 }
+                warn!(error = %err, "manual utility failed");
+                motion.trip_fault(
+                    format!("manual utility failed: {err}"),
+                    current_pose(&servo_ids, &servo_states),
+                );
+                bus = None;
+                torque_enabled = false;
+                write_state(
+                    &shared,
+                    build_state_snapshot(
+                        &config,
+                        &servo_ids,
+                        &servo_states,
+                        imu_state.clone(),
+                        &motion,
+                        &manual,
+                        &calibration,
+                        Some(format!("manual utility failed: {err}")),
+                    ),
+                );
+                sleep_remaining(tick_started, loop_period);
+                continue;
+            }
 
             let calibration_snapshot = calibration
                 .read()
                 .map(|state| state.clone())
                 .unwrap_or_default();
             if let Some(commands) = motion.commands(&config, &calibration_snapshot, Some(&manual))
-                && let Err(err) = real_bus.sync_write_positions(&commands) {
-                    warn!(error = %err, command_count = commands.len(), "failed to send motion commands");
-                    motion.trip_fault(
-                        format!("failed to send motion commands: {err}"),
-                        current_pose(&servo_ids, &servo_states),
-                    );
-                    bus = None;
-                    torque_enabled = false;
-                    write_state(
-                        &shared,
-                        build_state_snapshot(
-                            &config,
-                            &servo_ids,
-                            &servo_states,
-                            imu_state.clone(),
-                            &motion,
-                            &manual,
-                            &calibration,
-                            Some(format!("sync write failed: {err}")),
-                        ),
-                    );
-                    sleep_remaining(tick_started, loop_period);
-                    continue;
-                }
+                && let Err(err) = real_bus.sync_write_positions(&commands)
+            {
+                warn!(error = %err, command_count = commands.len(), "failed to send motion commands");
+                motion.trip_fault(
+                    format!("failed to send motion commands: {err}"),
+                    current_pose(&servo_ids, &servo_states),
+                );
+                bus = None;
+                torque_enabled = false;
+                write_state(
+                    &shared,
+                    build_state_snapshot(
+                        &config,
+                        &servo_ids,
+                        &servo_states,
+                        imu_state.clone(),
+                        &motion,
+                        &manual,
+                        &calibration,
+                        Some(format!("sync write failed: {err}")),
+                    ),
+                );
+                sleep_remaining(tick_started, loop_period);
+                continue;
+            }
 
             write_state(
                 &shared,
@@ -1463,13 +1464,14 @@ fn poll_imu(
     }
 
     if let Some(bridge) = imu_bridge.as_mut()
-        && let Err(err) = drain_imu_bridge(bridge, state) {
-            state.last_error = Some(format!("IMU read failed: {err}"));
-            *imu_bridge = None;
-            if config.imu.as_ref().is_some_and(|imu| imu.enabled) {
-                state.sensor_kind = None;
-            }
+        && let Err(err) = drain_imu_bridge(bridge, state)
+    {
+        state.last_error = Some(format!("IMU read failed: {err}"));
+        *imu_bridge = None;
+        if config.imu.as_ref().is_some_and(|imu| imu.enabled) {
+            state.sensor_kind = None;
         }
+    }
 }
 
 fn initial_servo_states(

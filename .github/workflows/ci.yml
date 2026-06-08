@@ -116,6 +116,9 @@ jobs:
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@v2
 
+      - name: Create coverage output directory
+        run: mkdir -p target/llvm-cov
+
       - name: Generate LCOV coverage data
         run: cargo llvm-cov --workspace --locked --lcov --output-path target/llvm-cov/lcov.info
 

@@ -758,12 +758,8 @@ fn sense_joint_group_range(
 
     let (positive_hits, negative_hits) = result?;
 
-    let positive_map = positive_hits
-        .into_iter()
-        .collect::<BTreeMap<_, _>>();
-    let negative_map = negative_hits
-        .into_iter()
-        .collect::<BTreeMap<_, _>>();
+    let positive_map = positive_hits.into_iter().collect::<BTreeMap<_, _>>();
+    let negative_map = negative_hits.into_iter().collect::<BTreeMap<_, _>>();
 
     let mut measurements = Vec::with_capacity(probes.len());
     for probe in probes {

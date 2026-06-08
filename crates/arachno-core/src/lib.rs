@@ -1018,7 +1018,10 @@ mod tests {
         // At phase=0 the swing starts: coxa should be at -stride_ticks.
         let (coxa, lift) = leg_cycle_shape(0.0, 20);
         assert_eq!(coxa, -20);
-        assert!((lift - 0.0).abs() < 1e-5, "lift at phase=0 should be 0, got {lift}");
+        assert!(
+            (lift - 0.0).abs() < 1e-5,
+            "lift at phase=0 should be 0, got {lift}"
+        );
     }
 
     #[test]
@@ -1033,7 +1036,10 @@ mod tests {
         // At phase=0.5 swing ends: coxa == +stride_ticks, lift returns to 0.
         let (coxa, lift) = leg_cycle_shape(0.5, 20);
         assert_eq!(coxa, 20);
-        assert!((lift - 0.0).abs() < 1e-5, "lift at phase=0.5 should be 0, got {lift}");
+        assert!(
+            (lift - 0.0).abs() < 1e-5,
+            "lift at phase=0.5 should be 0, got {lift}"
+        );
     }
 
     #[test]
@@ -1042,7 +1048,10 @@ mod tests {
         let (coxa, lift) = leg_cycle_shape(1.0, 20);
         // t=1.0 in stance branch: lerp(stride, -stride, 1.0) == -stride
         assert_eq!(coxa, -20);
-        assert!((lift - 0.0).abs() < 1e-5, "lift at phase=1.0 should be 0, got {lift}");
+        assert!(
+            (lift - 0.0).abs() < 1e-5,
+            "lift at phase=1.0 should be 0, got {lift}"
+        );
     }
 
     // -----------------------------------------------------------------------

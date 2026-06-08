@@ -375,7 +375,10 @@ tibia_deg = -30.0
 
         assert_eq!(snapshot.body_mode, "stand_reference");
         assert_eq!(snapshot.telemetry.len(), 3);
-        assert_eq!(snapshot.camera.as_ref().map(|frame| frame.frame_index), Some(1));
+        assert_eq!(
+            snapshot.camera.as_ref().map(|frame| frame.frame_index),
+            Some(1)
+        );
         assert_eq!(controller.servo_bus.writes.len(), 1);
         let commands = &controller.servo_bus.writes[0];
         assert_eq!(commands.len(), 3);
@@ -554,9 +557,10 @@ tibia_deg = -30.0
             ..MockServoBus::default()
         };
 
-        let mut controller =
-            SpiderController::new(config, servo_bus, MockCamera::default(), None);
-        controller.initialize().expect("initialize without IMU should succeed");
+        let mut controller = SpiderController::new(config, servo_bus, MockCamera::default(), None);
+        controller
+            .initialize()
+            .expect("initialize without IMU should succeed");
 
         // Torque must be enabled even without an IMU.
         assert_eq!(controller.servo_bus.torque_enabled, Some(true));
@@ -614,8 +618,7 @@ tibia_deg = -30.0
             ..MockImu::default()
         }) as Box<dyn ImuSource>);
 
-        let mut controller =
-            SpiderController::new(config, servo_bus, MockCamera::default(), imu);
+        let mut controller = SpiderController::new(config, servo_bus, MockCamera::default(), imu);
         let snapshot = controller
             .poll_snapshot("imu_test")
             .expect("poll_snapshot with IMU should succeed");
