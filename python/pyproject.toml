@@ -11,6 +11,10 @@ dependencies = [
     "numpy>=1.26",
 ]
 
+[project.scripts]
+arachno-claude-quota = "arachno_ml.claude_quota:main"
+arachno-codex-quota = "arachno_ml.codex_quota:main"
+
 [project.optional-dependencies]
 train = [
     "onnx>=1.16",

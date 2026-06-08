@@ -143,3 +143,28 @@ cargo check --manifest-path firmware/Cargo.toml -p rp2040-imu-bridge --target th
 `arachno-brain` now owns the live hardware-facing telemetry API at `/api/state`, the camera route at `/camera.mjpg`, the rich dashboard UI at `/` and `/dashboard` when started with `--dashboard`, the grouped manual-control API at `/api/manual/*`, the dashboard pose-copy utility, and the first hardware motion modes through `--mode telemetry`, `--mode manual`, `--mode lay-down`, `--mode stand-up`, `--mode stand`, `--mode slow-walk`, `--mode backward-walk`, `--mode rotate-left`, and `--mode rotate-right`.
 
 Servo EEPROM policy lives in `config/robot/servo-config.toml` under `[[servo_eeprom.entries]]`. Only `arachno-calibrate --mode apply-eeprom` writes those persistent registers. Normal runtime writes are blocked from EEPROM registers in the STS driver, and `arachno-brain` validates the configured EEPROM values before it starts the control worker.
+
+## CI and coverage
+
+GitHub Actions validates the host-side Rust workspace from the repo root. That matches the root `Cargo.toml`, so the embedded `firmware/` workspace remains outside this workflow and keeps its separate `firmware-*` helper commands.
+
+Run the same CI commands locally from the repo root:
+
+```bash
+cargo fmt --all -- --check
+cargo check --workspace --all-targets --locked
+cargo test --workspace --locked
+```
+
+For local coverage, install the LLVM tooling once and then mirror the CI coverage job:
+
+```bash
+rustup component add llvm-tools-preview
+cargo install cargo-llvm-cov
+
+cargo llvm-cov clean --workspace
+cargo llvm-cov --workspace --locked --lcov --output-path target/llvm-cov/lcov.info
+cargo llvm-cov report --html --output-dir target/llvm-cov/html
+```
+
+The machine-readable LCOV file is written to `target/llvm-cov/lcov.info`, and the browsable HTML report is written to `target/llvm-cov/html/index.html`.

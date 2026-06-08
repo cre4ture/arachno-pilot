@@ -102,14 +102,15 @@ pub struct ServoEepromEntry {
     pub value: u16,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ServoRegisterWidth {
+    #[default]
     U8,
     U16,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct BusConfig {
     pub feetech: FeetechBusConfig,
 }
@@ -308,14 +309,6 @@ pub enum ConfigLoadError {
     EmptyServoStore { path: PathBuf },
 }
 
-impl Default for BusConfig {
-    fn default() -> Self {
-        Self {
-            feetech: FeetechBusConfig::default(),
-        }
-    }
-}
-
 impl Default for FeetechBusConfig {
     fn default() -> Self {
         Self {
@@ -323,12 +316,6 @@ impl Default for FeetechBusConfig {
             baud_rate: 1_000_000,
             telemetry_stride: 6,
         }
-    }
-}
-
-impl Default for ServoRegisterWidth {
-    fn default() -> Self {
-        Self::U8
     }
 }
 

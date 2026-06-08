@@ -63,6 +63,12 @@ probe:
 dashboard:
     cargo run -p arachno-brain -- --config config/robot/host-usb.toml --listen 127.0.0.1:4000 --dashboard
 
+codex-quota:
+    cd python && PYTHONPATH=src python3 -m arachno_ml.codex_quota
+
+claude-quota:
+    cd python && PYTHONPATH=src python3 -m arachno_ml.claude_quota
+
 fw-version:
     cargo run -p arachno-fw-info -- --config config/robot/default.toml
 
