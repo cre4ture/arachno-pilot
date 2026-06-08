@@ -1232,6 +1232,11 @@ fn spawn_control_worker(
 
             poll_imu(&config, &mut imu_bridge, &mut imu_state);
 
+            let calibration_snapshot = calibration
+                .read()
+                .map(|state| state.clone())
+                .unwrap_or_default();
+
             if bus.is_none() {
                 match RealStsBus::open(
                     config.bus.feetech.port.clone(),
@@ -1262,7 +1267,7 @@ fn spawn_control_worker(
                                 imu_state.clone(),
                                 &motion,
                                 &manual,
-                                &calibration,
+                                &calibration_snapshot,
                                 Some(format!("failed to open servo bus: {err}")),
                             ),
                         );
@@ -1290,7 +1295,7 @@ fn spawn_control_worker(
                             imu_state.clone(),
                             &motion,
                             &manual,
-                            &calibration,
+                            &calibration_snapshot,
                             Some(format!("failed to enable torque: {err}")),
                         ),
                     );
@@ -1337,7 +1342,7 @@ fn spawn_control_worker(
                         imu_state.clone(),
                         &motion,
                         &manual,
-                        &calibration,
+                        &calibration_snapshot,
                         Some("servo bus needs to be reopened".to_owned()),
                     ),
                 );
@@ -1388,7 +1393,7 @@ fn spawn_control_worker(
                         imu_state.clone(),
                         &motion,
                         &manual,
-                        &calibration,
+                        &calibration_snapshot,
                         Some(format!("manual utility failed: {err}")),
                     ),
                 );
@@ -1396,10 +1401,6 @@ fn spawn_control_worker(
                 continue;
             }
 
-            let calibration_snapshot = calibration
-                .read()
-                .map(|state| state.clone())
-                .unwrap_or_default();
             if let Some(commands) = motion.commands(&config, &calibration_snapshot, Some(&manual))
                 && let Err(err) = real_bus.sync_write_positions(&commands)
             {
@@ -1419,7 +1420,7 @@ fn spawn_control_worker(
                         imu_state.clone(),
                         &motion,
                         &manual,
-                        &calibration,
+                        &calibration_snapshot,
                         Some(format!("sync write failed: {err}")),
                     ),
                 );
@@ -1436,7 +1437,7 @@ fn spawn_control_worker(
                     imu_state.clone(),
                     &motion,
                     &manual,
-                    &calibration,
+                    &calibration_snapshot,
                     None,
                 ),
             );
@@ -1537,15 +1538,11 @@ fn build_state_snapshot(
     imu: Option<TelemetryImuState>,
     motion: &MotionRuntime,
     manual: &Arc<RwLock<ManualControlState>>,
-    calibration: &Arc<RwLock<SemanticCalibrationState>>,
+    calibration_snapshot: &SemanticCalibrationState,
     transport_error: Option<String>,
 ) -> TelemetryState {
     let pose = current_pose(servo_ids, servo_states);
-    let calibration_snapshot = calibration
-        .read()
-        .map(|state| state.clone())
-        .unwrap_or_default();
-    let leg_previews = build_leg_previews(config, servo_states, &calibration_snapshot);
+    let leg_previews = build_leg_previews(config, servo_states, calibration_snapshot);
     let servos = servo_ids
         .iter()
         .map(|servo_id| {
@@ -1559,7 +1556,7 @@ fn build_state_snapshot(
             servo.semantic_angle_deg = servo.telemetry.as_ref().and_then(|telemetry| {
                 servo_semantic_angle_deg(
                     config,
-                    &calibration_snapshot,
+                    calibration_snapshot,
                     telemetry.servo_id,
                     telemetry.present_position_ticks,
                 )
@@ -1599,8 +1596,8 @@ fn build_state_snapshot(
         online_servo_count,
         last_poll_error,
         imu,
-        manual: manual_snapshot(config, manual, &calibration_snapshot, pose.as_ref()),
-        calibration: build_calibration_telemetry(config, &calibration_snapshot),
+        manual: manual_snapshot(config, manual, calibration_snapshot, pose.as_ref()),
+        calibration: build_calibration_telemetry(config, calibration_snapshot),
         leg_previews,
         servos,
     }
