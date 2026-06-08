@@ -1,9 +1,6 @@
-use std::{
-    thread,
-    time::{Duration, SystemTime, UNIX_EPOCH},
-};
+use std::{thread, time::Duration};
 
-use arachno_core::{RobotConfig, TripodGait};
+use arachno_core::{RobotConfig, TripodGait, now_ms};
 use arachno_hal::{
     CameraSource, HalResult, ImuSource, ServoBus, enable_torque_on_current_position,
 };
@@ -103,17 +100,14 @@ where
     }
 }
 
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{collections::BTreeMap, env, fs};
+    use std::{
+        collections::BTreeMap,
+        env, fs,
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     use arachno_hal::HalError;
     use arachno_msg::{CameraFrameMeta, ImuTelemetry, ServoTelemetry};

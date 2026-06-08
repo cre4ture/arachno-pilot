@@ -3,11 +3,11 @@ use std::{
     fs,
     path::{Path, PathBuf},
     thread,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime},
 };
 
 use anyhow::{Context, anyhow, bail};
-use arachno_core::{LegConfig, RobotConfig, ServoEepromEntry, TripodGait};
+use arachno_core::{LegConfig, RobotConfig, ServoEepromEntry, TripodGait, now_ms};
 use arachno_feetech_sts::{
     LOCK_MARK, RealStsBus, WriteConfirmationMode,
     set_verified_torque_limit_on_current_position_for_ids as set_verified_bus_torque_limit_on_current_position_for_ids,
@@ -1488,11 +1488,4 @@ fn init_trace_logging(path: &Path) -> anyhow::Result<WorkerGuard> {
         .map_err(|err| anyhow!("failed to initialize tracing subscriber: {err}"))?;
 
     Ok(guard)
-}
-
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
 }

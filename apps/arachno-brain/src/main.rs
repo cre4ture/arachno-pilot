@@ -6,7 +6,7 @@ use std::{
     process::Stdio,
     sync::{Arc, RwLock},
     thread,
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant},
 };
 
 mod dashboard_page;
@@ -15,6 +15,7 @@ use anyhow::Context;
 use arachno_camera::RobotCamera;
 use arachno_core::{
     CameraBackend, LegPoseAngles, LegSideViewPose, LegTopViewPose, RobotConfig, SemanticPoseKind,
+    now_ms, resolve_config_path, smoothstep,
 };
 use arachno_feetech_sts::{
     RealStsBus, set_verified_torque_limit_on_current_position_for_ids,
@@ -2179,18 +2180,6 @@ fn resolve_servo_id_for_joint(leg: &arachno_core::LegConfig, joint_key: &str) ->
     }
 }
 
-fn resolve_config_path(base_config_path: &Path, relative_or_absolute: &str) -> PathBuf {
-    let path = PathBuf::from(relative_or_absolute);
-    if path.is_absolute() {
-        path
-    } else {
-        base_config_path
-            .parent()
-            .unwrap_or_else(|| Path::new("."))
-            .join(path)
-    }
-}
-
 fn resolve_manual_group<'a>(
     config: &'a RobotConfig,
     key: &str,
@@ -2950,11 +2939,6 @@ fn offset_ticks(start_ticks: u16, delta_ticks: i16) -> u16 {
     (i32::from(start_ticks) + i32::from(delta_ticks)).clamp(0, 4095) as u16
 }
 
-fn smoothstep(t: f32) -> f32 {
-    let t = t.clamp(0.0, 1.0);
-    t * t * (3.0 - 2.0 * t)
-}
-
 fn lerp_f32(start: f32, end: f32, t: f32) -> f32 {
     start + (end - start) * t
 }
@@ -3653,11 +3637,4 @@ fn ticks_to_deg(ticks: u16) -> f32 {
 
 fn speed_ticks_to_rpm(speed_ticks: i16) -> f32 {
     speed_ticks as f32 * 60.0 / 4096.0
-}
-
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
 }

@@ -8,6 +8,13 @@ use std::{
 use arachno_msg::JointCommand;
 use serde::{Deserialize, Serialize};
 
+pub fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RobotConfig {
     pub deployment: DeploymentConfig,
@@ -418,7 +425,7 @@ where
     })
 }
 
-fn resolve_config_path(config_path: &Path, configured_path: &str) -> PathBuf {
+pub fn resolve_config_path(config_path: &Path, configured_path: &str) -> PathBuf {
     let path = PathBuf::from(configured_path);
     if path.is_absolute() {
         path
@@ -873,7 +880,7 @@ fn lerp_i16(start: i16, end: i16, t: f32) -> i16 {
     (start as f32 + (end - start) as f32 * t).round() as i16
 }
 
-fn smoothstep(t: f32) -> f32 {
+pub fn smoothstep(t: f32) -> f32 {
     let t = t.clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
 }
