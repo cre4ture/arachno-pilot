@@ -2925,13 +2925,13 @@ fn interpolate_pose(
 ) -> BTreeMap<u8, u16> {
     let t = t.clamp(0.0, 1.0);
     let mut pose = BTreeMap::new();
-
-    for (&servo_id, &end_ticks) in end {
-        let start_ticks = start.get(&servo_id).copied().unwrap_or(end_ticks);
+    let all_ids: std::collections::BTreeSet<u8> = start.keys().chain(end.keys()).copied().collect();
+    for servo_id in all_ids {
+        let start_ticks = start.get(&servo_id).copied().unwrap_or(0);
+        let end_ticks = end.get(&servo_id).copied().unwrap_or(start_ticks);
         let interpolated = start_ticks as f32 + (end_ticks as f32 - start_ticks as f32) * t;
         pose.insert(servo_id, interpolated.round().clamp(0.0, 4095.0) as u16);
     }
-
     pose
 }
 
