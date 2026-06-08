@@ -920,6 +920,331 @@ mod tests {
         time::{SystemTime, UNIX_EPOCH},
     };
 
+    // -----------------------------------------------------------------------
+    // offset_ticks
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn offset_ticks_zero_delta_returns_start() {
+        assert_eq!(offset_ticks(2048, 0), 2048);
+    }
+
+    #[test]
+    fn offset_ticks_positive_delta() {
+        assert_eq!(offset_ticks(2048, 100), 2148);
+    }
+
+    #[test]
+    fn offset_ticks_negative_delta() {
+        assert_eq!(offset_ticks(2048, -100), 1948);
+    }
+
+    #[test]
+    fn offset_ticks_clamps_to_zero_on_underflow() {
+        // Large negative delta that would go below 0.
+        assert_eq!(offset_ticks(10, -100), 0);
+    }
+
+    #[test]
+    fn offset_ticks_clamps_to_4095_on_overflow() {
+        // Large positive delta that would exceed 4095.
+        assert_eq!(offset_ticks(4090, 100), 4095);
+    }
+
+    #[test]
+    fn offset_ticks_exact_bounds() {
+        assert_eq!(offset_ticks(0, 0), 0);
+        assert_eq!(offset_ticks(4095, 0), 4095);
+    }
+
+    // -----------------------------------------------------------------------
+    // smoothstep
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn smoothstep_at_zero_is_zero() {
+        assert_eq!(smoothstep(0.0), 0.0);
+    }
+
+    #[test]
+    fn smoothstep_at_one_is_one() {
+        let v = smoothstep(1.0);
+        assert!((v - 1.0).abs() < 1e-6, "expected 1.0, got {v}");
+    }
+
+    #[test]
+    fn smoothstep_at_half_is_half() {
+        // smoothstep(0.5) = 0.5*0.5*(3 - 2*0.5) = 0.25 * 2.0 = 0.5
+        let v = smoothstep(0.5);
+        assert!((v - 0.5).abs() < 1e-6, "expected 0.5, got {v}");
+    }
+
+    #[test]
+    fn smoothstep_clamps_below_zero() {
+        assert_eq!(smoothstep(-1.0), 0.0);
+    }
+
+    #[test]
+    fn smoothstep_clamps_above_one() {
+        let v = smoothstep(2.0);
+        assert!((v - 1.0).abs() < 1e-6, "expected 1.0, got {v}");
+    }
+
+    // -----------------------------------------------------------------------
+    // lerp_i16
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn lerp_i16_at_zero_returns_start() {
+        assert_eq!(lerp_i16(-20, 20, 0.0), -20);
+    }
+
+    #[test]
+    fn lerp_i16_at_one_returns_end() {
+        assert_eq!(lerp_i16(-20, 20, 1.0), 20);
+    }
+
+    #[test]
+    fn lerp_i16_at_half_returns_midpoint() {
+        assert_eq!(lerp_i16(-20, 20, 0.5), 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // leg_cycle_shape
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn leg_cycle_shape_phase_zero_starts_at_negative_stride() {
+        // At phase=0 the swing starts: coxa should be at -stride_ticks.
+        let (coxa, lift) = leg_cycle_shape(0.0, 20);
+        assert_eq!(coxa, -20);
+        assert!((lift - 0.0).abs() < 1e-5, "lift at phase=0 should be 0, got {lift}");
+    }
+
+    #[test]
+    fn leg_cycle_shape_phase_quarter_has_positive_lift() {
+        // Mid-swing (phase=0.25): lift should be near its peak (sin(PI*0.5) == 1).
+        let (_coxa, lift) = leg_cycle_shape(0.25, 20);
+        assert!(lift > 0.9, "expected lift near 1.0, got {lift}");
+    }
+
+    #[test]
+    fn leg_cycle_shape_phase_half_transitions_to_stance() {
+        // At phase=0.5 swing ends: coxa == +stride_ticks, lift returns to 0.
+        let (coxa, lift) = leg_cycle_shape(0.5, 20);
+        assert_eq!(coxa, 20);
+        assert!((lift - 0.0).abs() < 1e-5, "lift at phase=0.5 should be 0, got {lift}");
+    }
+
+    #[test]
+    fn leg_cycle_shape_phase_one_back_to_negative_stride() {
+        // At phase=1.0 (same as 0.0) coxa completes the stance return.
+        let (coxa, lift) = leg_cycle_shape(1.0, 20);
+        // t=1.0 in stance branch: lerp(stride, -stride, 1.0) == -stride
+        assert_eq!(coxa, -20);
+        assert!((lift - 0.0).abs() < 1e-5, "lift at phase=1.0 should be 0, got {lift}");
+    }
+
+    // -----------------------------------------------------------------------
+    // resolve_sign / toward_center_sign
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn resolve_sign_positive_config_returns_plus_one() {
+        assert_eq!(resolve_sign(1, -1), 1);
+    }
+
+    #[test]
+    fn resolve_sign_negative_config_returns_minus_one() {
+        assert_eq!(resolve_sign(-1, 1), -1);
+    }
+
+    #[test]
+    fn resolve_sign_zero_falls_back_to_fallback_sign() {
+        assert_eq!(resolve_sign(0, -5), -1);
+        assert_eq!(resolve_sign(0, 7), 1);
+    }
+
+    #[test]
+    fn toward_center_sign_above_center_is_negative() {
+        assert_eq!(toward_center_sign(2048), -1);
+        assert_eq!(toward_center_sign(3000), -1);
+    }
+
+    #[test]
+    fn toward_center_sign_below_center_is_positive() {
+        assert_eq!(toward_center_sign(1000), 1);
+        assert_eq!(toward_center_sign(0), 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // semantic_degrees_to_ticks
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn semantic_degrees_to_ticks_zero_degrees_returns_reference() {
+        assert_eq!(semantic_degrees_to_ticks(2048, 1, 0.0), 2048);
+    }
+
+    #[test]
+    fn semantic_degrees_to_ticks_full_revolution_positive_sign() {
+        // 360 deg with sign +1 should advance exactly 4096 ticks, clamped to 4095.
+        assert_eq!(semantic_degrees_to_ticks(0, 1, 360.0), 4095);
+    }
+
+    #[test]
+    fn semantic_degrees_to_ticks_negative_sign_goes_down() {
+        // 90 deg, sign -1, reference 2048 -> 2048 - 1024 = 1024.
+        assert_eq!(semantic_degrees_to_ticks(2048, -1, 90.0), 1024);
+    }
+
+    #[test]
+    fn semantic_degrees_to_ticks_clamps_at_zero() {
+        // Large negative angle should clamp to 0.
+        assert_eq!(semantic_degrees_to_ticks(2048, 1, -360.0), 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // default_coxa_zero_heading_deg
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn default_coxa_zero_heading_front_legs() {
+        assert_eq!(default_coxa_zero_heading_deg("front_left"), 45.0);
+        assert_eq!(default_coxa_zero_heading_deg("front_right"), 45.0);
+    }
+
+    #[test]
+    fn default_coxa_zero_heading_rear_legs() {
+        assert_eq!(default_coxa_zero_heading_deg("rear_left"), -45.0);
+        assert_eq!(default_coxa_zero_heading_deg("rear_right"), -45.0);
+    }
+
+    #[test]
+    fn default_coxa_zero_heading_middle_legs() {
+        assert_eq!(default_coxa_zero_heading_deg("middle_left"), 0.0);
+        assert_eq!(default_coxa_zero_heading_deg("middle_right"), 0.0);
+    }
+
+    // -----------------------------------------------------------------------
+    // LegConfig helper methods
+    // -----------------------------------------------------------------------
+
+    fn make_leg(name: &str) -> LegConfig {
+        LegConfig {
+            name: name.to_string(),
+            coxa_servo_id: 1,
+            femur_servo_id: 2,
+            tibia_servo_id: 3,
+            coxa_stand_reference_ticks: None,
+            femur_stand_reference_ticks: None,
+            tibia_stand_reference_ticks: None,
+            coxa_lay_down_ticks: None,
+            femur_lay_down_ticks: None,
+            tibia_lay_down_ticks: None,
+            coxa_zero_reference_ticks: None,
+            femur_zero_reference_ticks: None,
+            tibia_zero_reference_ticks: None,
+            coxa_forward_sign: 0,
+            femur_lift_sign: 0,
+            tibia_lift_sign: 0,
+            coxa_zero_heading_deg: None,
+            coxa_length_cm: None,
+            femur_length_cm: None,
+            tibia_length_cm: None,
+        }
+    }
+
+    #[test]
+    fn is_tripod_a_correct_legs() {
+        assert!(make_leg("front_left").is_tripod_a());
+        assert!(make_leg("middle_right").is_tripod_a());
+        assert!(make_leg("rear_left").is_tripod_a());
+    }
+
+    #[test]
+    fn is_tripod_a_not_tripod_b_legs() {
+        assert!(!make_leg("front_right").is_tripod_a());
+        assert!(!make_leg("middle_left").is_tripod_a());
+        assert!(!make_leg("rear_right").is_tripod_a());
+    }
+
+    #[test]
+    fn is_left_side_for_left_and_right() {
+        assert!(make_leg("front_left").is_left_side());
+        assert!(!make_leg("front_right").is_left_side());
+    }
+
+    #[test]
+    fn zero_reference_ticks_fallback_chain() {
+        // No fields set → DEFAULT_REFERENCE_TICKS (2048).
+        let leg = make_leg("middle_left");
+        assert_eq!(leg.coxa_zero_reference_ticks(), DEFAULT_REFERENCE_TICKS);
+        assert_eq!(leg.femur_zero_reference_ticks(), DEFAULT_REFERENCE_TICKS);
+        assert_eq!(leg.tibia_zero_reference_ticks(), DEFAULT_REFERENCE_TICKS);
+    }
+
+    #[test]
+    fn zero_reference_ticks_prefers_explicit_zero_over_stand() {
+        let mut leg = make_leg("middle_left");
+        leg.coxa_stand_reference_ticks = Some(1800);
+        leg.coxa_zero_reference_ticks = Some(2100);
+        // Explicit zero overrides stand reference.
+        assert_eq!(leg.coxa_zero_reference_ticks(), 2100);
+    }
+
+    #[test]
+    fn zero_reference_ticks_falls_back_to_stand_reference() {
+        let mut leg = make_leg("middle_left");
+        leg.coxa_stand_reference_ticks = Some(1800);
+        // No explicit zero set → falls back to stand_reference via lay_down → stand chain.
+        assert_eq!(leg.coxa_zero_reference_ticks(), 1800);
+    }
+
+    // -----------------------------------------------------------------------
+    // body_heading_deg_for_coxa
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn body_heading_deg_for_coxa_right_side_zero_semantic() {
+        let mut leg = make_leg("front_right");
+        leg.coxa_zero_heading_deg = Some(45.0);
+        // Right side: heading = -(45 + 0) = -45 mod 360 = 315.
+        let h = leg.body_heading_deg_for_coxa(0.0);
+        assert!((h - 315.0).abs() < 1e-4, "expected 315.0, got {h}");
+    }
+
+    #[test]
+    fn body_heading_deg_for_coxa_left_side_zero_semantic() {
+        let mut leg = make_leg("front_left");
+        leg.coxa_zero_heading_deg = Some(45.0);
+        // Left side: heading = 180 + (45 + 0) = 225.
+        let h = leg.body_heading_deg_for_coxa(0.0);
+        assert!((h - 225.0).abs() < 1e-4, "expected 225.0, got {h}");
+    }
+
+    // -----------------------------------------------------------------------
+    // LocomotionConfig / TripodWalkConfig defaults
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn locomotion_config_default_values() {
+        let cfg = LocomotionConfig::default();
+        assert_eq!(cfg.command_hz, 20);
+        assert_eq!(cfg.stand_up.duration_seconds, 8.0);
+        assert_eq!(cfg.tripod.stride_ticks, 20);
+        assert_eq!(cfg.tripod.femur_lift_ticks, 12);
+        assert_eq!(cfg.tripod.tibia_lift_ticks, 18);
+        assert_eq!(cfg.tripod.cycle_seconds, 5.0);
+    }
+
+    #[test]
+    fn safety_config_default_values() {
+        let s = SafetyConfig::default();
+        assert_eq!(s.max_body_pitch_deg, 20.0);
+        assert_eq!(s.max_servo_temp_c, 65);
+    }
+
     #[test]
     fn load_from_path_overlays_shared_servo_config() {
         let unique = SystemTime::now()
