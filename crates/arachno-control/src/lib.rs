@@ -384,4 +384,245 @@ tibia_deg = -30.0
         assert_eq!(commands[1].position_ticks, 1772);
         assert_eq!(commands[2].position_ticks, 1659);
     }
+
+    // -----------------------------------------------------------------------
+    // step_home_pose is a backward-compat alias for step_stand_reference_pose
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn step_home_pose_alias_produces_same_result_as_step_stand_reference_pose() {
+        let config = load_test_config();
+        let servo_bus = MockServoBus {
+            ids: vec![11, 12, 13],
+            feedback: BTreeMap::from([
+                (
+                    11,
+                    ServoTelemetry {
+                        servo_id: 11,
+                        present_position_ticks: 2048,
+                        ..ServoTelemetry::default()
+                    },
+                ),
+                (
+                    12,
+                    ServoTelemetry {
+                        servo_id: 12,
+                        present_position_ticks: 2048,
+                        ..ServoTelemetry::default()
+                    },
+                ),
+                (
+                    13,
+                    ServoTelemetry {
+                        servo_id: 13,
+                        present_position_ticks: 2048,
+                        ..ServoTelemetry::default()
+                    },
+                ),
+            ]),
+            ..MockServoBus::default()
+        };
+
+        let mut controller = SpiderController::new(config, servo_bus, MockCamera::default(), None);
+        let snapshot = controller
+            .step_home_pose()
+            .expect("step_home_pose should succeed");
+
+        // The alias must produce the same body_mode label as the canonical method.
+        assert_eq!(snapshot.body_mode, "stand_reference");
+        // Exactly one sync_write_positions call must have been issued.
+        assert_eq!(controller.servo_bus.writes.len(), 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // poll_snapshot carries the caller-supplied body_mode label
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn poll_snapshot_uses_supplied_body_mode_label() {
+        let config = load_test_config();
+        let servo_bus = MockServoBus {
+            ids: vec![11, 12, 13],
+            feedback: BTreeMap::from([
+                (
+                    11,
+                    ServoTelemetry {
+                        servo_id: 11,
+                        present_position_ticks: 2048,
+                        ..ServoTelemetry::default()
+                    },
+                ),
+                (
+                    12,
+                    ServoTelemetry {
+                        servo_id: 12,
+                        present_position_ticks: 2048,
+                        ..ServoTelemetry::default()
+                    },
+                ),
+                (
+                    13,
+                    ServoTelemetry {
+                        servo_id: 13,
+                        present_position_ticks: 2048,
+                        ..ServoTelemetry::default()
+                    },
+                ),
+            ]),
+            ..MockServoBus::default()
+        };
+
+        let mut controller = SpiderController::new(config, servo_bus, MockCamera::default(), None);
+        let snapshot = controller
+            .poll_snapshot("walking")
+            .expect("poll_snapshot should succeed");
+
+        assert_eq!(snapshot.body_mode, "walking");
+        // No servo write should have been issued — poll_snapshot only reads.
+        assert_eq!(controller.servo_bus.writes.len(), 0);
+        // IMU field must be None because no IMU was injected.
+        assert!(snapshot.imu.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // camera_pipeline and imu_description accessors
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn camera_pipeline_returns_mock_description() {
+        let config = load_test_config();
+        let controller =
+            SpiderController::new(config, MockServoBus::default(), MockCamera::default(), None);
+
+        assert_eq!(controller.camera_pipeline(), "mock-camera");
+    }
+
+    #[test]
+    fn imu_description_none_when_no_imu_injected() {
+        let config = load_test_config();
+        let controller =
+            SpiderController::new(config, MockServoBus::default(), MockCamera::default(), None);
+
+        assert!(controller.imu_description().is_none());
+    }
+
+    #[test]
+    fn imu_description_some_when_imu_injected() {
+        let config = load_test_config();
+        let imu = Some(Box::new(MockImu::default()) as Box<dyn ImuSource>);
+        let controller =
+            SpiderController::new(config, MockServoBus::default(), MockCamera::default(), imu);
+
+        assert_eq!(controller.imu_description(), Some("mock-imu"));
+    }
+
+    // -----------------------------------------------------------------------
+    // initialize without IMU must not crash and must not start an absent IMU
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn initialize_without_imu_does_not_require_imu() {
+        let config = load_test_config();
+        let servo_bus = MockServoBus {
+            ids: vec![11, 12, 13],
+            feedback: BTreeMap::from([
+                (
+                    11,
+                    ServoTelemetry {
+                        servo_id: 11,
+                        present_position_ticks: 2048,
+                        ..ServoTelemetry::default()
+                    },
+                ),
+                (
+                    12,
+                    ServoTelemetry {
+                        servo_id: 12,
+                        present_position_ticks: 2048,
+                        ..ServoTelemetry::default()
+                    },
+                ),
+                (
+                    13,
+                    ServoTelemetry {
+                        servo_id: 13,
+                        present_position_ticks: 2048,
+                        ..ServoTelemetry::default()
+                    },
+                ),
+            ]),
+            ..MockServoBus::default()
+        };
+
+        let mut controller =
+            SpiderController::new(config, servo_bus, MockCamera::default(), None);
+        controller.initialize().expect("initialize without IMU should succeed");
+
+        // Torque must be enabled even without an IMU.
+        assert_eq!(controller.servo_bus.torque_enabled, Some(true));
+        // Camera must have been started.
+        assert!(controller.camera.started);
+        // No IMU should be present.
+        assert!(controller.imu.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // poll_snapshot with a live IMU sample propagates it into the snapshot
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn poll_snapshot_with_imu_returns_imu_telemetry() {
+        use arachno_msg::ImuTelemetry;
+
+        let config = load_test_config();
+        let servo_bus = MockServoBus {
+            ids: vec![11, 12, 13],
+            feedback: BTreeMap::from([
+                (
+                    11,
+                    ServoTelemetry {
+                        servo_id: 11,
+                        present_position_ticks: 2048,
+                        ..ServoTelemetry::default()
+                    },
+                ),
+                (
+                    12,
+                    ServoTelemetry {
+                        servo_id: 12,
+                        present_position_ticks: 2048,
+                        ..ServoTelemetry::default()
+                    },
+                ),
+                (
+                    13,
+                    ServoTelemetry {
+                        servo_id: 13,
+                        present_position_ticks: 2048,
+                        ..ServoTelemetry::default()
+                    },
+                ),
+            ]),
+            ..MockServoBus::default()
+        };
+        let imu = Some(Box::new(MockImu {
+            sample: Some(ImuTelemetry {
+                accel_mps2: [1.0, 2.0, 9.8],
+                gyro_rad_s: [0.1, 0.2, 0.3],
+                ..ImuTelemetry::default()
+            }),
+            ..MockImu::default()
+        }) as Box<dyn ImuSource>);
+
+        let mut controller =
+            SpiderController::new(config, servo_bus, MockCamera::default(), imu);
+        let snapshot = controller
+            .poll_snapshot("imu_test")
+            .expect("poll_snapshot with IMU should succeed");
+
+        let imu_data = snapshot.imu.expect("IMU telemetry must be present");
+        assert!((imu_data.accel_mps2[0] - 1.0).abs() < 1e-6);
+        assert!((imu_data.accel_mps2[2] - 9.8).abs() < 1e-5);
+        assert!((imu_data.gyro_rad_s[1] - 0.2).abs() < 1e-6);
+    }
 }

@@ -21,7 +21,7 @@ edition = "2024"
 version = "0.1.0"
 license = "MIT"
 authors = ["Ulrich Hornung"]
-rust-version = "1.85"
+rust-version = "1.88"
 
 [workspace.dependencies]
 anyhow = "1.0"
