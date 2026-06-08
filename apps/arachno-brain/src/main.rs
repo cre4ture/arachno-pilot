@@ -941,16 +941,9 @@ impl MotionRuntime {
                     }
                 }
                 BrainMode::LayDown => {
-                    let target =
-                        named_pose_with_calibration(config, calibration, SemanticPoseKind::LayDown);
-                    let duration = config.locomotion.lay_down.duration_seconds.max(0.5);
-                    let progress = (elapsed / duration).clamp(0.0, 1.0);
-                    self.summary = if progress < 1.0 {
-                        format!("laying down ({:.0}%)", progress * 100.0)
-                    } else {
-                        "holding the configured lay-down pose".to_owned()
-                    };
-                    interpolate_pose(&base_pose, &target, smoothstep(progress))
+                    let (pose, summary) = lay_down_pose(config, calibration, &base_pose, elapsed);
+                    self.summary = summary;
+                    pose
                 }
                 BrainMode::StandUp => {
                     let (pose, summary) =
@@ -959,79 +952,25 @@ impl MotionRuntime {
                     pose
                 }
                 BrainMode::Stand => {
-                    let settle = config.locomotion.stand.settle_seconds.max(0.25);
-                    let progress = (elapsed / settle).clamp(0.0, 1.0);
-                    self.summary = if progress < 1.0 {
-                        format!(
-                            "settling into the configured stand-reference pose ({:.0}%)",
-                            progress * 100.0
-                        )
-                    } else {
-                        "holding the configured stand-reference pose".to_owned()
-                    };
-                    interpolate_pose(
-                        &base_pose,
-                        &named_pose_with_calibration(
-                            config,
-                            calibration,
-                            SemanticPoseKind::StandReference,
-                        ),
-                        smoothstep(progress),
-                    )
+                    let (pose, summary) =
+                        stand_settle_pose(config, calibration, &base_pose, elapsed);
+                    self.summary = summary;
+                    pose
                 }
                 BrainMode::SlowWalk
                 | BrainMode::BackwardWalk
                 | BrainMode::RotateLeft
                 | BrainMode::RotateRight => {
-                    let settle = config.locomotion.tripod.settle_seconds.max(0.25);
-
-                    if elapsed < settle {
-                        let progress = (elapsed / settle).clamp(0.0, 1.0);
-                        self.summary = format!(
-                            "holding the measured stand pose before {} gait ({:.0}%)",
-                            self.mode.tripod_motion_label(),
-                            progress * 100.0
-                        );
-                        base_pose.clone()
-                    } else if self
-                        .walk_seconds
-                        .is_some_and(|limit| elapsed - settle >= limit.max(0.0))
-                    {
-                        let gait_elapsed = (elapsed - settle).max(0.0);
-                        let limit = self.walk_seconds.unwrap_or_default();
-                        self.summary = format!(
-                            "{} gait duration reached after {:.1}s / {:.1}s; holding the measured stand pose",
-                            self.mode.tripod_motion_label(),
-                            gait_elapsed,
-                            limit
-                        );
-                        base_pose.clone()
-                    } else {
-                        let gait_elapsed = elapsed - settle;
-                        let cycle_seconds = config.locomotion.tripod.cycle_seconds.max(0.5);
-                        let startup_blend = config.locomotion.tripod.startup_blend_seconds.max(0.0);
-                        let phase = (gait_elapsed / cycle_seconds).fract();
-                        let amplitude_scale = if startup_blend <= f32::EPSILON {
-                            1.0
-                        } else {
-                            smoothstep((gait_elapsed / startup_blend).clamp(0.0, 1.0))
-                        };
-                        self.summary = format!(
-                            "slow tripod {} gait active; phase {:.2} / cycle {:.1}s / blend {:.0}%",
-                            self.mode.tripod_motion_label(),
-                            phase,
-                            cycle_seconds,
-                            amplitude_scale * 100.0,
-                        );
-                        walk_pose_from_base(
-                            config,
-                            calibration,
-                            &base_pose,
-                            phase,
-                            self.mode,
-                            amplitude_scale,
-                        )
-                    }
+                    let (pose, summary) = tripod_gait_pose(
+                        config,
+                        calibration,
+                        &base_pose,
+                        elapsed,
+                        self.mode,
+                        self.walk_seconds,
+                    );
+                    self.summary = summary;
+                    pose
                 }
                 BrainMode::Telemetry => unreachable!(),
             }
@@ -2837,6 +2776,101 @@ fn staged_stand_up_pose(
             interpolate_pose(&body_raise_pose, &stand_reference_pose, phase_progress),
             format!("aligning coxae into stand ({:.0}%)", phase_progress * 100.0),
         )
+    }
+}
+
+fn lay_down_pose(
+    config: &RobotConfig,
+    calibration: &SemanticCalibrationState,
+    base_pose: &BTreeMap<u8, u16>,
+    elapsed: f32,
+) -> (BTreeMap<u8, u16>, String) {
+    let target = named_pose_with_calibration(config, calibration, SemanticPoseKind::LayDown);
+    let duration = config.locomotion.lay_down.duration_seconds.max(0.5);
+    let progress = (elapsed / duration).clamp(0.0, 1.0);
+    let summary = if progress < 1.0 {
+        format!("laying down ({:.0}%)", progress * 100.0)
+    } else {
+        "holding the configured lay-down pose".to_owned()
+    };
+    (
+        interpolate_pose(base_pose, &target, smoothstep(progress)),
+        summary,
+    )
+}
+
+fn stand_settle_pose(
+    config: &RobotConfig,
+    calibration: &SemanticCalibrationState,
+    base_pose: &BTreeMap<u8, u16>,
+    elapsed: f32,
+) -> (BTreeMap<u8, u16>, String) {
+    let settle = config.locomotion.stand.settle_seconds.max(0.25);
+    let progress = (elapsed / settle).clamp(0.0, 1.0);
+    let summary = if progress < 1.0 {
+        format!(
+            "settling into the configured stand-reference pose ({:.0}%)",
+            progress * 100.0
+        )
+    } else {
+        "holding the configured stand-reference pose".to_owned()
+    };
+    let pose = interpolate_pose(
+        base_pose,
+        &named_pose_with_calibration(config, calibration, SemanticPoseKind::StandReference),
+        smoothstep(progress),
+    );
+    (pose, summary)
+}
+
+fn tripod_gait_pose(
+    config: &RobotConfig,
+    calibration: &SemanticCalibrationState,
+    base_pose: &BTreeMap<u8, u16>,
+    elapsed: f32,
+    mode: BrainMode,
+    walk_seconds: Option<f32>,
+) -> (BTreeMap<u8, u16>, String) {
+    let settle = config.locomotion.tripod.settle_seconds.max(0.25);
+
+    if elapsed < settle {
+        let progress = (elapsed / settle).clamp(0.0, 1.0);
+        let summary = format!(
+            "holding the measured stand pose before {} gait ({:.0}%)",
+            mode.tripod_motion_label(),
+            progress * 100.0
+        );
+        (base_pose.clone(), summary)
+    } else if walk_seconds.is_some_and(|limit| elapsed - settle >= limit.max(0.0)) {
+        let gait_elapsed = (elapsed - settle).max(0.0);
+        let limit = walk_seconds.unwrap_or_default();
+        let summary = format!(
+            "{} gait duration reached after {:.1}s / {:.1}s; holding the measured stand pose",
+            mode.tripod_motion_label(),
+            gait_elapsed,
+            limit
+        );
+        (base_pose.clone(), summary)
+    } else {
+        let gait_elapsed = elapsed - settle;
+        let cycle_seconds = config.locomotion.tripod.cycle_seconds.max(0.5);
+        let startup_blend = config.locomotion.tripod.startup_blend_seconds.max(0.0);
+        let phase = (gait_elapsed / cycle_seconds).fract();
+        let amplitude_scale = if startup_blend <= f32::EPSILON {
+            1.0
+        } else {
+            smoothstep((gait_elapsed / startup_blend).clamp(0.0, 1.0))
+        };
+        let summary = format!(
+            "slow tripod {} gait active; phase {:.2} / cycle {:.1}s / blend {:.0}%",
+            mode.tripod_motion_label(),
+            phase,
+            cycle_seconds,
+            amplitude_scale * 100.0,
+        );
+        let pose =
+            walk_pose_from_base(config, calibration, base_pose, phase, mode, amplitude_scale);
+        (pose, summary)
     }
 }
 
