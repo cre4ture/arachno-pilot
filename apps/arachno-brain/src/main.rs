@@ -879,14 +879,13 @@ impl MotionRuntime {
                 self.low_voltage_strikes.clear();
             }
 
-            if let Some(temp_c) = telemetry.present_temperature_c {
-                if temp_c > config.safety.max_servo_temp_c {
+            if let Some(temp_c) = telemetry.present_temperature_c
+                && temp_c > config.safety.max_servo_temp_c {
                     return Some(format!(
                         "servo {} temperature {} C exceeded {} C",
                         telemetry.servo_id, temp_c, config.safety.max_servo_temp_c
                     ));
                 }
-            }
         }
 
         None
@@ -1304,7 +1303,7 @@ fn spawn_control_worker(
                 torque_enabled = true;
             }
 
-            let read_budget = if mode == BrainMode::Telemetry || !motion.armed_at.is_some() {
+            let read_budget = if mode == BrainMode::Telemetry || motion.armed_at.is_none() {
                 servo_ids.len()
             } else {
                 config
@@ -1360,16 +1359,15 @@ fn spawn_control_worker(
                 }
             }
 
-            if mode.requires_torque() && motion.fault.is_none() {
-                if let Some(reason) =
+            if mode.requires_torque() && motion.fault.is_none()
+                && let Some(reason) =
                     motion.check_safety(&config, &servo_ids, &servo_states, imu_state.as_ref())
                 {
                     motion.trip_fault(reason, current_pose(&servo_ids, &servo_states));
                 }
-            }
 
-            if mode == BrainMode::Manual && motion.fault.is_none() {
-                if let Err(err) = process_pending_manual_action(real_bus, &config, &manual) {
+            if mode == BrainMode::Manual && motion.fault.is_none()
+                && let Err(err) = process_pending_manual_action(real_bus, &config, &manual) {
                     if let Ok(mut control) = manual.write() {
                         control.summary = format!("manual utility failed: {err}");
                     }
@@ -1396,14 +1394,13 @@ fn spawn_control_worker(
                     sleep_remaining(tick_started, loop_period);
                     continue;
                 }
-            }
 
             let calibration_snapshot = calibration
                 .read()
                 .map(|state| state.clone())
                 .unwrap_or_default();
-            if let Some(commands) = motion.commands(&config, &calibration_snapshot, Some(&manual)) {
-                if let Err(err) = real_bus.sync_write_positions(&commands) {
+            if let Some(commands) = motion.commands(&config, &calibration_snapshot, Some(&manual))
+                && let Err(err) = real_bus.sync_write_positions(&commands) {
                     warn!(error = %err, command_count = commands.len(), "failed to send motion commands");
                     motion.trip_fault(
                         format!("failed to send motion commands: {err}"),
@@ -1427,7 +1424,6 @@ fn spawn_control_worker(
                     sleep_remaining(tick_started, loop_period);
                     continue;
                 }
-            }
 
             write_state(
                 &shared,
@@ -1466,15 +1462,14 @@ fn poll_imu(
         }
     }
 
-    if let Some(bridge) = imu_bridge.as_mut() {
-        if let Err(err) = drain_imu_bridge(bridge, state) {
+    if let Some(bridge) = imu_bridge.as_mut()
+        && let Err(err) = drain_imu_bridge(bridge, state) {
             state.last_error = Some(format!("IMU read failed: {err}"));
             *imu_bridge = None;
             if config.imu.as_ref().is_some_and(|imu| imu.enabled) {
                 state.sensor_kind = None;
             }
         }
-    }
 }
 
 fn initial_servo_states(
@@ -1531,6 +1526,7 @@ fn poll_servo_window(
     ServoPollOutcome { should_reopen_bus }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_state_snapshot(
     config: &RobotConfig,
     servo_ids: &[u8],

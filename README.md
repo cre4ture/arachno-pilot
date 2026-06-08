@@ -1,5 +1,7 @@
 # arachno-pilot
 
+[![CI](https://github.com/cre4ture/arachno-pilot/actions/workflows/ci.yml/badge.svg)](https://github.com/cre4ture/arachno-pilot/actions/workflows/ci.yml)
+
 Rust-first starter workspace for a hexapod that can run either on a tethered Linux PC or on an onboard Jetson, with Feetech STS bus servos and interchangeable camera backends.
 
 ## Why this layout

@@ -161,11 +161,10 @@ fn print_probe(probe: &DeviceProbe) {
         Ok(()) => println!("  open_check: ok"),
         Err(err) => {
             println!("  open_check: {}", DisplayIo(err));
-            if err.kind() == io::ErrorKind::PermissionDenied {
-                if let Some(hint) = probe.hint {
+            if err.kind() == io::ErrorKind::PermissionDenied
+                && let Some(hint) = probe.hint {
                     println!("  hint: {}", hint);
                 }
-            }
         }
     }
 }
