@@ -139,6 +139,7 @@ struct AppState {
     shared: Arc<RwLock<TelemetryState>>,
     manual: Arc<RwLock<ManualControlState>>,
     calibration: Arc<RwLock<SemanticCalibrationState>>,
+    pending_mode: Arc<RwLock<Option<BrainMode>>>,
     dashboard_enabled: bool,
 }
 
@@ -417,6 +418,46 @@ struct CalibrationClearRequest {
 #[derive(Debug, Serialize)]
 struct ManualCommandResponse {
     summary: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum MotionCommand {
+    StandUp,
+    LayDown,
+    Stand,
+    WalkForward,
+    WalkBackward,
+    RotateLeft,
+    RotateRight,
+    Stop,
+    Telemetry,
+}
+
+impl MotionCommand {
+    fn as_brain_mode(self) -> BrainMode {
+        match self {
+            Self::StandUp => BrainMode::StandUp,
+            Self::LayDown => BrainMode::LayDown,
+            Self::Stand | Self::Stop => BrainMode::Stand,
+            Self::WalkForward => BrainMode::SlowWalk,
+            Self::WalkBackward => BrainMode::BackwardWalk,
+            Self::RotateLeft => BrainMode::RotateLeft,
+            Self::RotateRight => BrainMode::RotateRight,
+            Self::Telemetry => BrainMode::Telemetry,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct MotionCommandRequest {
+    command: MotionCommand,
+}
+
+#[derive(Debug, Serialize)]
+struct MotionCommandResponse {
+    summary: String,
+    mode: String,
 }
 
 struct ServoPollOutcome {
@@ -1079,10 +1120,12 @@ async fn main() -> anyhow::Result<()> {
         &initial_manual,
         &initial_calibration,
     )));
+    let pending_mode: Arc<RwLock<Option<BrainMode>>> = Arc::new(RwLock::new(None));
     spawn_control_worker(
         shared.clone(),
         manual.clone(),
         calibration.clone(),
+        pending_mode.clone(),
         config.clone(),
         args.mode,
         args.walk_seconds,
@@ -1092,6 +1135,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/", get(index))
         .route("/dashboard", get(dashboard))
         .route("/api/state", get(api_state))
+        .route("/api/motion/command", post(api_motion_command))
         .route("/api/manual/capture", post(api_manual_capture))
         .route("/api/manual/apply", post(api_manual_apply))
         .route("/api/manual/reset", post(api_manual_reset))
@@ -1108,6 +1152,7 @@ async fn main() -> anyhow::Result<()> {
             shared,
             manual,
             calibration,
+            pending_mode,
             dashboard_enabled: args.dashboard,
         });
 
@@ -1142,10 +1187,19 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+fn motion_loop_period(mode: BrainMode, config: &RobotConfig) -> Duration {
+    if mode == BrainMode::Telemetry {
+        Duration::from_millis(TELEMETRY_LOOP_MS)
+    } else {
+        Duration::from_secs_f32(1.0 / config.locomotion.command_hz.max(1) as f32)
+    }
+}
+
 fn spawn_control_worker(
     shared: Arc<RwLock<TelemetryState>>,
     manual: Arc<RwLock<ManualControlState>>,
     calibration: Arc<RwLock<SemanticCalibrationState>>,
+    pending_mode: Arc<RwLock<Option<BrainMode>>>,
     config: RobotConfig,
     mode: BrainMode,
     walk_seconds: Option<f32>,
@@ -1157,17 +1211,34 @@ fn spawn_control_worker(
         let mut torque_enabled = false;
         let mut imu_bridge = None::<UsbImuBridge>;
         let mut imu_state = telemetry_imu_from_config(&config);
+        let mut mode = mode;
         let mut motion = MotionRuntime::new(mode, walk_seconds);
         let mut servo_states = initial_servo_states(&servo_ids, &labels);
         let mut telemetry_cursor = 0usize;
-        let loop_period = if mode == BrainMode::Telemetry {
-            Duration::from_millis(TELEMETRY_LOOP_MS)
-        } else {
-            Duration::from_secs_f32(1.0 / config.locomotion.command_hz.max(1) as f32)
-        };
+        let mut loop_period = motion_loop_period(mode, &config);
 
         loop {
             let tick_started = Instant::now();
+
+            if let Ok(mut pm) = pending_mode.write() {
+                if let Some(new_mode) = pm.take() {
+                    if new_mode != mode {
+                        let old_label = mode.as_state_label();
+                        mode = new_mode;
+                        motion = MotionRuntime::new(new_mode, walk_seconds);
+                        loop_period = motion_loop_period(new_mode, &config);
+                        if !new_mode.requires_torque() && torque_enabled {
+                            if let Some(b) = bus.as_mut() {
+                                if let Err(e) = b.enable_torque(false) {
+                                    warn!(error = %e, "failed to disable torque on mode switch to telemetry");
+                                }
+                            }
+                            torque_enabled = false;
+                        }
+                        info!(old = old_label, new = new_mode.as_state_label(), "motion mode changed via dashboard command");
+                    }
+                }
+            }
 
             poll_imu(&config, &mut imu_bridge, &mut imu_state);
 
@@ -3019,6 +3090,29 @@ async fn api_state(State(state): State<AppState>) -> Result<Json<TelemetryState>
         .read()
         .map(|snapshot| Json(snapshot.clone()))
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+async fn api_motion_command(
+    State(state): State<AppState>,
+    Json(req): Json<MotionCommandRequest>,
+) -> Result<Json<MotionCommandResponse>, (StatusCode, String)> {
+    let new_mode = req.command.as_brain_mode();
+    state
+        .pending_mode
+        .write()
+        .map(|mut pm| {
+            *pm = Some(new_mode);
+            Json(MotionCommandResponse {
+                summary: format!("switching to {}", new_mode.as_state_label()),
+                mode: new_mode.as_state_label().to_owned(),
+            })
+        })
+        .map_err(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "failed to acquire mode lock".to_owned(),
+            )
+        })
 }
 
 async fn api_manual_capture(

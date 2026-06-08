@@ -194,6 +194,46 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
       line-height: 1.4;
     }
 
+    .motion-cmd-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    @media (max-width: 700px) {
+      .motion-cmd-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+
+    .motion-btn {
+      padding: 14px 12px;
+      border: 1px solid rgba(255,255,255,0.1);
+      background: rgba(7, 11, 16, 0.88);
+      color: var(--text);
+      border-radius: 12px;
+      cursor: pointer;
+      font: inherit;
+      font-size: 0.97rem;
+      transition: transform 120ms ease, border-color 120ms ease, background 120ms ease;
+    }
+
+    .motion-btn:hover {
+      transform: translateY(-1px);
+      border-color: rgba(255, 146, 84, 0.45);
+    }
+
+    .motion-btn.active {
+      border-color: var(--accent);
+      background: var(--accent-soft);
+      color: var(--accent);
+      font-weight: 600;
+    }
+
+    .motion-btn:disabled {
+      cursor: not-allowed;
+      opacity: 0.45;
+      transform: none;
+    }
+
     .manual-grid {
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -810,6 +850,28 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
 
     <section class="panel" style="margin-top: 18px;">
       <div class="panel-header">
+        <h2>Motion Commands</h2>
+        <div class="muted" id="motion-cmd-summary">ready</div>
+      </div>
+      <div class="panel-body">
+        <div class="motion-cmd-grid">
+          <button class="motion-btn" id="btn-stand_up" type="button" data-cmd="stand_up">Stand Up</button>
+          <button class="motion-btn" id="btn-lay_down" type="button" data-cmd="lay_down">Lay Down</button>
+          <button class="motion-btn" id="btn-stand" type="button" data-cmd="stand">Stand</button>
+          <button class="motion-btn" id="btn-stop" type="button" data-cmd="stop">Stop</button>
+          <button class="motion-btn" id="btn-walk_forward" type="button" data-cmd="walk_forward">Walk Forward</button>
+          <button class="motion-btn" id="btn-walk_backward" type="button" data-cmd="walk_backward">Walk Backward</button>
+          <button class="motion-btn" id="btn-rotate_left" type="button" data-cmd="rotate_left">Rotate Left</button>
+          <button class="motion-btn" id="btn-rotate_right" type="button" data-cmd="rotate_right">Rotate Right</button>
+        </div>
+        <div class="stat-note" id="motion-cmd-note" style="margin-top: 12px;">
+          Commands switch the brain mode immediately. The active mode is highlighted. Safety faults clear on any mode switch.
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" style="margin-top: 18px;">
+      <div class="panel-header">
         <h2>IMU</h2>
         <div class="muted" id="imu-summary">waiting for IMU state</div>
       </div>
@@ -1032,6 +1094,7 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
   <script>
     const stateUrl = "/api/state";
     const cameraUrl = "/camera.mjpg";
+    const motionCommandUrl = "/api/motion/command";
     const manualApplyUrl = "/api/manual/apply";
     const manualResetUrl = "/api/manual/reset";
     const manualCaptureUrl = "/api/manual/capture";
@@ -1597,6 +1660,39 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
       return response.json();
     }
 
+    async function sendMotionCommand(command) {
+      const summaryEl = document.getElementById("motion-cmd-summary");
+      summaryEl.textContent = "sending…";
+      try {
+        const result = await postJson(motionCommandUrl, { command });
+        summaryEl.textContent = result.summary;
+      } catch (err) {
+        summaryEl.textContent = `error: ${err.message}`;
+      }
+      await refresh();
+    }
+
+    function updateMotionButtons(motionMode) {
+      const modeToCmd = {
+        stand_up: "stand_up",
+        lay_down: "lay_down",
+        stand: "stand",
+        slow_walk: "walk_forward",
+        backward_walk: "walk_backward",
+        rotate_left: "rotate_left",
+        rotate_right: "rotate_right",
+      };
+      const activeCmd = modeToCmd[motionMode] ?? null;
+      document.querySelectorAll(".motion-btn").forEach(btn => {
+        const cmd = btn.dataset.cmd;
+        btn.classList.toggle("active", cmd === activeCmd || (cmd === "stop" && motionMode === "stand"));
+      });
+    }
+
+    document.querySelectorAll(".motion-btn").forEach(btn => {
+      btn.addEventListener("click", () => sendMotionCommand(btn.dataset.cmd));
+    });
+
     async function applyManualGroup() {
       const result = await postJson(manualApplyUrl, {
         group_key: document.getElementById("manual-group").value,
@@ -2131,6 +2227,7 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
         document.getElementById("safety-status").textContent = state.motion_fault ? "tripped" : (state.safety_status ?? "ok");
         document.getElementById("motion-fault").textContent = state.motion_fault ?? "No safety trips latched.";
         document.getElementById("updated-at").textContent = state.updated_at_ms ? new Date(state.updated_at_ms).toLocaleTimeString() : "never";
+        updateMotionButtons(state.motion_mode);
         updateImuPanel(state.imu);
         updateManualPanel(state.manual);
         updateCalibrationPanel(state.calibration);
