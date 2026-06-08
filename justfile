@@ -33,6 +33,12 @@ slow-walk:
 backward-walk:
     cargo run -p arachno-brain -- --config config/robot/host-usb.toml --listen 127.0.0.1:4000 --mode backward-walk --walk-seconds 8 --dashboard
 
+rotate-left:
+    cargo run -p arachno-brain -- --config config/robot/host-usb.toml --listen 127.0.0.1:4000 --mode rotate-left --walk-seconds 8 --dashboard
+
+rotate-right:
+    cargo run -p arachno-brain -- --config config/robot/host-usb.toml --listen 127.0.0.1:4000 --mode rotate-right --walk-seconds 8 --dashboard
+
 calibrate:
     cargo run -p arachno-calibrate -- --config config/robot/default.toml
 

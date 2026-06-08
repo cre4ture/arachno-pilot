@@ -62,6 +62,8 @@ enum BrainMode {
     Stand,
     SlowWalk,
     BackwardWalk,
+    RotateLeft,
+    RotateRight,
 }
 
 impl BrainMode {
@@ -74,6 +76,8 @@ impl BrainMode {
             Self::Stand => "stand",
             Self::SlowWalk => "slow_walk",
             Self::BackwardWalk => "backward_walk",
+            Self::RotateLeft => "rotate_left",
+            Self::RotateRight => "rotate_right",
         }
     }
 
@@ -81,19 +85,35 @@ impl BrainMode {
         !matches!(self, Self::Telemetry)
     }
 
-    fn walk_direction_sign(self) -> f32 {
-        match self {
-            Self::SlowWalk => 1.0,
-            Self::BackwardWalk => -1.0,
-            _ => 0.0,
-        }
-    }
-
-    fn walk_label(self) -> &'static str {
+    fn tripod_motion_label(self) -> &'static str {
         match self {
             Self::SlowWalk => "forward",
             Self::BackwardWalk => "backward",
-            _ => "walk",
+            Self::RotateLeft => "rotate left",
+            Self::RotateRight => "rotate right",
+            _ => "tripod",
+        }
+    }
+
+    fn coxa_gait_direction_for_leg(self, is_left_side: bool) -> f32 {
+        match self {
+            Self::SlowWalk => 1.0,
+            Self::BackwardWalk => -1.0,
+            Self::RotateLeft => {
+                if is_left_side {
+                    -1.0
+                } else {
+                    1.0
+                }
+            }
+            Self::RotateRight => {
+                if is_left_side {
+                    1.0
+                } else {
+                    -1.0
+                }
+            }
+            _ => 0.0,
         }
     }
 }
@@ -670,6 +690,12 @@ impl MotionRuntime {
             BrainMode::BackwardWalk => {
                 "waiting for all servo feedback before starting the backward gait"
             }
+            BrainMode::RotateLeft => {
+                "waiting for all servo feedback before starting the left rotation gait"
+            }
+            BrainMode::RotateRight => {
+                "waiting for all servo feedback before starting the right rotation gait"
+            }
         };
 
         Self {
@@ -703,6 +729,12 @@ impl MotionRuntime {
             BrainMode::SlowWalk => "holding the measured stand pose before gait".to_owned(),
             BrainMode::BackwardWalk => {
                 "holding the measured stand pose before backward gait".to_owned()
+            }
+            BrainMode::RotateLeft => {
+                "holding the measured stand pose before left rotation gait".to_owned()
+            }
+            BrainMode::RotateRight => {
+                "holding the measured stand pose before right rotation gait".to_owned()
             }
             BrainMode::Telemetry => {
                 "observation only; no motion commands are being sent".to_owned()
@@ -756,7 +788,9 @@ impl MotionRuntime {
             | BrainMode::StandUp
             | BrainMode::Stand
             | BrainMode::SlowWalk
-            | BrainMode::BackwardWalk => {
+            | BrainMode::BackwardWalk
+            | BrainMode::RotateLeft
+            | BrainMode::RotateRight => {
                 if imu_enabled {
                     "monitoring roll, pitch, bus voltage, and temperature".to_owned()
                 } else {
@@ -944,14 +978,17 @@ impl MotionRuntime {
                         smoothstep(progress),
                     )
                 }
-                BrainMode::SlowWalk | BrainMode::BackwardWalk => {
+                BrainMode::SlowWalk
+                | BrainMode::BackwardWalk
+                | BrainMode::RotateLeft
+                | BrainMode::RotateRight => {
                     let settle = config.locomotion.tripod.settle_seconds.max(0.25);
 
                     if elapsed < settle {
                         let progress = (elapsed / settle).clamp(0.0, 1.0);
                         self.summary = format!(
                             "holding the measured stand pose before {} gait ({:.0}%)",
-                            self.mode.walk_label(),
+                            self.mode.tripod_motion_label(),
                             progress * 100.0
                         );
                         base_pose.clone()
@@ -963,7 +1000,7 @@ impl MotionRuntime {
                         let limit = self.walk_seconds.unwrap_or_default();
                         self.summary = format!(
                             "{} gait duration reached after {:.1}s / {:.1}s; holding the measured stand pose",
-                            self.mode.walk_label(),
+                            self.mode.tripod_motion_label(),
                             gait_elapsed,
                             limit
                         );
@@ -984,7 +1021,7 @@ impl MotionRuntime {
                         };
                         self.summary = format!(
                             "slow tripod {} gait active; phase {:.2} / cycle {:.1}s / blend {:.0}%",
-                            self.mode.walk_label(),
+                            self.mode.tripod_motion_label(),
                             phase,
                             cycle_seconds,
                             amplitude_scale * 100.0,
@@ -994,7 +1031,7 @@ impl MotionRuntime {
                             calibration,
                             &base_pose,
                             phase,
-                            self.mode.walk_direction_sign(),
+                            self.mode,
                             amplitude_scale,
                         )
                     }
@@ -1022,6 +1059,8 @@ impl MotionRuntime {
             BrainMode::Stand
             | BrainMode::SlowWalk
             | BrainMode::BackwardWalk
+            | BrainMode::RotateLeft
+            | BrainMode::RotateRight
             | BrainMode::Telemetry => {
                 named_pose_with_calibration(config, calibration, SemanticPoseKind::StandReference)
             }
@@ -2671,7 +2710,7 @@ fn walk_pose_from_base(
     calibration: &SemanticCalibrationState,
     base_pose: &BTreeMap<u8, u16>,
     phase: f32,
-    direction_sign: f32,
+    mode: BrainMode,
     amplitude_scale: f32,
 ) -> BTreeMap<u8, u16> {
     let mut commanded = BTreeMap::new();
@@ -2707,10 +2746,11 @@ fn walk_pose_from_base(
             (phase + 0.5).fract()
         };
         let (coxa_delta_deg, lift_ratio) = leg_cycle_shape_deg(leg_phase, profile.coxa_swing_deg);
+        let coxa_direction_sign = mode.coxa_gait_direction_for_leg(leg.is_left_side());
         let gait_delta = LegPoseAngles {
             // Ramp in horizontal stride first; keep vertical lift fully active so the feet
             // still unload and clear the ground during walk startup.
-            coxa_deg: coxa_delta_deg * direction_sign * amplitude_scale,
+            coxa_deg: coxa_delta_deg * coxa_direction_sign * amplitude_scale,
             femur_deg: profile.femur_lift_deg * lift_ratio,
             tibia_deg: profile.tibia_lift_deg * lift_ratio,
         };
