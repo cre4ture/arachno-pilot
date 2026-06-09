@@ -200,7 +200,7 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
       gap: 10px;
     }
 
-    @media (max-width: 700px) {
+    @media (max-width: 860px) {
       .motion-cmd-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     }
 
@@ -861,6 +861,8 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
           <button class="motion-btn" id="btn-stop" type="button" data-cmd="stop">Stop</button>
           <button class="motion-btn" id="btn-walk_forward" type="button" data-cmd="walk_forward">Walk Forward</button>
           <button class="motion-btn" id="btn-walk_backward" type="button" data-cmd="walk_backward">Walk Backward</button>
+          <button class="motion-btn" id="btn-sidewalk_left" type="button" data-cmd="sidewalk_left">Sidewalk Left</button>
+          <button class="motion-btn" id="btn-sidewalk_right" type="button" data-cmd="sidewalk_right">Sidewalk Right</button>
           <button class="motion-btn" id="btn-rotate_left" type="button" data-cmd="rotate_left">Rotate Left</button>
           <button class="motion-btn" id="btn-rotate_right" type="button" data-cmd="rotate_right">Rotate Right</button>
         </div>
@@ -1681,6 +1683,8 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
         backward_walk: "walk_backward",
         rotate_left: "rotate_left",
         rotate_right: "rotate_right",
+        sidewalk_left: "sidewalk_left",
+        sidewalk_right: "sidewalk_right",
       };
       const activeCmd = modeToCmd[motionMode] ?? null;
       document.querySelectorAll(".motion-btn").forEach(btn => {

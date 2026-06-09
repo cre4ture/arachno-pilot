@@ -65,6 +65,8 @@ enum BrainMode {
     BackwardWalk,
     RotateLeft,
     RotateRight,
+    SidewalkLeft,
+    SidewalkRight,
 }
 
 impl BrainMode {
@@ -79,6 +81,8 @@ impl BrainMode {
             Self::BackwardWalk => "backward_walk",
             Self::RotateLeft => "rotate_left",
             Self::RotateRight => "rotate_right",
+            Self::SidewalkLeft => "sidewalk_left",
+            Self::SidewalkRight => "sidewalk_right",
         }
     }
 
@@ -92,27 +96,42 @@ impl BrainMode {
             Self::BackwardWalk => "backward",
             Self::RotateLeft => "rotate left",
             Self::RotateRight => "rotate right",
+            Self::SidewalkLeft => "sidewalk left",
+            Self::SidewalkRight => "sidewalk right",
             _ => "tripod",
         }
     }
 
-    fn coxa_gait_direction_for_leg(self, is_left_side: bool) -> f32 {
+    /// Direction sign applied to the coxa swing for each leg.
+    ///
+    /// For the sideward gaits the middle legs receive 0.0 so they lift in place
+    /// without striding. Their forward/backward contribution would otherwise
+    /// not cancel and would produce unwanted longitudinal drift.  The front and
+    /// rear angled legs are assigned opposing signs so that, within each tripod
+    /// stance, the forward force from one cancels the backward force from the
+    /// other, leaving only a net sideward force on the body.
+    fn coxa_gait_direction_for_leg(self, is_left_side: bool, coxa_zero_heading_deg: f32) -> f32 {
         match self {
             Self::SlowWalk => 1.0,
             Self::BackwardWalk => -1.0,
             Self::RotateLeft => {
-                if is_left_side {
-                    -1.0
-                } else {
-                    1.0
-                }
+                if is_left_side { -1.0 } else { 1.0 }
             }
             Self::RotateRight => {
-                if is_left_side {
-                    1.0
-                } else {
-                    -1.0
+                if is_left_side { 1.0 } else { -1.0 }
+            }
+            Self::SidewalkRight | Self::SidewalkLeft => {
+                // Middle legs (heading ≈ 0°) produce no sideward contribution;
+                // suppress their stride to avoid longitudinal drift.
+                if coxa_zero_heading_deg.abs() < 1.0 {
+                    return 0.0;
                 }
+                // Front legs (heading > 0) and rear legs (heading < 0) must
+                // swing in opposing directions so each tripod produces pure
+                // lateral body movement.  See walk_pose_from_base for the full
+                // geometric derivation.
+                let base = if is_left_side == (coxa_zero_heading_deg > 0.0) { 1.0 } else { -1.0 };
+                if matches!(self, Self::SidewalkLeft) { -base } else { base }
             }
             _ => 0.0,
         }
@@ -430,6 +449,8 @@ enum MotionCommand {
     WalkBackward,
     RotateLeft,
     RotateRight,
+    SidewalkLeft,
+    SidewalkRight,
     Stop,
     Telemetry,
 }
@@ -444,6 +465,8 @@ impl MotionCommand {
             Self::WalkBackward => BrainMode::BackwardWalk,
             Self::RotateLeft => BrainMode::RotateLeft,
             Self::RotateRight => BrainMode::RotateRight,
+            Self::SidewalkLeft => BrainMode::SidewalkLeft,
+            Self::SidewalkRight => BrainMode::SidewalkRight,
             Self::Telemetry => BrainMode::Telemetry,
         }
     }
@@ -738,6 +761,12 @@ impl MotionRuntime {
             BrainMode::RotateRight => {
                 "waiting for all servo feedback before starting the right rotation gait"
             }
+            BrainMode::SidewalkLeft => {
+                "waiting for all servo feedback before starting the sidewalk left gait"
+            }
+            BrainMode::SidewalkRight => {
+                "waiting for all servo feedback before starting the sidewalk right gait"
+            }
         };
 
         Self {
@@ -777,6 +806,12 @@ impl MotionRuntime {
             }
             BrainMode::RotateRight => {
                 "holding the measured stand pose before right rotation gait".to_owned()
+            }
+            BrainMode::SidewalkLeft => {
+                "holding the measured stand pose before sidewalk left gait".to_owned()
+            }
+            BrainMode::SidewalkRight => {
+                "holding the measured stand pose before sidewalk right gait".to_owned()
             }
             BrainMode::Telemetry => {
                 "observation only; no motion commands are being sent".to_owned()
@@ -832,7 +867,9 @@ impl MotionRuntime {
             | BrainMode::SlowWalk
             | BrainMode::BackwardWalk
             | BrainMode::RotateLeft
-            | BrainMode::RotateRight => {
+            | BrainMode::RotateRight
+            | BrainMode::SidewalkLeft
+            | BrainMode::SidewalkRight => {
                 if imu_enabled {
                     "monitoring roll, pitch, bus voltage, and temperature".to_owned()
                 } else {
@@ -1001,7 +1038,9 @@ impl MotionRuntime {
                 BrainMode::SlowWalk
                 | BrainMode::BackwardWalk
                 | BrainMode::RotateLeft
-                | BrainMode::RotateRight => {
+                | BrainMode::RotateRight
+                | BrainMode::SidewalkLeft
+                | BrainMode::SidewalkRight => {
                     let (pose, summary) = tripod_gait_pose(
                         config,
                         calibration,
@@ -1038,6 +1077,8 @@ impl MotionRuntime {
             | BrainMode::BackwardWalk
             | BrainMode::RotateLeft
             | BrainMode::RotateRight
+            | BrainMode::SidewalkLeft
+            | BrainMode::SidewalkRight
             | BrainMode::Telemetry => {
                 named_pose_with_calibration(config, calibration, SemanticPoseKind::StandReference)
             }
@@ -2740,7 +2781,8 @@ fn walk_pose_from_base(
             (phase + 0.5).fract()
         };
         let (coxa_delta_deg, lift_ratio) = leg_cycle_shape_deg(leg_phase, profile.coxa_swing_deg);
-        let coxa_direction_sign = mode.coxa_gait_direction_for_leg(leg.is_left_side());
+        let coxa_direction_sign =
+            mode.coxa_gait_direction_for_leg(leg.is_left_side(), leg.coxa_zero_heading_deg());
         let gait_delta = LegPoseAngles {
             // Ramp in horizontal stride first; keep vertical lift fully active so the feet
             // still unload and clear the ground during walk startup.

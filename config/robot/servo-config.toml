@@ -44,8 +44,8 @@ settle_seconds = 2.5
 settle_seconds = 2.5
 cycle_seconds = 5.0
 stride_ticks = 20
-femur_lift_ticks = 12
-tibia_lift_ticks = 18
+femur_lift_ticks = 20
+tibia_lift_ticks = 30
 
 [[legs]]
 name = "front_left"
