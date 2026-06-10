@@ -117,10 +117,18 @@ impl BrainMode {
             Self::SlowWalk => 1.0,
             Self::BackwardWalk => -1.0,
             Self::RotateLeft => {
-                if is_left_side { -1.0 } else { 1.0 }
+                if is_left_side {
+                    -1.0
+                } else {
+                    1.0
+                }
             }
             Self::RotateRight => {
-                if is_left_side { 1.0 } else { -1.0 }
+                if is_left_side {
+                    1.0
+                } else {
+                    -1.0
+                }
             }
             Self::SidewalkRight | Self::SidewalkLeft => {
                 // Middle legs (heading ≈ 0°) produce no sideward contribution;
@@ -132,8 +140,16 @@ impl BrainMode {
                 // swing in opposing directions so each tripod produces pure
                 // lateral body movement.  See walk_pose_from_base for the full
                 // geometric derivation.
-                let base = if is_left_side == (coxa_zero_heading_deg > 0.0) { 1.0 } else { -1.0 };
-                if matches!(self, Self::SidewalkLeft) { -base } else { base }
+                let base = if is_left_side == (coxa_zero_heading_deg > 0.0) {
+                    1.0
+                } else {
+                    -1.0
+                };
+                if matches!(self, Self::SidewalkLeft) {
+                    -base
+                } else {
+                    base
+                }
             }
             _ => 0.0,
         }
@@ -1276,24 +1292,27 @@ fn spawn_control_worker(
         loop {
             let tick_started = Instant::now();
 
-            if let Ok(mut pm) = pending_mode.write() {
-                if let Some(new_mode) = pm.take() {
-                    if new_mode != mode {
-                        let old_label = mode.as_state_label();
-                        mode = new_mode;
-                        motion = MotionRuntime::new(new_mode, walk_seconds);
-                        loop_period = motion_loop_period(new_mode, &config);
-                        if !new_mode.requires_torque() && torque_enabled {
-                            if let Some(b) = bus.as_mut() {
-                                if let Err(e) = b.enable_torque(false) {
-                                    warn!(error = %e, "failed to disable torque on mode switch to telemetry");
-                                }
-                            }
-                            torque_enabled = false;
-                        }
-                        info!(old = old_label, new = new_mode.as_state_label(), "motion mode changed via dashboard command");
+            if let Ok(mut pm) = pending_mode.write()
+                && let Some(new_mode) = pm.take()
+                && new_mode != mode
+            {
+                let old_label = mode.as_state_label();
+                mode = new_mode;
+                motion = MotionRuntime::new(new_mode, walk_seconds);
+                loop_period = motion_loop_period(new_mode, &config);
+                if !new_mode.requires_torque() && torque_enabled {
+                    if let Some(b) = bus.as_mut()
+                        && let Err(e) = b.enable_torque(false)
+                    {
+                        warn!(error = %e, "failed to disable torque on mode switch to telemetry");
                     }
+                    torque_enabled = false;
                 }
+                info!(
+                    old = old_label,
+                    new = new_mode.as_state_label(),
+                    "motion mode changed via dashboard command"
+                );
             }
 
             poll_imu(&config, &mut imu_bridge, &mut imu_state);
