@@ -15,7 +15,7 @@ use arachno_feetech_sts::{
     validate_servo_eeprom_entry_value as validate_bus_servo_eeprom_entry_value,
     validate_servo_eeprom_profile as validate_bus_servo_eeprom_profile,
 };
-use arachno_hal::{ServoBus, enable_torque_on_current_position};
+use arachno_hal::{ServoBus, enable_torque_on_current_position, servo_has_stopped};
 use arachno_msg::{JointCommand, ServoTelemetry};
 use clap::{Parser, ValueEnum};
 use serde::{Deserialize, Serialize};
@@ -1413,11 +1413,6 @@ fn servo_has_started_motion(
             .start_position_ticks
             .abs_diff(telemetry.present_position_ticks)
             >= MOTION_START_TICKS
-}
-
-fn servo_has_stopped(telemetry: &ServoTelemetry, stop_speed_ticks: u16) -> bool {
-    let speed_abs = i32::from(telemetry.present_speed_ticks).abs();
-    !telemetry.moving || speed_abs <= i32::from(stop_speed_ticks)
 }
 
 fn interpolate_ticks(start_ticks: u16, end_ticks: u16, ratio: f32) -> u16 {

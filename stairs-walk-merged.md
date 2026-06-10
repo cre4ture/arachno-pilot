@@ -28,7 +28,7 @@
 
 ## Implementation steps (ordered by dependency)
 
-### - [ ] Step 1 — Extract probing helper into shared crate
+### - [x] Step 1 — Extract probing helper into shared crate
 
 Extract the torque-limited stop-on-resistance logic from `apps/arachno-calibrate/src/main.rs:950` into `crates/arachno-core` so it can be used at runtime without duplication. Add unit tests for contact-detection traces alongside the extraction.
 
