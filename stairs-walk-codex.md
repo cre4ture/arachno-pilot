@@ -1,0 +1,18 @@
+This is feasible with the current hardware, but it needs a dedicated stair-descent controller, not just a tweak to slow_walk.
+You already have the useful building blocks: leg forward kinematics in crates/arachno-core/src/lib.rs (line 653), semantic angle conversion in apps/arachno-brain/src/main.rs (line 2737), servo load/current/moving telemetry in crates/arachno-msg/src/lib.rs (line 12) filled by crates/arachno-feetech-sts/src/lib.rs (line 108), and a torque-limited “stop on resistance” probe in calibration in apps/arachno-calibrate/src/main.rs (line 950). What you do not have yet is runtime foot-contact reasoning, runtime use of measured joint envelopes, Cartesian foot placement, or a terrain-aware gait. The current walking path is still open-loop tripod motion in apps/arachno-brain/src/main.rs (line 2777) and apps/arachno-brain/src/main.rs (line 2993), and motion safety does not yet use load/current for control decisions in apps/arachno-brain/src/main.rs (line 905).
+Recommended Strategy
+Start with a very slow descend_stairs creep mode, one leg at a time. Do not try to extend the sinusoidal tripod gait for v1.
+Treat each swing as a compliant probe: move the foot forward, lower it with reduced torque, detect contact from stall/load/current, then compute contact height from live joint angles.
+Estimate the step drop from both front legs first. If they disagree too much, or either leg cannot find support within the safe search window, stop.
+Define “step too large” conservatively: no contact before max safe probe depth, contacted foothold outside calibrated reachable range, or body transfer would violate pitch/support margins.
+Descend in phases: front legs, then middle legs, then rear legs, with IMU and load checks during each weight transfer.
+Step-By-Step Plan
+Extract the torque-limited probing logic from apps/arachno-calibrate/src/main.rs (line 950) into a shared helper instead of duplicating it. Add tests first/alongside for contact detection traces.
+Add runtime loading of servo-ranges.toml into arachno-core, because stair limits should use measured safe envelopes, not only ideal link lengths.
+Add a foot-placement and reachability API in arachno-core. The repo can tell where a leg is for given angles today; it still needs the inverse question: “can this leg safely place the foot at target x/z, and with which angles?”
+Add ProbeResult and StepEstimate types. Compute drop_cm from live semantic angles via apps/arachno-brain/src/main.rs (line 2737) plus crates/arachno-core/src/lib.rs (line 653).
+Add BrainMode::DescendStairs and a stair state machine in arachno-brain rather than routing through the current tripod path in apps/arachno-brain/src/main.rs (line 1066).
+Extend safety with stair-specific aborts: no-contact timeout, excessive position error during probe, load/current spike without stable support, step drop above configured max, and unstable pitch/roll during transfer.
+Expose stair telemetry in the dashboard: current phase, probing leg, measured drop, contact confidence, and abort reason.
+Validate on hardware in stages: flat ground false-contact tuning, one known stair height, several known heights, then unknown stairs. Only after that should we think about making it faster.
+The main design choice I’d push for is this: v1 should be a slow sensing-and-placement controller, not a faster gait. That gives you a much better chance of reliable “unknown step size” handling and clean “too large, stop safely” behavior.
