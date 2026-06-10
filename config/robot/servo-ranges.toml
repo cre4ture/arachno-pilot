@@ -47,11 +47,11 @@ faults = []
 joint = "femur"
 servo_id = 12
 logical_positive_label = "up"
-logical_negative_end_ticks = 2140
+logical_negative_end_ticks = 3133
 logical_positive_end_ticks = 1170
-midpoint_ticks = 1655
-upper_seventy_percent_ticks = 1461
-span_ticks = 970
+midpoint_ticks = 2152
+upper_seventy_percent_ticks = 1759
+span_ticks = 1963
 
 [legs.femur.positive_limit]
 position_ticks = 1170
@@ -63,7 +63,7 @@ status_bits = 0
 faults = []
 
 [legs.femur.negative_limit]
-position_ticks = 2140
+position_ticks = 3133
 detection = "torque_limit_stop"
 load_pct = 100.0
 current_ma = 39
@@ -134,11 +134,11 @@ faults = []
 joint = "femur"
 servo_id = 22
 logical_positive_label = "up"
-logical_negative_end_ticks = 2137
+logical_negative_end_ticks = 3158
 logical_positive_end_ticks = 1176
-midpoint_ticks = 1657
-upper_seventy_percent_ticks = 1464
-span_ticks = 961
+midpoint_ticks = 2167
+upper_seventy_percent_ticks = 1771
+span_ticks = 1982
 
 [legs.femur.positive_limit]
 position_ticks = 1176
@@ -150,7 +150,7 @@ status_bits = 0
 faults = []
 
 [legs.femur.negative_limit]
-position_ticks = 2137
+position_ticks = 3158
 detection = "torque_limit_stop"
 load_pct = 100.0
 current_ma = 52
@@ -221,11 +221,11 @@ faults = []
 joint = "femur"
 servo_id = 32
 logical_positive_label = "up"
-logical_negative_end_ticks = 2111
+logical_negative_end_ticks = 3146
 logical_positive_end_ticks = 1139
-midpoint_ticks = 1625
-upper_seventy_percent_ticks = 1431
-span_ticks = 972
+midpoint_ticks = 2143
+upper_seventy_percent_ticks = 1741
+span_ticks = 2007
 
 [legs.femur.positive_limit]
 position_ticks = 1139
@@ -237,7 +237,7 @@ status_bits = 0
 faults = []
 
 [legs.femur.negative_limit]
-position_ticks = 2111
+position_ticks = 3146
 detection = "torque_limit_stop"
 load_pct = 100.0
 current_ma = 33
@@ -308,11 +308,11 @@ faults = []
 joint = "femur"
 servo_id = 42
 logical_positive_label = "up"
-logical_negative_end_ticks = 2017
+logical_negative_end_ticks = 963
 logical_positive_end_ticks = 3013
-midpoint_ticks = 2515
-upper_seventy_percent_ticks = 2714
-span_ticks = 996
+midpoint_ticks = 1988
+upper_seventy_percent_ticks = 2398
+span_ticks = 2050
 
 [legs.femur.positive_limit]
 position_ticks = 3013
@@ -324,7 +324,7 @@ status_bits = 0
 faults = []
 
 [legs.femur.negative_limit]
-position_ticks = 2017
+position_ticks = 963
 detection = "torque_limit_stop"
 load_pct = 10.0
 current_ma = 33
@@ -395,11 +395,11 @@ faults = []
 joint = "femur"
 servo_id = 52
 logical_positive_label = "up"
-logical_negative_end_ticks = 2017
+logical_negative_end_ticks = 941
 logical_positive_end_ticks = 2940
-midpoint_ticks = 2479
-upper_seventy_percent_ticks = 2663
-span_ticks = 923
+midpoint_ticks = 1941
+upper_seventy_percent_ticks = 2340
+span_ticks = 1999
 
 [legs.femur.positive_limit]
 position_ticks = 2940
@@ -411,7 +411,7 @@ status_bits = 0
 faults = []
 
 [legs.femur.negative_limit]
-position_ticks = 2017
+position_ticks = 941
 detection = "torque_limit_stop"
 load_pct = 10.0
 current_ma = 39
@@ -482,11 +482,11 @@ faults = []
 joint = "femur"
 servo_id = 62
 logical_positive_label = "up"
-logical_negative_end_ticks = 2041
+logical_negative_end_ticks = 962
 logical_positive_end_ticks = 2906
-midpoint_ticks = 2474
-upper_seventy_percent_ticks = 2647
-span_ticks = 865
+midpoint_ticks = 1934
+upper_seventy_percent_ticks = 2323
+span_ticks = 1944
 
 [legs.femur.positive_limit]
 position_ticks = 2906
@@ -498,7 +498,7 @@ status_bits = 0
 faults = []
 
 [legs.femur.negative_limit]
-position_ticks = 2041
+position_ticks = 962
 detection = "torque_limit_stop"
 load_pct = 10.0
 current_ma = 46
