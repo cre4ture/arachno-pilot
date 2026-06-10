@@ -79,6 +79,8 @@ pub struct SemanticPoseSet {
     pub lay_down: BTreeMap<String, LegPoseAngles>,
     #[serde(default, alias = "zero")]
     pub zero_pose: BTreeMap<String, LegPoseAngles>,
+    #[serde(default)]
+    pub sit_down: BTreeMap<String, LegPoseAngles>,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
@@ -93,6 +95,7 @@ pub enum SemanticPoseKind {
     StandReference,
     LayDown,
     ZeroPose,
+    SitDown,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -182,6 +185,8 @@ pub struct LocomotionConfig {
     pub stand_up: PoseTransitionConfig,
     #[serde(default)]
     pub lay_down: PoseTransitionConfig,
+    #[serde(default)]
+    pub sit_down: PoseTransitionConfig,
     #[serde(default)]
     pub stand: StandConfig,
     #[serde(default)]
@@ -299,6 +304,8 @@ pub struct SharedPoseConfigFile {
     pub lay_down: BTreeMap<String, LegPoseAngles>,
     #[serde(default, alias = "zero")]
     pub zero_pose: BTreeMap<String, LegPoseAngles>,
+    #[serde(default)]
+    pub sit_down: BTreeMap<String, LegPoseAngles>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -371,6 +378,7 @@ impl RobotConfig {
                 stand_reference: pose_file.stand_reference,
                 lay_down: pose_file.lay_down,
                 zero_pose: pose_file.zero_pose,
+                sit_down: pose_file.sit_down,
             };
         }
 
@@ -403,6 +411,13 @@ impl RobotConfig {
             SemanticPoseKind::ZeroPose => self
                 .poses
                 .zero_pose
+                .get(leg_name)
+                .copied()
+                .or_else(|| self.poses.lay_down.get(leg_name).copied())
+                .or(Some(LegPoseAngles::default())),
+            SemanticPoseKind::SitDown => self
+                .poses
+                .sit_down
                 .get(leg_name)
                 .copied()
                 .or_else(|| self.poses.lay_down.get(leg_name).copied())
@@ -443,6 +458,7 @@ impl Default for LocomotionConfig {
             command_hz: default_command_hz(),
             stand_up: PoseTransitionConfig::default(),
             lay_down: PoseTransitionConfig::default(),
+            sit_down: PoseTransitionConfig::default(),
             stand: StandConfig::default(),
             tripod: TripodWalkConfig::default(),
         }
@@ -559,6 +575,7 @@ impl LegConfig {
                 self.femur_zero_reference_ticks(),
                 self.tibia_zero_reference_ticks(),
             )),
+            SemanticPoseKind::SitDown => None,
         }
     }
 

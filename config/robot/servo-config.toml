@@ -37,6 +37,9 @@ duration_seconds = 24.0
 [locomotion.lay_down]
 duration_seconds = 6.0
 
+[locomotion.sit_down]
+duration_seconds = 4.0
+
 [locomotion.stand]
 settle_seconds = 2.5
 

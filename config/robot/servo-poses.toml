@@ -62,6 +62,36 @@ coxa_deg = 0.0
 femur_deg = 0.0
 tibia_deg = 0.0
 
+[sit_down.front_left]
+coxa_deg = 0.0
+femur_deg = 80.0
+tibia_deg = -135.0
+
+[sit_down.middle_left]
+coxa_deg = 0.0
+femur_deg = 80.0
+tibia_deg = -135.0
+
+[sit_down.rear_left]
+coxa_deg = 0.0
+femur_deg = 80.0
+tibia_deg = -135.0
+
+[sit_down.front_right]
+coxa_deg = 0.0
+femur_deg = 80.0
+tibia_deg = -135.0
+
+[sit_down.middle_right]
+coxa_deg = 0.0
+femur_deg = 80.0
+tibia_deg = -135.0
+
+[sit_down.rear_right]
+coxa_deg = 0.0
+femur_deg = 80.0
+tibia_deg = -135.0
+
 [zero_pose.front_left]
 coxa_deg = 0.0
 femur_deg = 0.0

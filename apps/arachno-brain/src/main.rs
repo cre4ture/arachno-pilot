@@ -59,6 +59,7 @@ enum BrainMode {
     Telemetry,
     Manual,
     LayDown,
+    SitDown,
     StandUp,
     Stand,
     SlowWalk,
@@ -75,6 +76,7 @@ impl BrainMode {
             Self::Telemetry => "telemetry",
             Self::Manual => "manual",
             Self::LayDown => "lay_down",
+            Self::SitDown => "sit_down",
             Self::StandUp => "stand_up",
             Self::Stand => "stand",
             Self::SlowWalk => "slow_walk",
@@ -444,6 +446,7 @@ struct ManualCommandResponse {
 enum MotionCommand {
     StandUp,
     LayDown,
+    SitDown,
     Stand,
     WalkForward,
     WalkBackward,
@@ -460,6 +463,7 @@ impl MotionCommand {
         match self {
             Self::StandUp => BrainMode::StandUp,
             Self::LayDown => BrainMode::LayDown,
+            Self::SitDown => BrainMode::SitDown,
             Self::Stand | Self::Stop => BrainMode::Stand,
             Self::WalkForward => BrainMode::SlowWalk,
             Self::WalkBackward => BrainMode::BackwardWalk,
@@ -749,6 +753,7 @@ impl MotionRuntime {
             BrainMode::Telemetry => "observation only; no motion commands are being sent",
             BrainMode::Manual => "waiting for all servo feedback before arming manual control",
             BrainMode::LayDown => "waiting for all servo feedback before laying down",
+            BrainMode::SitDown => "waiting for all servo feedback before sitting down",
             BrainMode::StandUp => "waiting for all servo feedback before standing up",
             BrainMode::Stand => "waiting for all servo feedback before holding stand",
             BrainMode::SlowWalk => "waiting for all servo feedback before starting the gait",
@@ -795,6 +800,7 @@ impl MotionRuntime {
         self.summary = match self.mode {
             BrainMode::Manual => "manual control armed at the measured robot pose".to_owned(),
             BrainMode::LayDown => "starting lay-down transition".to_owned(),
+            BrainMode::SitDown => "starting sit-down transition".to_owned(),
             BrainMode::StandUp => "starting stand-up transition".to_owned(),
             BrainMode::Stand => "holding the configured stand-reference pose".to_owned(),
             BrainMode::SlowWalk => "holding the measured stand pose before gait".to_owned(),
@@ -862,6 +868,7 @@ impl MotionRuntime {
                 }
             }
             BrainMode::LayDown
+            | BrainMode::SitDown
             | BrainMode::StandUp
             | BrainMode::Stand
             | BrainMode::SlowWalk
@@ -1023,6 +1030,11 @@ impl MotionRuntime {
                     self.summary = summary;
                     pose
                 }
+                BrainMode::SitDown => {
+                    let (pose, summary) = sit_down_pose(config, calibration, &base_pose, elapsed);
+                    self.summary = summary;
+                    pose
+                }
                 BrainMode::StandUp => {
                     let (pose, summary) =
                         staged_stand_up_pose(config, calibration, &base_pose, elapsed);
@@ -1071,6 +1083,9 @@ impl MotionRuntime {
             }
             BrainMode::LayDown | BrainMode::StandUp => {
                 named_pose_with_calibration(config, calibration, SemanticPoseKind::LayDown)
+            }
+            BrainMode::SitDown => {
+                named_pose_with_calibration(config, calibration, SemanticPoseKind::SitDown)
             }
             BrainMode::Stand
             | BrainMode::SlowWalk
@@ -2905,6 +2920,26 @@ fn lay_down_pose(
         format!("laying down ({:.0}%)", progress * 100.0)
     } else {
         "holding the configured lay-down pose".to_owned()
+    };
+    (
+        interpolate_pose(base_pose, &target, smoothstep(progress)),
+        summary,
+    )
+}
+
+fn sit_down_pose(
+    config: &RobotConfig,
+    calibration: &SemanticCalibrationState,
+    base_pose: &BTreeMap<u8, u16>,
+    elapsed: f32,
+) -> (BTreeMap<u8, u16>, String) {
+    let target = named_pose_with_calibration(config, calibration, SemanticPoseKind::SitDown);
+    let duration = config.locomotion.sit_down.duration_seconds.max(0.5);
+    let progress = (elapsed / duration).clamp(0.0, 1.0);
+    let summary = if progress < 1.0 {
+        format!("sitting down ({:.0}%)", progress * 100.0)
+    } else {
+        "holding the configured sit-down pose".to_owned()
     };
     (
         interpolate_pose(base_pose, &target, smoothstep(progress)),

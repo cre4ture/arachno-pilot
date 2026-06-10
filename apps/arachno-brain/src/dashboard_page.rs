@@ -857,6 +857,7 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
         <div class="motion-cmd-grid">
           <button class="motion-btn" id="btn-stand_up" type="button" data-cmd="stand_up">Stand Up</button>
           <button class="motion-btn" id="btn-lay_down" type="button" data-cmd="lay_down">Lay Down</button>
+          <button class="motion-btn" id="btn-sit_down" type="button" data-cmd="sit_down">Sit Down</button>
           <button class="motion-btn" id="btn-stand" type="button" data-cmd="stand">Stand</button>
           <button class="motion-btn" id="btn-stop" type="button" data-cmd="stop">Stop</button>
           <button class="motion-btn" id="btn-walk_forward" type="button" data-cmd="walk_forward">Walk Forward</button>
@@ -1678,6 +1679,7 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
       const modeToCmd = {
         stand_up: "stand_up",
         lay_down: "lay_down",
+        sit_down: "sit_down",
         stand: "stand",
         slow_walk: "walk_forward",
         backward_walk: "walk_backward",
