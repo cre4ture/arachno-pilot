@@ -6,7 +6,12 @@ This workspace contains embedded Rust firmware that complements the Linux-side `
 
 - `rp2040-imu-bridge`: USB CDC IMU bridge for the Waveshare `RP2040-ETH` board
 
-The firmware now targets a real `MPU-9250`-class IMU over `SPI` and streams:
+The firmware now auto-probes either:
+
+- an `MPU-6050`-class IMU over `I2C`
+- an `MPU-9250`-class IMU over `SPI`
+
+and streams:
 
 - accelerometer
 - gyroscope
@@ -14,12 +19,18 @@ The firmware now targets a real `MPU-9250`-class IMU over `SPI` and streams:
 
 The magnetometer is intentionally not used yet.
 
-During bring-up, the firmware now probes all four SPI modes at a conservative clock rate and accepts both:
+During bring-up, the firmware first probes `I2C` addresses `0x68` and `0x69` and accepts:
+
+- `0x68` -> `MPU-6050`
+- `0x70` -> `MPU-6500 compatible`
+- `0x71` -> `MPU-9250`
+
+If no supported `I2C` device responds, it then probes all four `SPI` modes at a conservative clock rate and accepts:
 
 - `0x71` -> `MPU-9250`
 - `0x70` -> `MPU-6500 compatible`
 
-That makes the bridge more tolerant of clone or relabeled breakout boards that are sold as `GY-9250`.
+That makes the bridge tolerant of both `GY-521 / MPU-6050`-style boards and clone or relabeled `GY-9250` breakouts.
 
 On each USB connection, the firmware now emits a compact device-info frame before live IMU samples and repeats it periodically so the host can verify:
 
@@ -33,7 +44,7 @@ On each USB connection, the firmware now emits a compact device-info frame befor
 
 ## Wiring
 
-Recommended wiring for the Waveshare `RP2040-ETH` and a `GY-9250 / MPU-9250` breakout that exposes `SPI` pins:
+Recommended `SPI` wiring for the Waveshare `RP2040-ETH` and a `GY-9250 / MPU-9250` breakout that exposes `SPI` pins:
 
 | RP2040-ETH | MPU-9250 breakout | Notes |
 | --- | --- | --- |
@@ -45,6 +56,17 @@ Recommended wiring for the Waveshare `RP2040-ETH` and a `GY-9250 / MPU-9250` bre
 | `GPIO5` | `NCS` / `CS` | Chip select, active low |
 | `GPIO6` | `INT` | Optional, not used by current firmware |
 
+Recommended `I2C` wiring for an `MPU-6050 / GY-521` style breakout:
+
+| RP2040-ETH | MPU-6050 breakout | Notes |
+| --- | --- | --- |
+| `3V3` | `VCC` | Power the module at `3.3 V` |
+| `GND` | `GND` | Common ground |
+| `GPIO2` | `SDA` | `I2C1 SDA` |
+| `GPIO3` | `SCL` | `I2C1 SCL` |
+| `GPIO6` | `INT` | Optional, not used by current firmware |
+| `AD0` | `GND` or `3V3` | Selects `I2C` address `0x68` or `0x69` |
+
 Leave these unconnected for the current firmware:
 
 - `EDA`
@@ -53,7 +75,7 @@ Leave these unconnected for the current firmware:
 
 Important notes:
 
-- This firmware assumes your breakout exposes `NCS` or `CS`. If your module only exposes `I2C` pins and has no selectable `SPI` chip-select pin, this firmware will not talk to it.
+- `SPI` breakouts still need `NCS` or `CS` exposed; modules that only break out `I2C` lines will use the `I2C` backend instead.
 - Even if the board is marketed as `3-5 V compatible`, the safe target for the RP2040 side is still `3.3 V`.
 - `GPIO17` to `GPIO21` are already tied into the onboard `CH9120` Ethernet side functions on the RP2040-ETH, so the firmware avoids them.
 - In `SPI` mode, `AD0` is used as `SDO/MISO`, not just as an `I2C` address strap.
@@ -129,6 +151,17 @@ sample_hz: 200
 capabilities: accel,gyro,temp
 spi_mode: 3
 observed_who_am_i: 0x71
+```
+
+For an `MPU-6050`, a healthy output looks like:
+
+```text
+device: /dev/serial/by-id/...
+firmware_version: 0.1.1
+sensor_kind: mpu6050
+sample_hz: 200
+capabilities: accel,gyro,temp
+observed_who_am_i: 0x68
 ```
 
 If the board is alive but the IMU still is not, `fw-version` now prints the fault detail too, for example:

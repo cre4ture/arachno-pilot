@@ -3825,6 +3825,7 @@ fn sensor_kind_label(kind: SensorKind) -> &'static str {
         SensorKind::Mock => "mock",
         SensorKind::Mpu9250 => "mpu9250",
         SensorKind::Mpu6500 => "mpu6500-compatible",
+        SensorKind::Mpu6050 => "mpu6050",
         SensorKind::Faulted => "faulted",
     }
 }

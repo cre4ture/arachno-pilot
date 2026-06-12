@@ -50,6 +50,7 @@ pub enum SensorKind {
     Mock = 1,
     Mpu9250 = 2,
     Mpu6500 = 3,
+    Mpu6050 = 4,
     Faulted = 255,
 }
 
@@ -62,6 +63,7 @@ impl TryFrom<u8> for SensorKind {
             1 => Ok(Self::Mock),
             2 => Ok(Self::Mpu9250),
             3 => Ok(Self::Mpu6500),
+            4 => Ok(Self::Mpu6050),
             255 => Ok(Self::Faulted),
             _ => Err(DecodeError::UnknownSensorKind(value)),
         }
@@ -605,6 +607,11 @@ mod tests {
                 },
             }
         );
+    }
+
+    #[test]
+    fn sensor_kind_try_from_supports_mpu6050() {
+        assert_eq!(SensorKind::try_from(4).unwrap(), SensorKind::Mpu6050);
     }
 
     #[test]

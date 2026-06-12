@@ -5,54 +5,38 @@
 use core::mem::MaybeUninit;
 
 use arachno_imu_proto::{
-    CAP_ACCEL, CAP_GYRO, CAP_TEMP, DeviceInfo, ImuSample, MAX_FRAME_LEN, SPI_MODE_UNKNOWN,
-    SENSOR_FAULT_NONE, SENSOR_FAULT_PROBE_NO_RESPONSE, SENSOR_FAULT_READ,
-    SENSOR_FAULT_UNEXPECTED_WHO_AM_I, SensorKind, encode_device_info_frame,
-    encode_sample_frame,
+    CAP_ACCEL, CAP_GYRO, CAP_TEMP, DeviceInfo, ImuSample, MAX_FRAME_LEN, SENSOR_FAULT_NONE,
+    SENSOR_FAULT_PROBE_NO_RESPONSE, SENSOR_FAULT_READ, SPI_MODE_UNKNOWN, SensorKind,
+    encode_device_info_frame, encode_sample_frame,
 };
 use defmt::{info, panic, unwrap, warn};
 use embassy_executor::Spawner;
 use embassy_rp::Peri;
 use embassy_rp::bind_interrupts;
 use embassy_rp::gpio::{Level, Output};
-use embassy_rp::peripherals::{PIN_2, PIN_3, PIN_4, PIN_5, SPI0, USB};
-use embassy_rp::spi::{self, Blocking, Spi};
+use embassy_rp::i2c::{self, AbortReason, I2c};
+use embassy_rp::peripherals::{I2C1, PIN_2, PIN_3, PIN_4, PIN_5, SPI0, USB};
+use embassy_rp::spi::{self, Blocking as SpiBlocking, Spi};
 use embassy_rp::usb::{Driver, Instance, InterruptHandler};
 use embassy_time::{Duration, Instant, Ticker, Timer};
 use embassy_usb::UsbDevice;
 use embassy_usb::class::cdc_acm::{CdcAcmClass, State};
 use embassy_usb::driver::EndpointError;
+use rp2040_imu_bridge::{
+    FaultInfo, MPU_I2C_ADDRESSES, MPU_MEASUREMENT_PAYLOAD_LEN, MPU_REG_ACCEL_XOUT_H,
+    MPU_REG_WHO_AM_I, ProbeResult, SENSOR_STATUS_FAULT, init_steps, sample_from_payload,
+    sensor_kind_from_who_am_i, validate_who_am_i,
+};
 use {defmt_rtt as _, panic_probe as _};
 
 const SAMPLE_HZ: u32 = 200;
 const SAMPLE_PERIOD_MS: u64 = 1_000 / SAMPLE_HZ as u64;
 const DEVICE_INFO_ANNOUNCE_INTERVAL_SAMPLES: u32 = SAMPLE_HZ / 4;
 const SENSOR_WARMUP_SAMPLES: u32 = SAMPLE_HZ;
-const SENSOR_STATUS_FAULT: u16 = 0x0001;
-const SENSOR_STATUS_ACCEL_CLIPPED: u16 = 0x0002;
-const SENSOR_STATUS_GYRO_CLIPPED: u16 = 0x0004;
-const SENSOR_STATUS_CALIBRATING: u16 = 0x0020;
 
+const MPU_I2C_HZ: u32 = 400_000;
 const MPU9250_SPI_HZ: u32 = 1_000_000;
 const MPU9250_SPI_PROBE_HZ: u32 = 125_000;
-const MPU_WHO_AM_I_MPU6500: u8 = 0x70;
-const MPU_WHO_AM_I_MPU9250: u8 = 0x71;
-const MPU9250_REG_SMPLRT_DIV: u8 = 0x19;
-const MPU9250_REG_CONFIG: u8 = 0x1A;
-const MPU9250_REG_GYRO_CONFIG: u8 = 0x1B;
-const MPU9250_REG_ACCEL_CONFIG: u8 = 0x1C;
-const MPU9250_REG_ACCEL_CONFIG2: u8 = 0x1D;
-const MPU9250_REG_ACCEL_XOUT_H: u8 = 0x3B;
-const MPU9250_REG_SIGNAL_PATH_RESET: u8 = 0x68;
-const MPU9250_REG_USER_CTRL: u8 = 0x6A;
-const MPU9250_REG_PWR_MGMT_1: u8 = 0x6B;
-const MPU9250_REG_PWR_MGMT_2: u8 = 0x6C;
-const MPU9250_REG_WHO_AM_I: u8 = 0x75;
-
-const MPU9250_USER_CTRL_I2C_IF_DIS: u8 = 1 << 4;
-const MPU9250_PWR_MGMT_1_H_RESET: u8 = 1 << 7;
-const MPU9250_PWR_MGMT_1_CLKSEL_AUTO: u8 = 0x01;
-const MPU9250_SIGNAL_PATH_RESET_ALL: u8 = 0x07;
 
 bind_interrupts!(struct Irqs {
     USBCTRL_IRQ => InterruptHandler<USB>;
@@ -96,13 +80,17 @@ async fn main(spawner: Spawner) {
 
     spawner.spawn(unwrap!(usb_task(usb)));
 
-    // Keep the IMU on SPI0 away from the board's CH9120 control pins.
+    // Keep the IMU on low GPIO numbers away from the board's CH9120 control pins.
     // Wiring:
-    // GP2 -> MPU-9250 SCL/SCLK
-    // GP3 -> MPU-9250 SDA/SDI
-    // GP4 -> MPU-9250 AD0/SDO
-    // GP5 -> MPU-9250 NCS/CS
-    let mut sensor = SensorState::new(p.SPI0, p.PIN_2, p.PIN_3, p.PIN_4, p.PIN_5).await;
+    // SPI backend:
+    //   GP2 -> MPU-9250 SCL/SCLK
+    //   GP3 -> MPU-9250 SDA/SDI
+    //   GP4 -> MPU-9250 AD0/SDO
+    //   GP5 -> MPU-9250 NCS/CS
+    // I2C backend:
+    //   GP2 -> MPU-6050 SDA
+    //   GP3 -> MPU-6050 SCL
+    let mut sensor = SensorState::new(p.I2C1, p.SPI0, p.PIN_2, p.PIN_3, p.PIN_4, p.PIN_5).await;
     let mut sequence = 0u8;
     let mut frame_buf = [0u8; MAX_FRAME_LEN];
 
@@ -165,29 +153,57 @@ async fn send_device_info<'d, T: Instance + 'd>(
 }
 
 enum SensorState<'d> {
-    Real(Mpu9250Sensor<'d>),
+    Real(ActiveSensor<'d>),
     Faulted(FaultedSensor),
 }
 
 impl<'d> SensorState<'d> {
     async fn new(
+        i2c1: Peri<'d, I2C1>,
         spi0: Peri<'d, SPI0>,
-        sck: Peri<'d, PIN_2>,
-        mosi: Peri<'d, PIN_3>,
+        gpio2: Peri<'d, PIN_2>,
+        gpio3: Peri<'d, PIN_3>,
         miso: Peri<'d, PIN_4>,
         cs: Peri<'d, PIN_5>,
     ) -> Self {
+        let i2c_fault = {
+            // Safety: the temporary I2C probe either becomes the sole live backend when we
+            // return early on success, or it is fully dropped before the SPI backend is built.
+            let i2c_result = {
+                let _cs_idle = Output::new(unsafe { cs.clone_unchecked() }, Level::High);
+                MpuI2cSensor::new(
+                    unsafe { i2c1.clone_unchecked() },
+                    unsafe { gpio3.clone_unchecked() },
+                    unsafe { gpio2.clone_unchecked() },
+                )
+                .await
+            };
+
+            match i2c_result {
+                Ok(sensor) => return Self::Real(ActiveSensor::I2c(sensor)),
+                Err(err) => {
+                    warn!("i2c imu init failed: {:?}", err);
+                    err.fault_info()
+                }
+            }
+        };
+
         let mut config = spi::Config::default();
         config.frequency = MPU9250_SPI_HZ;
 
-        let spi = Spi::new_blocking(spi0, sck, mosi, miso, config);
+        let spi = Spi::new_blocking(spi0, gpio2, gpio3, miso, config);
         let cs = Output::new(cs, Level::High);
 
-        match Mpu9250Sensor::new(spi, cs).await {
-            Ok(sensor) => Self::Real(sensor),
+        match MpuSpiSensor::new(spi, cs).await {
+            Ok(sensor) => Self::Real(ActiveSensor::Spi(sensor)),
             Err(err) => {
-                warn!("mpu9250 init failed: {:?}", err);
-                Self::Faulted(FaultedSensor::new(err.fault_info()))
+                warn!("spi imu init failed: {:?}", err);
+                let fault_info = if i2c_fault.code != SENSOR_FAULT_PROBE_NO_RESPONSE {
+                    i2c_fault
+                } else {
+                    err.fault_info()
+                };
+                Self::Faulted(FaultedSensor::new(fault_info))
             }
         }
     }
@@ -197,7 +213,7 @@ impl<'d> SensorState<'d> {
             Self::Real(sensor) => match sensor.next_sample() {
                 Ok(sample) => sample,
                 Err(err) => {
-                    warn!("mpu9250 read failed: {:?}", err);
+                    warn!("imu read failed: {:?}", err);
                     fault_sample(SENSOR_STATUS_FAULT)
                 }
             },
@@ -231,71 +247,229 @@ impl<'d> SensorState<'d> {
     }
 }
 
-struct Mpu9250Sensor<'d> {
-    spi: Spi<'d, SPI0, Blocking>,
+enum ActiveSensor<'d> {
+    I2c(MpuI2cSensor<'d>),
+    Spi(MpuSpiSensor<'d>),
+}
+
+impl<'d> ActiveSensor<'d> {
+    fn next_sample(&mut self) -> Result<ImuSample, MpuSensorError> {
+        match self {
+            Self::I2c(sensor) => sensor.next_sample(),
+            Self::Spi(sensor) => sensor.next_sample(),
+        }
+    }
+
+    fn sensor_kind(&self) -> SensorKind {
+        match self {
+            Self::I2c(sensor) => sensor.sensor_kind(),
+            Self::Spi(sensor) => sensor.sensor_kind(),
+        }
+    }
+
+    fn observed_who_am_i(&self) -> u8 {
+        match self {
+            Self::I2c(sensor) => sensor.observed_who_am_i(),
+            Self::Spi(sensor) => sensor.observed_who_am_i(),
+        }
+    }
+
+    fn spi_mode(&self) -> u8 {
+        match self {
+            Self::I2c(sensor) => sensor.spi_mode(),
+            Self::Spi(sensor) => sensor.spi_mode(),
+        }
+    }
+}
+
+struct MpuI2cSensor<'d> {
+    i2c: I2c<'d, I2C1, i2c::Blocking>,
+    warmup_remaining: u32,
+    sensor_kind: SensorKind,
+    observed_who_am_i: u8,
+    address: u8,
+}
+
+impl<'d> MpuI2cSensor<'d> {
+    async fn new(
+        i2c1: Peri<'d, I2C1>,
+        scl: Peri<'d, PIN_3>,
+        sda: Peri<'d, PIN_2>,
+    ) -> Result<Self, MpuSensorError> {
+        let mut config = i2c::Config::default();
+        config.frequency = MPU_I2C_HZ;
+
+        let i2c = I2c::new_blocking(i2c1, scl, sda, config);
+        let mut sensor = Self {
+            i2c,
+            warmup_remaining: SENSOR_WARMUP_SAMPLES,
+            sensor_kind: SensorKind::Unknown,
+            observed_who_am_i: 0,
+            address: MPU_I2C_ADDRESSES[0],
+        };
+
+        Timer::after(Duration::from_millis(100)).await;
+        let probe = sensor.probe_transport()?;
+        sensor.sensor_kind = probe.probe.sensor_kind;
+        sensor.observed_who_am_i = probe.probe.who_am_i;
+        sensor.address = probe.address;
+        sensor.apply_init_sequence(false).await?;
+
+        let who_am_i = sensor.read_u8(MPU_REG_WHO_AM_I)?;
+        validate_who_am_i(who_am_i, probe.probe).map_err(MpuSensorError::Probe)?;
+
+        info!(
+            "imu online over I2C addr {=u8}, who_am_i={=u8}, kind={=u8}",
+            probe.address, who_am_i, probe.probe.sensor_kind as u8
+        );
+        Ok(sensor)
+    }
+
+    fn probe_transport(&mut self) -> Result<I2cProbeResult, MpuSensorError> {
+        let mut best_fault = FaultInfo {
+            code: SENSOR_FAULT_PROBE_NO_RESPONSE,
+            observed_who_am_i: 0,
+            spi_mode: SPI_MODE_UNKNOWN,
+        };
+
+        for address in MPU_I2C_ADDRESSES {
+            match self.read_u8_at(address, MPU_REG_WHO_AM_I) {
+                Ok(who_am_i) => {
+                    if let Some(sensor_kind) = sensor_kind_from_who_am_i(who_am_i) {
+                        return Ok(I2cProbeResult {
+                            address,
+                            probe: ProbeResult {
+                                sensor_kind,
+                                who_am_i,
+                                spi_mode: SPI_MODE_UNKNOWN,
+                            },
+                        });
+                    }
+
+                    if who_am_i != 0x00 && who_am_i != 0xFF {
+                        best_fault = FaultInfo {
+                            code: arachno_imu_proto::SENSOR_FAULT_UNEXPECTED_WHO_AM_I,
+                            observed_who_am_i: who_am_i,
+                            spi_mode: SPI_MODE_UNKNOWN,
+                        };
+                    }
+                }
+                Err(err) => {
+                    let fault = fault_from_i2c_probe_error(err);
+                    if fault.code != SENSOR_FAULT_PROBE_NO_RESPONSE
+                        || best_fault.code == SENSOR_FAULT_PROBE_NO_RESPONSE
+                    {
+                        best_fault = fault;
+                    }
+                }
+            }
+        }
+
+        Err(MpuSensorError::Probe(best_fault))
+    }
+
+    async fn apply_init_sequence(
+        &mut self,
+        disable_i2c_interface: bool,
+    ) -> Result<(), MpuSensorError> {
+        for step in init_steps(disable_i2c_interface) {
+            self.write_register(step.register, step.value)?;
+            if step.delay_after_ms > 0 {
+                Timer::after(Duration::from_millis(step.delay_after_ms)).await;
+            }
+        }
+        Ok(())
+    }
+
+    fn sensor_kind(&self) -> SensorKind {
+        self.sensor_kind
+    }
+
+    fn observed_who_am_i(&self) -> u8 {
+        self.observed_who_am_i
+    }
+
+    fn spi_mode(&self) -> u8 {
+        SPI_MODE_UNKNOWN
+    }
+
+    fn next_sample(&mut self) -> Result<ImuSample, MpuSensorError> {
+        let payload = self.read_measurement_block()?;
+        Ok(sample_from_payload(
+            payload,
+            &mut self.warmup_remaining,
+            Instant::now().as_micros() as u32,
+        ))
+    }
+
+    fn write_register(&mut self, register: u8, value: u8) -> Result<(), MpuSensorError> {
+        self.i2c
+            .blocking_write(self.address, &[register, value])
+            .map_err(MpuSensorError::I2c)
+    }
+
+    fn read_u8(&mut self, register: u8) -> Result<u8, MpuSensorError> {
+        self.read_u8_at(self.address, register)
+            .map_err(MpuSensorError::I2c)
+    }
+
+    fn read_u8_at(&mut self, address: u8, register: u8) -> Result<u8, i2c::Error> {
+        let mut value = [0u8; 1];
+        self.i2c
+            .blocking_write_read(address, &[register], &mut value)?;
+        Ok(value[0])
+    }
+
+    fn read_measurement_block(
+        &mut self,
+    ) -> Result<[u8; MPU_MEASUREMENT_PAYLOAD_LEN], MpuSensorError> {
+        let mut payload = [0u8; MPU_MEASUREMENT_PAYLOAD_LEN];
+        self.i2c
+            .blocking_write_read(self.address, &[MPU_REG_ACCEL_XOUT_H], &mut payload)
+            .map_err(MpuSensorError::I2c)?;
+        Ok(payload)
+    }
+}
+
+struct MpuSpiSensor<'d> {
+    spi: Spi<'d, SPI0, SpiBlocking>,
     cs: Output<'d>,
     warmup_remaining: u32,
     sensor_kind: SensorKind,
+    observed_who_am_i: u8,
     spi_mode: u8,
 }
 
-impl<'d> Mpu9250Sensor<'d> {
-    async fn new(spi: Spi<'d, SPI0, Blocking>, cs: Output<'d>) -> Result<Self, Mpu9250Error> {
+impl<'d> MpuSpiSensor<'d> {
+    async fn new(spi: Spi<'d, SPI0, SpiBlocking>, cs: Output<'d>) -> Result<Self, MpuSensorError> {
         let mut sensor = Self {
             spi,
             cs,
             warmup_remaining: SENSOR_WARMUP_SAMPLES,
             sensor_kind: SensorKind::Unknown,
+            observed_who_am_i: 0,
             spi_mode: SPI_MODE_UNKNOWN,
         };
 
-        // Give the sensor time to finish power-up before probing SPI modes and chip IDs.
         Timer::after(Duration::from_millis(100)).await;
         let probe = sensor.probe_transport().await?;
         sensor.sensor_kind = probe.sensor_kind;
+        sensor.observed_who_am_i = probe.who_am_i;
         sensor.spi_mode = probe.spi_mode;
         sensor.apply_spi_mode(probe.spi_mode, MPU9250_SPI_HZ);
+        sensor.apply_init_sequence(true).await?;
 
-        sensor.write_register(MPU9250_REG_USER_CTRL, MPU9250_USER_CTRL_I2C_IF_DIS)?;
-        sensor.write_register(MPU9250_REG_PWR_MGMT_1, MPU9250_PWR_MGMT_1_H_RESET)?;
-        Timer::after(Duration::from_millis(100)).await;
-
-        sensor.write_register(MPU9250_REG_USER_CTRL, MPU9250_USER_CTRL_I2C_IF_DIS)?;
-        sensor.write_register(MPU9250_REG_SIGNAL_PATH_RESET, MPU9250_SIGNAL_PATH_RESET_ALL)?;
-        Timer::after(Duration::from_millis(10)).await;
-
-        sensor.write_register(MPU9250_REG_PWR_MGMT_1, MPU9250_PWR_MGMT_1_CLKSEL_AUTO)?;
-        sensor.write_register(MPU9250_REG_PWR_MGMT_2, 0x00)?;
-        sensor.write_register(MPU9250_REG_CONFIG, 0x03)?;
-        sensor.write_register(MPU9250_REG_SMPLRT_DIV, 0x04)?;
-        sensor.write_register(MPU9250_REG_GYRO_CONFIG, 0x00)?;
-        sensor.write_register(MPU9250_REG_ACCEL_CONFIG, 0x00)?;
-        sensor.write_register(MPU9250_REG_ACCEL_CONFIG2, 0x03)?;
-        Timer::after(Duration::from_millis(20)).await;
-
-        let who_am_i = sensor.read_u8(MPU9250_REG_WHO_AM_I)?;
-        if who_am_i != probe.who_am_i {
-            return Err(Mpu9250Error::Probe(FaultInfo {
-                code: if who_am_i == 0x00 || who_am_i == 0xFF {
-                    SENSOR_FAULT_PROBE_NO_RESPONSE
-                } else {
-                    SENSOR_FAULT_UNEXPECTED_WHO_AM_I
-                },
-                observed_who_am_i: who_am_i,
-                spi_mode: probe.spi_mode,
-            }));
-        }
+        let who_am_i = sensor.read_u8(MPU_REG_WHO_AM_I)?;
+        validate_who_am_i(who_am_i, probe).map_err(MpuSensorError::Probe)?;
 
         info!(
             "imu online over SPI mode {=u8}, who_am_i={=u8}, kind={=u8}",
-            probe.spi_mode,
-            who_am_i,
-            probe.sensor_kind as u8
+            probe.spi_mode, who_am_i, probe.sensor_kind as u8
         );
         Ok(sensor)
     }
 
-    async fn probe_transport(&mut self) -> Result<ProbeResult, Mpu9250Error> {
+    async fn probe_transport(&mut self) -> Result<ProbeResult, MpuSensorError> {
         let mut best_fault = FaultInfo {
             code: SENSOR_FAULT_PROBE_NO_RESPONSE,
             observed_who_am_i: 0,
@@ -306,13 +480,13 @@ impl<'d> Mpu9250Sensor<'d> {
             self.apply_spi_mode(spi_mode, MPU9250_SPI_PROBE_HZ);
             Timer::after(Duration::from_millis(2)).await;
 
-            let who_am_i = self
-                .read_u8(MPU9250_REG_WHO_AM_I)
-                .map_err(|_| Mpu9250Error::Probe(FaultInfo {
+            let who_am_i = self.read_u8(MPU_REG_WHO_AM_I).map_err(|_| {
+                MpuSensorError::Probe(FaultInfo {
                     code: SENSOR_FAULT_READ,
                     observed_who_am_i: 0,
                     spi_mode,
-                }))?;
+                })
+            })?;
 
             if let Some(sensor_kind) = sensor_kind_from_who_am_i(who_am_i) {
                 return Ok(ProbeResult {
@@ -324,7 +498,7 @@ impl<'d> Mpu9250Sensor<'d> {
 
             if who_am_i != 0x00 && who_am_i != 0xFF {
                 best_fault = FaultInfo {
-                    code: SENSOR_FAULT_UNEXPECTED_WHO_AM_I,
+                    code: arachno_imu_proto::SENSOR_FAULT_UNEXPECTED_WHO_AM_I,
                     observed_who_am_i: who_am_i,
                     spi_mode,
                 };
@@ -337,7 +511,20 @@ impl<'d> Mpu9250Sensor<'d> {
             }
         }
 
-        Err(Mpu9250Error::Probe(best_fault))
+        Err(MpuSensorError::Probe(best_fault))
+    }
+
+    async fn apply_init_sequence(
+        &mut self,
+        disable_i2c_interface: bool,
+    ) -> Result<(), MpuSensorError> {
+        for step in init_steps(disable_i2c_interface) {
+            self.write_register(step.register, step.value)?;
+            if step.delay_after_ms > 0 {
+                Timer::after(Duration::from_millis(step.delay_after_ms)).await;
+            }
+        }
+        Ok(())
     }
 
     fn apply_spi_mode(&mut self, spi_mode: u8, frequency: u32) {
@@ -361,101 +548,65 @@ impl<'d> Mpu9250Sensor<'d> {
     }
 
     fn observed_who_am_i(&self) -> u8 {
-        match self.sensor_kind {
-            SensorKind::Mpu9250 => MPU_WHO_AM_I_MPU9250,
-            SensorKind::Mpu6500 => MPU_WHO_AM_I_MPU6500,
-            _ => 0,
-        }
+        self.observed_who_am_i
     }
 
     fn spi_mode(&self) -> u8 {
         self.spi_mode
     }
 
-    fn next_sample(&mut self) -> Result<ImuSample, Mpu9250Error> {
+    fn next_sample(&mut self) -> Result<ImuSample, MpuSensorError> {
         let payload = self.read_measurement_block()?;
-        let accel_raw = [
-            be_i16(payload[0], payload[1]),
-            be_i16(payload[2], payload[3]),
-            be_i16(payload[4], payload[5]),
-        ];
-        let temp_raw = be_i16(payload[6], payload[7]);
-        let gyro_raw = [
-            be_i16(payload[8], payload[9]),
-            be_i16(payload[10], payload[11]),
-            be_i16(payload[12], payload[13]),
-        ];
-
-        let mut status = 0u16;
-        if self.warmup_remaining > 0 {
-            status |= SENSOR_STATUS_CALIBRATING;
-            self.warmup_remaining -= 1;
-        }
-        if near_limit(&accel_raw) {
-            status |= SENSOR_STATUS_ACCEL_CLIPPED;
-        }
-        if near_limit(&gyro_raw) {
-            status |= SENSOR_STATUS_GYRO_CLIPPED;
-        }
-
-        Ok(ImuSample {
-            timestamp_us: Instant::now().as_micros() as u32,
-            accel_mg: accel_raw.map(raw_accel_to_mg),
-            gyro_mdps: gyro_raw.map(raw_gyro_to_mdps),
-            temperature_centi_c: raw_temp_to_centi_c(temp_raw),
-            status,
-        })
+        Ok(sample_from_payload(
+            payload,
+            &mut self.warmup_remaining,
+            Instant::now().as_micros() as u32,
+        ))
     }
 
-    fn write_register(&mut self, register: u8, value: u8) -> Result<(), Mpu9250Error> {
+    fn write_register(&mut self, register: u8, value: u8) -> Result<(), MpuSensorError> {
         let frame = [register & 0x7F, value];
         self.cs.set_low();
-        let result = self.spi.blocking_write(&frame).map_err(Mpu9250Error::Spi);
+        let result = self.spi.blocking_write(&frame).map_err(MpuSensorError::Spi);
         self.cs.set_high();
         result
     }
 
-    fn read_u8(&mut self, register: u8) -> Result<u8, Mpu9250Error> {
+    fn read_u8(&mut self, register: u8) -> Result<u8, MpuSensorError> {
         let mut frame = [register | 0x80, 0];
         self.cs.set_low();
         let result = self
             .spi
             .blocking_transfer_in_place(&mut frame)
-            .map_err(Mpu9250Error::Spi);
+            .map_err(MpuSensorError::Spi);
         self.cs.set_high();
         result?;
         Ok(frame[1])
     }
 
-    fn read_measurement_block(&mut self) -> Result<[u8; 14], Mpu9250Error> {
-        let mut frame = [0u8; 15];
-        frame[0] = MPU9250_REG_ACCEL_XOUT_H | 0x80;
+    fn read_measurement_block(
+        &mut self,
+    ) -> Result<[u8; MPU_MEASUREMENT_PAYLOAD_LEN], MpuSensorError> {
+        let mut frame = [0u8; MPU_MEASUREMENT_PAYLOAD_LEN + 1];
+        frame[0] = MPU_REG_ACCEL_XOUT_H | 0x80;
 
         self.cs.set_low();
         let result = self
             .spi
             .blocking_transfer_in_place(&mut frame)
-            .map_err(Mpu9250Error::Spi);
+            .map_err(MpuSensorError::Spi);
         self.cs.set_high();
         result?;
 
-        let mut payload = [0u8; 14];
+        let mut payload = [0u8; MPU_MEASUREMENT_PAYLOAD_LEN];
         payload.copy_from_slice(&frame[1..]);
         Ok(payload)
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-struct FaultInfo {
-    code: u8,
-    observed_who_am_i: u8,
-    spi_mode: u8,
-}
-
-struct ProbeResult {
-    sensor_kind: SensorKind,
-    who_am_i: u8,
-    spi_mode: u8,
+struct I2cProbeResult {
+    address: u8,
+    probe: ProbeResult,
 }
 
 struct FaultedSensor {
@@ -473,16 +624,17 @@ impl FaultedSensor {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-enum Mpu9250Error {
+enum MpuSensorError {
     Probe(FaultInfo),
     Spi(spi::Error),
+    I2c(i2c::Error),
 }
 
-impl Mpu9250Error {
+impl MpuSensorError {
     fn fault_info(self) -> FaultInfo {
         match self {
             Self::Probe(info) => info,
-            Self::Spi(_) => FaultInfo {
+            Self::Spi(_) | Self::I2c(_) => FaultInfo {
                 code: SENSOR_FAULT_READ,
                 observed_who_am_i: 0,
                 spi_mode: SPI_MODE_UNKNOWN,
@@ -501,43 +653,12 @@ fn fault_sample(status: u16) -> ImuSample {
     }
 }
 
-fn be_i16(high: u8, low: u8) -> i16 {
-    i16::from_be_bytes([high, low])
-}
-
-fn raw_accel_to_mg(raw: i16) -> i16 {
-    ((raw as i32 * 1000) / 16_384) as i16
-}
-
-fn raw_gyro_to_mdps(raw: i16) -> i32 {
-    (raw as i32 * 1000) / 131
-}
-
-fn raw_temp_to_centi_c(raw: i16) -> i16 {
-    (((raw as i32) * 10_000) / 33_387 + 2_100) as i16
-}
-
-fn near_limit(values: &[i16; 3]) -> bool {
-    values
-        .iter()
-        .copied()
-        .any(|value| value >= 32_000 || value <= -32_000)
-}
-
 fn firmware_version() -> [u8; 3] {
     [
         parse_version_component(env!("CARGO_PKG_VERSION_MAJOR")),
         parse_version_component(env!("CARGO_PKG_VERSION_MINOR")),
         parse_version_component(env!("CARGO_PKG_VERSION_PATCH")),
     ]
-}
-
-fn sensor_kind_from_who_am_i(who_am_i: u8) -> Option<SensorKind> {
-    match who_am_i {
-        MPU_WHO_AM_I_MPU9250 => Some(SensorKind::Mpu9250),
-        MPU_WHO_AM_I_MPU6500 => Some(SensorKind::Mpu6500),
-        _ => None,
-    }
 }
 
 fn parse_version_component(value: &str) -> u8 {
@@ -549,6 +670,19 @@ fn parse_version_component(value: &str) -> u8 {
     }
 
     parsed as u8
+}
+
+fn fault_from_i2c_probe_error(err: i2c::Error) -> FaultInfo {
+    let code = match err {
+        i2c::Error::Abort(AbortReason::NoAcknowledge) => SENSOR_FAULT_PROBE_NO_RESPONSE,
+        _ => SENSOR_FAULT_READ,
+    };
+
+    FaultInfo {
+        code,
+        observed_who_am_i: 0,
+        spi_mode: SPI_MODE_UNKNOWN,
+    }
 }
 
 struct Disconnected;

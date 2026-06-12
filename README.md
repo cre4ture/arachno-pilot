@@ -106,7 +106,7 @@ The repo now includes a Rust-to-Rust IMU bridge path:
 - `crates/arachno-imu-proto`: binary framing shared with the host
 - `crates/arachno-imu-host`: Linux reader used by `arachno-brain`
 
-The firmware now probes a real `MPU-9250`-class sensor over `SPI`, supports common `MPU-6500`-compatible IDs during bring-up, and reports the selected `SPI` mode plus observed `WHO_AM_I` value through `fw-version`. The host USB and current default profiles ship with the IMU bridge enabled.
+The firmware now auto-probes either an `MPU-6050`-class sensor over `I2C` or an `MPU-9250`-class sensor over `SPI`, accepts common `MPU-6500`-compatible IDs during bring-up, and reports the observed `WHO_AM_I` value plus any selected `SPI` mode through `fw-version`. The host USB and current default profiles ship with the IMU bridge enabled.
 
 Build helpers:
 
