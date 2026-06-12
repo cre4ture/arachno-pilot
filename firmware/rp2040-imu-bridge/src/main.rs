@@ -15,7 +15,7 @@ use embassy_rp::Peri;
 use embassy_rp::bind_interrupts;
 use embassy_rp::gpio::{Level, Output};
 use embassy_rp::i2c::{self, AbortReason, I2c};
-use embassy_rp::peripherals::{I2C1, PIN_2, PIN_3, PIN_4, PIN_5, SPI0, USB};
+use embassy_rp::peripherals::{I2C1, PIN_2, PIN_3, PIN_4, PIN_5, PIN_6, PIN_7, SPI0, USB};
 use embassy_rp::spi::{self, Blocking as SpiBlocking, Spi};
 use embassy_rp::usb::{Driver, Instance, InterruptHandler};
 use embassy_time::{Duration, Instant, Ticker, Timer};
@@ -80,17 +80,21 @@ async fn main(spawner: Spawner) {
 
     spawner.spawn(unwrap!(usb_task(usb)));
 
-    // Keep the IMU on low GPIO numbers away from the board's CH9120 control pins.
+    // Keep the IMU buses on low GPIO numbers away from the board's CH9120 control pins.
     // Wiring:
-    // SPI backend:
+    // Primary SPI backend:
     //   GP2 -> MPU-9250 SCL/SCLK
     //   GP3 -> MPU-9250 SDA/SDI
     //   GP4 -> MPU-9250 AD0/SDO
     //   GP5 -> MPU-9250 NCS/CS
-    // I2C backend:
-    //   GP2 -> MPU-6050 SDA
-    //   GP3 -> MPU-6050 SCL
-    let mut sensor = SensorState::new(p.I2C1, p.SPI0, p.PIN_2, p.PIN_3, p.PIN_4, p.PIN_5).await;
+    // Independent I2C backend:
+    //   GP6 -> MPU-6050 SDA
+    //   GP7 -> MPU-6050 SCL
+    // GP8/GP9 remain free as an optional future second I2C pair.
+    let mut sensor = SensorState::new(
+        p.I2C1, p.SPI0, p.PIN_2, p.PIN_3, p.PIN_4, p.PIN_5, p.PIN_6, p.PIN_7,
+    )
+    .await;
     let mut sequence = 0u8;
     let mut frame_buf = [0u8; MAX_FRAME_LEN];
 
@@ -161,49 +165,34 @@ impl<'d> SensorState<'d> {
     async fn new(
         i2c1: Peri<'d, I2C1>,
         spi0: Peri<'d, SPI0>,
-        gpio2: Peri<'d, PIN_2>,
-        gpio3: Peri<'d, PIN_3>,
-        miso: Peri<'d, PIN_4>,
-        cs: Peri<'d, PIN_5>,
+        spi_sck: Peri<'d, PIN_2>,
+        spi_mosi: Peri<'d, PIN_3>,
+        spi_miso: Peri<'d, PIN_4>,
+        spi_cs: Peri<'d, PIN_5>,
+        i2c_sda: Peri<'d, PIN_6>,
+        i2c_scl: Peri<'d, PIN_7>,
     ) -> Self {
-        let i2c_fault = {
-            // Safety: the temporary I2C probe either becomes the sole live backend when we
-            // return early on success, or it is fully dropped before the SPI backend is built.
-            let i2c_result = {
-                let _cs_idle = Output::new(unsafe { cs.clone_unchecked() }, Level::High);
-                MpuI2cSensor::new(
-                    unsafe { i2c1.clone_unchecked() },
-                    unsafe { gpio3.clone_unchecked() },
-                    unsafe { gpio2.clone_unchecked() },
-                )
-                .await
-            };
-
-            match i2c_result {
-                Ok(sensor) => return Self::Real(ActiveSensor::I2c(sensor)),
-                Err(err) => {
-                    warn!("i2c imu init failed: {:?}", err);
-                    err.fault_info()
-                }
-            }
-        };
-
         let mut config = spi::Config::default();
         config.frequency = MPU9250_SPI_HZ;
 
-        let spi = Spi::new_blocking(spi0, gpio2, gpio3, miso, config);
-        let cs = Output::new(cs, Level::High);
+        let spi = Spi::new_blocking(spi0, spi_sck, spi_mosi, spi_miso, config);
+        let cs = Output::new(spi_cs, Level::High);
 
         match MpuSpiSensor::new(spi, cs).await {
             Ok(sensor) => Self::Real(ActiveSensor::Spi(sensor)),
-            Err(err) => {
-                warn!("spi imu init failed: {:?}", err);
-                let fault_info = if i2c_fault.code != SENSOR_FAULT_PROBE_NO_RESPONSE {
-                    i2c_fault
-                } else {
-                    err.fault_info()
-                };
-                Self::Faulted(FaultedSensor::new(fault_info))
+            Err(spi_err) => {
+                warn!("spi imu init failed: {:?}", spi_err);
+
+                match MpuI2cSensor::new(i2c1, i2c_scl, i2c_sda).await {
+                    Ok(sensor) => Self::Real(ActiveSensor::I2c(sensor)),
+                    Err(i2c_err) => {
+                        warn!("i2c imu init failed: {:?}", i2c_err);
+                        Self::Faulted(FaultedSensor::new(select_startup_fault(
+                            spi_err.fault_info(),
+                            i2c_err.fault_info(),
+                        )))
+                    }
+                }
             }
         }
     }
@@ -293,8 +282,8 @@ struct MpuI2cSensor<'d> {
 impl<'d> MpuI2cSensor<'d> {
     async fn new(
         i2c1: Peri<'d, I2C1>,
-        scl: Peri<'d, PIN_3>,
-        sda: Peri<'d, PIN_2>,
+        scl: Peri<'d, PIN_7>,
+        sda: Peri<'d, PIN_6>,
     ) -> Result<Self, MpuSensorError> {
         let mut config = i2c::Config::default();
         config.frequency = MPU_I2C_HZ;
@@ -682,6 +671,16 @@ fn fault_from_i2c_probe_error(err: i2c::Error) -> FaultInfo {
         code,
         observed_who_am_i: 0,
         spi_mode: SPI_MODE_UNKNOWN,
+    }
+}
+
+fn select_startup_fault(spi_fault: FaultInfo, i2c_fault: FaultInfo) -> FaultInfo {
+    if spi_fault.code != SENSOR_FAULT_PROBE_NO_RESPONSE {
+        spi_fault
+    } else if i2c_fault.code != SENSOR_FAULT_PROBE_NO_RESPONSE {
+        i2c_fault
+    } else {
+        spi_fault
     }
 }
 

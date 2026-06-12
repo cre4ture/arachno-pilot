@@ -19,13 +19,13 @@ and streams:
 
 The magnetometer is intentionally not used yet.
 
-During bring-up, the firmware first probes `I2C` addresses `0x68` and `0x69` and accepts:
+During bring-up, the current firmware prefers the `SPI` sensor as the primary stream when both buses are populated. If no supported `SPI` device responds, it probes `I2C` addresses `0x68` and `0x69` and accepts:
 
 - `0x68` -> `MPU-6050`
 - `0x70` -> `MPU-6500 compatible`
 - `0x71` -> `MPU-9250`
 
-If no supported `I2C` device responds, it then probes all four `SPI` modes at a conservative clock rate and accepts:
+If neither `SPI` nor `I2C` is available immediately, it still probes all four `SPI` modes at a conservative clock rate and accepts:
 
 - `0x71` -> `MPU-9250`
 - `0x70` -> `MPU-6500 compatible`
@@ -44,7 +44,13 @@ On each USB connection, the firmware now emits a compact device-info frame befor
 
 ## Wiring
 
-Recommended `SPI` wiring for the Waveshare `RP2040-ETH` and a `GY-9250 / MPU-9250` breakout that exposes `SPI` pins:
+Recommended parallel-bus wiring for the Waveshare `RP2040-ETH`:
+
+- keep the existing `SPI0` IMU on `GPIO2-5`
+- use `GPIO6/7` as an independent primary `I2C1` IMU bus
+- keep `GPIO8/9` free as an optional future second `I2C0` bus
+
+Recommended `SPI` wiring for a `GY-9250 / MPU-9250` breakout that exposes `SPI` pins:
 
 | RP2040-ETH | MPU-9250 breakout | Notes |
 | --- | --- | --- |
@@ -54,7 +60,6 @@ Recommended `SPI` wiring for the Waveshare `RP2040-ETH` and a `GY-9250 / MPU-925
 | `GPIO3` | `SDA` / `SDI` | `SPI0 MOSI` |
 | `GPIO4` | `AD0` / `SDO` | `SPI0 MISO` in SPI mode |
 | `GPIO5` | `NCS` / `CS` | Chip select, active low |
-| `GPIO6` | `INT` | Optional, not used by current firmware |
 
 Recommended `I2C` wiring for an `MPU-6050 / GY-521` style breakout:
 
@@ -62,10 +67,16 @@ Recommended `I2C` wiring for an `MPU-6050 / GY-521` style breakout:
 | --- | --- | --- |
 | `3V3` | `VCC` | Power the module at `3.3 V` |
 | `GND` | `GND` | Common ground |
-| `GPIO2` | `SDA` | `I2C1 SDA` |
-| `GPIO3` | `SCL` | `I2C1 SCL` |
-| `GPIO6` | `INT` | Optional, not used by current firmware |
+| `GPIO6` | `SDA` | `I2C1 SDA` |
+| `GPIO7` | `SCL` | `I2C1 SCL` |
 | `AD0` | `GND` or `3V3` | Selects `I2C` address `0x68` or `0x69` |
+
+Optional future second `I2C` bus for more identical sensors:
+
+| RP2040-ETH | Use | Notes |
+| --- | --- | --- |
+| `GPIO8` | `I2C0 SDA` | Not used by current firmware yet |
+| `GPIO9` | `I2C0 SCL` | Not used by current firmware yet |
 
 Leave these unconnected for the current firmware:
 
@@ -76,6 +87,8 @@ Leave these unconnected for the current firmware:
 Important notes:
 
 - `SPI` breakouts still need `NCS` or `CS` exposed; modules that only break out `I2C` lines will use the `I2C` backend instead.
+- The non-overlapping pin assignment means an `SPI` IMU and an `I2C` IMU can now stay wired at the same time without bus conflicts.
+- The current bridge protocol still exposes one primary IMU stream. The separate `I2C0` pair on `GPIO8/9` is documented as future expansion space, not active firmware support yet.
 - Even if the board is marketed as `3-5 V compatible`, the safe target for the RP2040 side is still `3.3 V`.
 - `GPIO17` to `GPIO21` are already tied into the onboard `CH9120` Ethernet side functions on the RP2040-ETH, so the firmware avoids them.
 - In `SPI` mode, `AD0` is used as `SDO/MISO`, not just as an `I2C` address strap.
