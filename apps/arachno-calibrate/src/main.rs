@@ -7,7 +7,7 @@ use std::{
 };
 
 use anyhow::{Context, anyhow, bail};
-use arachno_core::{LegConfig, RobotConfig, ServoEepromEntry, TripodGait, now_ms};
+use arachno_core::{LegConfig, LegWorkspace, RobotConfig, ServoEepromEntry, TripodGait, now_ms};
 use arachno_feetech_sts::{
     LOCK_MARK, RealStsBus, WriteConfirmationMode,
     set_verified_torque_limit_on_current_position_for_ids as set_verified_bus_torque_limit_on_current_position_for_ids,
@@ -15,7 +15,10 @@ use arachno_feetech_sts::{
     validate_servo_eeprom_entry_value as validate_bus_servo_eeprom_entry_value,
     validate_servo_eeprom_profile as validate_bus_servo_eeprom_profile,
 };
-use arachno_hal::{ServoBus, enable_torque_on_current_position, servo_has_stopped};
+use arachno_hal::{
+    ServoBus, ServoPollParams, enable_torque_on_current_position, servo_has_stopped,
+    wait_for_servos_to_settle,
+};
 use arachno_msg::{JointCommand, ServoTelemetry};
 use clap::{Parser, ValueEnum};
 use serde::{Deserialize, Serialize};
@@ -50,6 +53,7 @@ enum CalibrateMode {
     SenseRanges,
     CheckPoses,
     SuggestPoses,
+    SenseWorkspace,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -87,6 +91,10 @@ struct Args {
     skip_initial_lay_down: bool,
     #[arg(long)]
     trace_output: Option<PathBuf>,
+    #[arg(long, default_value = "config/robot/leg-workspace.toml")]
+    workspace_output: PathBuf,
+    #[arg(long, default_value_t = 8u8)]
+    workspace_femur_steps: u8,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -206,6 +214,7 @@ fn main() -> anyhow::Result<()> {
         CalibrateMode::SenseRanges => sense_ranges(&config, &args)?,
         CalibrateMode::CheckPoses => check_poses(&config, &args)?,
         CalibrateMode::SuggestPoses => suggest_poses(&config, &args)?,
+        CalibrateMode::SenseWorkspace => sense_workspace(&config, &args)?,
     }
 
     Ok(())
@@ -680,6 +689,295 @@ fn sense_ranges(config: &RobotConfig, args: &Args) -> anyhow::Result<()> {
     info!(legs_measured = report.legs.len(), "range sensing summary");
 
     Ok(())
+}
+
+fn sense_workspace(config: &RobotConfig, args: &Args) -> anyhow::Result<()> {
+    let params = SenseParams {
+        probe_torque_limit: args.probe_torque_limit.max(1),
+        restore_torque_limit: args
+            .restore_torque_limit
+            .max(args.probe_torque_limit.max(1)),
+        poll_ms: args.poll_ms.max(40),
+        stop_speed_ticks: args.stop_speed_ticks,
+        confirm_stopped_samples: args.confirm_stopped_samples.max(1),
+        move_timeout_ms: args.move_timeout_ms.max(1_000),
+    };
+    let output_path = resolve_output_path(&args.workspace_output);
+    let femur_steps = args.workspace_femur_steps.max(2);
+
+    let ranges = load_range_report(&args.ranges)
+        .with_context(|| format!("loading range report from {}", args.ranges.display()))?;
+    let ranges_by_name: BTreeMap<&str, &LegRangeReport> =
+        ranges.legs.iter().map(|l| (l.name.as_str(), l)).collect();
+
+    let servo_ids = config.all_servo_ids();
+    let mut bus = RealStsBus::open(
+        config.bus.feetech.port.clone(),
+        config.bus.feetech.baud_rate,
+        servo_ids.clone(),
+    )
+    .with_context(|| format!("failed to open servo bus {}", config.bus.feetech.port))?;
+
+    enable_torque_on_current_position(&mut bus)
+        .context("failed to enable torque before workspace calibration")?;
+
+    set_verified_torque_limit_on_current_position_for_ids(
+        &mut bus,
+        &servo_ids,
+        params.restore_torque_limit,
+        "setting default torque before workspace calibration",
+    )?;
+
+    let gait = TripodGait;
+    let stand_pose = gait.stand_reference_pose(config);
+
+    move_pose_until_close(
+        &mut bus,
+        &stand_pose,
+        &servo_ids,
+        params.poll_ms,
+        params.move_timeout_ms,
+        "moving to stand reference for workspace calibration",
+    )?;
+    thread::sleep(Duration::from_secs(2));
+
+    let mut workspaces: BTreeMap<String, LegWorkspace> = BTreeMap::new();
+
+    let result = (|| -> anyhow::Result<()> {
+        for leg in &config.legs {
+            let leg_ranges = ranges_by_name
+                .get(leg.name.as_str())
+                .with_context(|| format!("missing ranges for leg {}", leg.name))?;
+            let femur_ranges = leg_ranges
+                .femur
+                .as_ref()
+                .with_context(|| format!("missing femur ranges for leg {}", leg.name))?;
+            let tibia_ranges = leg_ranges
+                .tibia
+                .as_ref()
+                .with_context(|| format!("missing tibia ranges for leg {}", leg.name))?;
+
+            println!("calibrating workspace for leg {}", leg.name);
+            info!(leg = %leg.name, "workspace calibration");
+
+            let workspace = calibrate_leg_workspace(
+                &mut bus,
+                &stand_pose,
+                leg,
+                femur_ranges,
+                tibia_ranges,
+                &params,
+                femur_steps,
+            )?;
+
+            println!(
+                "  {}: reach {:.1}..{:.1} cm  height {:.1}..{:.1} cm",
+                leg.name,
+                workspace.min_reach_cm,
+                workspace.max_reach_cm,
+                workspace.min_height_cm,
+                workspace.max_height_cm,
+            );
+
+            workspaces.insert(leg.name.clone(), workspace);
+
+            move_pose_until_close(
+                &mut bus,
+                &stand_pose,
+                &[leg.femur_servo_id, leg.tibia_servo_id],
+                params.poll_ms,
+                params.move_timeout_ms,
+                "restoring leg to stand pose between workspace probes",
+            )?;
+            thread::sleep(Duration::from_millis(PHASE_SETTLE_SLEEP_MS));
+        }
+        Ok(())
+    })();
+
+    let restore = set_verified_torque_limit_on_current_position_for_ids(
+        &mut bus,
+        &servo_ids,
+        params.restore_torque_limit,
+        "restoring default torque limits after workspace calibration",
+    );
+    if let Err(err) = restore {
+        warn!("torque-limit restore warning: {err:#}");
+    }
+
+    result?;
+
+    let toml_str =
+        toml::to_string_pretty(&workspaces).context("failed to serialize leg workspaces")?;
+    if let Some(parent) = output_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    fs::write(&output_path, toml_str)
+        .with_context(|| format!("failed to write {}", output_path.display()))?;
+    println!("wrote leg workspace to {}", output_path.display());
+
+    Ok(())
+}
+
+fn calibrate_leg_workspace(
+    bus: &mut RealStsBus,
+    stand_pose: &BTreeMap<u8, u16>,
+    leg: &LegConfig,
+    femur_ranges: &JointRangeMeasurement,
+    tibia_ranges: &JointRangeMeasurement,
+    params: &SenseParams,
+    femur_steps: u8,
+) -> anyhow::Result<LegWorkspace> {
+    let femur_stand_ticks = *stand_pose
+        .get(&leg.femur_servo_id)
+        .with_context(|| format!("missing stand pose for femur servo {}", leg.femur_servo_id))?;
+    let tibia_stand_ticks = *stand_pose
+        .get(&leg.tibia_servo_id)
+        .with_context(|| format!("missing stand pose for tibia servo {}", leg.tibia_servo_id))?;
+
+    // Sweep femur toward the lift (positive) limit: foot rises above floor.
+    let femur_lift_limit_ticks = femur_ranges.logical_positive_end_ticks;
+
+    // Tibia safe-up position: 70% toward the lift (positive) limit.
+    let tibia_safe_up_ticks = tibia_ranges.upper_seventy_percent_ticks;
+
+    // Tibia down limit: anti-lift (negative) end = maximum foot extension.
+    let tibia_down_limit_ticks = tibia_ranges.logical_negative_end_ticks;
+
+    // Tibia range scan limit (max extension from range data) for below-floor FK computation.
+    let tibia_max_ext_deg = leg.tibia_deg_from_ticks(tibia_down_limit_ticks);
+
+    let poll_params = ServoPollParams {
+        poll_ms: params.poll_ms,
+        stop_speed_ticks: params.stop_speed_ticks,
+        confirm_stopped_samples: params.confirm_stopped_samples,
+        timeout_ms: params.move_timeout_ms,
+    };
+
+    let mut fk_points: Vec<(f32, f32)> = Vec::new();
+
+    // Include stand reference as a seed point.
+    {
+        let femur_deg = leg.femur_deg_from_ticks(femur_stand_ticks);
+        let tibia_deg = leg.tibia_deg_from_ticks(tibia_stand_ticks);
+        let sv = leg.side_view_pose(femur_deg, tibia_deg);
+        fk_points.push((
+            (sv.tibia_end.x - sv.coxa_end.x).abs(),
+            sv.tibia_end.y - sv.coxa_end.y,
+        ));
+    }
+
+    for step_idx in 0..femur_steps {
+        let ratio = step_idx as f32 / (femur_steps - 1).max(1) as f32;
+        let femur_target_ticks =
+            interpolate_ticks(femur_stand_ticks, femur_lift_limit_ticks, ratio);
+
+        // Build pose for this probe step: femur at target, tibia retracted to safe-up position.
+        let mut pose = stand_pose.clone();
+        pose.insert(leg.femur_servo_id, femur_target_ticks);
+        pose.insert(leg.tibia_servo_id, tibia_safe_up_ticks);
+
+        move_pose_until_close(
+            bus,
+            &pose,
+            &[leg.femur_servo_id, leg.tibia_servo_id],
+            params.poll_ms,
+            params.move_timeout_ms,
+            "moving to femur sweep position",
+        )?;
+
+        let femur_deg = leg.femur_deg_from_ticks(femur_target_ticks);
+
+        // Record FK at safe-up tibia position (maximum lift = minimum height candidate).
+        {
+            let tibia_up_deg = leg.tibia_deg_from_ticks(tibia_safe_up_ticks);
+            let sv = leg.side_view_pose(femur_deg, tibia_up_deg);
+            fk_points.push((
+                (sv.tibia_end.x - sv.coxa_end.x).abs(),
+                sv.tibia_end.y - sv.coxa_end.y,
+            ));
+        }
+
+        // Record FK at range-scan tibia extension limit (below-floor = maximum height candidate).
+        {
+            let sv = leg.side_view_pose(femur_deg, tibia_max_ext_deg);
+            fk_points.push((
+                (sv.tibia_end.x - sv.coxa_end.x).abs(),
+                sv.tibia_end.y - sv.coxa_end.y,
+            ));
+        }
+
+        // Probe tibia toward floor with torque limit: detect actual floor contact.
+        set_verified_torque_limit_on_current_position_for_ids(
+            bus,
+            &[leg.tibia_servo_id],
+            params.probe_torque_limit,
+            "setting probe torque for workspace tibia probe",
+        )?;
+
+        pose.insert(leg.tibia_servo_id, tibia_down_limit_ticks);
+        sync_full_pose(bus, &pose)?;
+
+        // Wait one poll interval so servo starts moving before settle check.
+        thread::sleep(Duration::from_millis(params.poll_ms));
+
+        let settled = wait_for_servos_to_settle(bus, &[leg.tibia_servo_id], poll_params)
+            .with_context(|| {
+                format!("timeout waiting for tibia probe on leg {}", leg.name)
+            })?;
+
+        let settled_tibia_ticks = settled[&leg.tibia_servo_id].present_position_ticks;
+
+        set_verified_torque_limit_on_current_position_for_ids(
+            bus,
+            &[leg.tibia_servo_id],
+            params.restore_torque_limit,
+            "restoring tibia torque after workspace probe",
+        )?;
+
+        // Record FK at floor-contact position.
+        let tibia_contact_deg = leg.tibia_deg_from_ticks(settled_tibia_ticks);
+        let sv = leg.side_view_pose(femur_deg, tibia_contact_deg);
+        fk_points.push((
+            (sv.tibia_end.x - sv.coxa_end.x).abs(),
+            sv.tibia_end.y - sv.coxa_end.y,
+        ));
+
+        // Return tibia to safe-up position before next femur step.
+        pose.insert(leg.tibia_servo_id, tibia_safe_up_ticks);
+        move_pose_until_close(
+            bus,
+            &pose,
+            &[leg.tibia_servo_id],
+            params.poll_ms,
+            params.move_timeout_ms,
+            "retracting tibia after probe",
+        )?;
+    }
+
+    let min_reach = fk_points
+        .iter()
+        .map(|(r, _)| *r)
+        .fold(f32::MAX, f32::min);
+    let max_reach = fk_points
+        .iter()
+        .map(|(r, _)| *r)
+        .fold(f32::MIN, f32::max);
+    let min_height = fk_points
+        .iter()
+        .map(|(_, h)| *h)
+        .fold(f32::MAX, f32::min);
+    let max_height = fk_points
+        .iter()
+        .map(|(_, h)| *h)
+        .fold(f32::MIN, f32::max);
+
+    Ok(LegWorkspace {
+        min_reach_cm: (min_reach * 10.0).round() / 10.0,
+        max_reach_cm: (max_reach * 10.0).round() / 10.0,
+        min_height_cm: (min_height * 10.0).round() / 10.0,
+        max_height_cm: (max_height * 10.0).round() / 10.0,
+    })
 }
 
 fn joint_probes(config: &RobotConfig, joint: JointKind) -> Vec<JointProbe> {

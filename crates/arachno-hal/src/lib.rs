@@ -54,8 +54,7 @@ pub fn wait_for_servos_to_settle<B>(
 where
     B: ServoBus,
 {
-    let mut confirm_counts: BTreeMap<u8, u8> =
-        servo_ids.iter().map(|&id| (id, 0u8)).collect();
+    let mut confirm_counts: BTreeMap<u8, u8> = servo_ids.iter().map(|&id| (id, 0u8)).collect();
     let mut settled: BTreeMap<u8, ServoTelemetry> = BTreeMap::new();
     let started = SystemTime::now();
 
@@ -95,7 +94,10 @@ where
                 .filter(|id| !settled.contains_key(*id))
                 .copied()
                 .collect();
-            return Err(HalError::ProbeTimeout { elapsed_ms, lingering });
+            return Err(HalError::ProbeTimeout {
+                elapsed_ms,
+                lingering,
+            });
         }
     }
 }
@@ -319,8 +321,7 @@ mod tests {
             confirm_stopped_samples: 2,
             timeout_ms: 500,
         };
-        let result = wait_for_servos_to_settle(&mut bus, &[11], params)
-            .expect("should settle");
+        let result = wait_for_servos_to_settle(&mut bus, &[11], params).expect("should settle");
         assert_eq!(result[&11].present_position_ticks, 2048);
     }
 

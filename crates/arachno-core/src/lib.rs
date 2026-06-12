@@ -339,11 +339,17 @@ pub enum IkError {
 impl std::fmt::Display for IkError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            IkError::OutOfReach { distance_cm, max_reach_cm } => write!(
+            IkError::OutOfReach {
+                distance_cm,
+                max_reach_cm,
+            } => write!(
                 f,
                 "target {distance_cm:.2} cm exceeds max reach {max_reach_cm:.2} cm"
             ),
-            IkError::TooClose { distance_cm, min_reach_cm } => write!(
+            IkError::TooClose {
+                distance_cm,
+                min_reach_cm,
+            } => write!(
                 f,
                 "target {distance_cm:.2} cm is closer than min reach {min_reach_cm:.2} cm"
             ),
@@ -669,6 +675,14 @@ impl LegConfig {
         }
     }
 
+    pub fn femur_deg_from_ticks(&self, ticks: u16) -> f32 {
+        ticks_to_semantic_deg(self.femur_zero_reference_ticks(), self.femur_lift_sign(), ticks)
+    }
+
+    pub fn tibia_deg_from_ticks(&self, ticks: u16) -> f32 {
+        ticks_to_semantic_deg(self.tibia_zero_reference_ticks(), self.tibia_lift_sign(), ticks)
+    }
+
     pub fn pose_ticks_from_angles(&self, pose: LegPoseAngles) -> (u16, u16, u16) {
         (
             semantic_degrees_to_ticks(
@@ -784,7 +798,12 @@ impl LegConfig {
         reach_cm: f32,
         height_cm: f32,
     ) -> Result<(f32, f32), IkError> {
-        ik_2d(reach_cm, height_cm, self.femur_length_cm(), self.tibia_length_cm())
+        ik_2d(
+            reach_cm,
+            height_cm,
+            self.femur_length_cm(),
+            self.tibia_length_cm(),
+        )
     }
 
     /// Resolve a 2D foot target to a full `LegPoseAngles`.
@@ -797,7 +816,11 @@ impl LegConfig {
         height_cm: f32,
     ) -> Result<LegPoseAngles, IkError> {
         let (femur_deg, tibia_deg) = self.inverse_kinematics_2d(reach_cm, height_cm)?;
-        Ok(LegPoseAngles { coxa_deg, femur_deg, tibia_deg })
+        Ok(LegPoseAngles {
+            coxa_deg,
+            femur_deg,
+            tibia_deg,
+        })
     }
 
     /// Resolve a 2D foot target to a full `LegPoseAngles`, pre-checking the Cartesian workspace.
@@ -997,6 +1020,11 @@ fn semantic_degrees_to_ticks(reference_ticks: u16, sign: i16, degrees: f32) -> u
         .clamp(0.0, 4095.0) as u16
 }
 
+fn ticks_to_semantic_deg(reference_ticks: u16, sign: i16, ticks: u16) -> f32 {
+    let delta = i32::from(ticks) - i32::from(reference_ticks);
+    delta as f32 * 360.0 / 4096.0 / sign as f32
+}
+
 fn pose_to_commands(pose: &BTreeMap<u8, u16>) -> Vec<JointCommand> {
     pose.iter()
         .map(|(&servo_id, &position_ticks)| JointCommand {
@@ -1090,10 +1118,16 @@ fn ik_2d(
     let max_reach = l1 + l2;
     let min_reach = (l1 - l2).abs();
     if d > max_reach {
-        return Err(IkError::OutOfReach { distance_cm: d, max_reach_cm: max_reach });
+        return Err(IkError::OutOfReach {
+            distance_cm: d,
+            max_reach_cm: max_reach,
+        });
     }
     if d < min_reach {
-        return Err(IkError::TooClose { distance_cm: d, min_reach_cm: min_reach });
+        return Err(IkError::TooClose {
+            distance_cm: d,
+            min_reach_cm: min_reach,
+        });
     }
     // Angle at knee (between femur and tibia), via law of cosines.
     let cos_beta = (d_sq - l1 * l1 - l2 * l2) / (2.0 * l1 * l2);
@@ -1316,6 +1350,19 @@ mod tests {
     fn semantic_degrees_to_ticks_clamps_at_zero() {
         // Large negative angle should clamp to 0.
         assert_eq!(semantic_degrees_to_ticks(2048, 1, -360.0), 0);
+    }
+
+    #[test]
+    fn ticks_to_semantic_deg_round_trips_with_degrees_to_ticks() {
+        // Round-trip: degrees → ticks → degrees should recover the original value.
+        for &(deg, sign) in &[(54.8_f32, 1_i16), (-30.0, -1), (0.0, 1), (90.0, -1)] {
+            let ticks = semantic_degrees_to_ticks(2048, sign, deg);
+            let recovered = ticks_to_semantic_deg(2048, sign, ticks);
+            assert!(
+                (recovered - deg).abs() < 0.1,
+                "deg={deg} sign={sign}: ticks={ticks} → {recovered}"
+            );
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -1751,11 +1798,13 @@ tibia_deg = 0.0
             .expect("stand reference should be reachable");
         assert!(
             approx_eq(angles.femur_deg, 54.8, 0.1),
-            "femur={}", angles.femur_deg
+            "femur={}",
+            angles.femur_deg
         );
         assert!(
             approx_eq(angles.tibia_deg, -123.0, 0.1),
-            "tibia={}", angles.tibia_deg
+            "tibia={}",
+            angles.tibia_deg
         );
     }
 }

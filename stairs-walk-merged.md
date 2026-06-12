@@ -69,7 +69,13 @@ Add to `LegConfig`:
 - Reachability pre-check: before running the solver, project the target `(x, y, z)` to `(reach, height)` in the side-view plane and verify it falls within the leg's Cartesian workspace from Step 2 — if not, return `Err(ReachabilityViolation)` immediately without solving
 - Post-solve check: verify the resulting coxa and femur angles are within their independent measured limits from `servo-ranges.toml` (tibia limits are implicitly satisfied by the workspace pre-check)
 
-### - [ ] Step 4 — Contact detection (`apps/arachno-brain/src/main.rs`)
+### - [x] Step 4 — `arachno-calibrate`: `sense-workspace` subcommand
+
+Standing per-leg femur+tibia sweep. Sweeps the femur toward its lift limit in N steps; at each step lifts tibia to safe-up position, then probes tibia downward with torque limit to detect floor contact. Records FK (reach, height) for: floor contact, tibia at max range-scan extension, and tibia fully retracted. Computes bounding-box `LegWorkspace` per leg and writes `config/robot/leg-workspace.toml`. New CLI flags: `--workspace-output` and `--workspace-femur-steps`.
+
+Added to `LegConfig` in `arachno-core`: `femur_deg_from_ticks` / `tibia_deg_from_ticks` (inverse of `pose_ticks_from_angles`).
+
+### - [ ] Step 5 — Contact detection (`apps/arachno-brain/src/main.rs`)
 
 The servo's own firmware handles the stop: set a torque limit on the tibia servo before probing, then command the target position at max probe depth. When the foot contacts the surface the servo stops itself — in its own control loop, far faster than the host's 20 Hz. No high-rate polling race is needed.
 
