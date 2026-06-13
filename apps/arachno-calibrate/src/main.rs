@@ -1222,11 +1222,13 @@ fn move_pose_until_close(
     sync_full_pose(bus, target_pose)?;
     let started = SystemTime::now();
     let mut stable_cycles = 0u8;
+    let mut poll_count = 0u32;
 
     loop {
         thread::sleep(Duration::from_millis(poll_ms));
         let feedback = read_feedback_map_best_effort(bus, tracked_servo_ids);
         let mut all_close_this_poll = true;
+        poll_count = poll_count.wrapping_add(1);
 
         for &servo_id in tracked_servo_ids {
             let target_ticks = *target_pose
@@ -1237,10 +1239,20 @@ fn move_pose_until_close(
                 continue;
             };
 
-            if telemetry.present_position_ticks.abs_diff(target_ticks)
-                > RANGE_TARGET_TOLERANCE_TICKS
-            {
+            let diff = telemetry.present_position_ticks.abs_diff(target_ticks);
+            if diff > RANGE_TARGET_TOLERANCE_TICKS {
                 all_close_this_poll = false;
+                // Log every ~5 polls so the trace shows progress without flooding.
+                if poll_count % 5 == 0 {
+                    info!(
+                        servo_id,
+                        target_ticks,
+                        actual_ticks = telemetry.present_position_ticks,
+                        diff_ticks = diff,
+                        "{label}: servo {servo_id} not yet settled (target={target_ticks} actual={} diff={diff})",
+                        telemetry.present_position_ticks,
+                    );
+                }
             }
         }
 
@@ -1256,7 +1268,24 @@ fn move_pose_until_close(
         }
 
         if started.elapsed().unwrap_or_default().as_millis() > u128::from(move_timeout_ms) {
-            warn!("{label}: did not settle within the timeout");
+            // Log per-servo mismatch before bailing so the trace shows what is stuck.
+            for &servo_id in tracked_servo_ids {
+                let target_ticks = target_pose.get(&servo_id).copied().unwrap_or(0);
+                let actual_ticks = feedback
+                    .get(&servo_id)
+                    .map(|t| t.present_position_ticks)
+                    .unwrap_or(u16::MAX);
+                let diff = actual_ticks.abs_diff(target_ticks);
+                if diff > RANGE_TARGET_TOLERANCE_TICKS {
+                    warn!(
+                        servo_id,
+                        target_ticks,
+                        actual_ticks,
+                        diff_ticks = diff,
+                        "{label}: servo {servo_id} stuck — target={target_ticks} actual={actual_ticks} diff={diff}"
+                    );
+                }
+            }
             bail!("{label} did not settle within the timeout");
         }
     }
