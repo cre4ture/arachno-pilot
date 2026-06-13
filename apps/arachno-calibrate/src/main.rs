@@ -89,12 +89,18 @@ struct Args {
     move_timeout_ms: u64,
     #[arg(long, default_value_t = false)]
     skip_initial_lay_down: bool,
+    #[arg(long, default_value_t = false)]
+    skip_initial_stand: bool,
     #[arg(long)]
     trace_output: Option<PathBuf>,
     #[arg(long, default_value = "config/robot/leg-workspace.toml")]
     workspace_output: PathBuf,
     #[arg(long, default_value_t = 8u8)]
     workspace_femur_steps: u8,
+    /// Timeout for the initial stand-up move (ms). Defaults to 4× move_timeout_ms to allow
+    /// recovery from an awkward resting position.
+    #[arg(long)]
+    stand_timeout_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -702,6 +708,9 @@ fn sense_workspace(config: &RobotConfig, args: &Args) -> anyhow::Result<()> {
         confirm_stopped_samples: args.confirm_stopped_samples.max(1),
         move_timeout_ms: args.move_timeout_ms.max(1_000),
     };
+    let stand_timeout_ms = args
+        .stand_timeout_ms
+        .unwrap_or(params.move_timeout_ms.saturating_mul(4));
     let output_path = resolve_output_path(&args.workspace_output);
     let femur_steps = args.workspace_femur_steps.max(2);
 
@@ -731,14 +740,24 @@ fn sense_workspace(config: &RobotConfig, args: &Args) -> anyhow::Result<()> {
     let gait = TripodGait;
     let stand_pose = gait.stand_reference_pose(config);
 
-    move_pose_until_close(
-        &mut bus,
-        &stand_pose,
-        &servo_ids,
-        params.poll_ms,
-        params.move_timeout_ms,
-        "moving to stand reference for workspace calibration",
-    )?;
+    if args.skip_initial_stand {
+        info!("skipping initial stand move; assuming robot is already in standing pose");
+    } else {
+        move_pose_until_close(
+            &mut bus,
+            &stand_pose,
+            &servo_ids,
+            params.poll_ms,
+            stand_timeout_ms,
+            "moving to stand reference for workspace calibration",
+        )
+        .with_context(|| {
+            format!(
+                "If the robot is in an awkward position after a previous failed run, \
+                 manually position it in standing pose and re-run with --skip-initial-stand"
+            )
+        })?;
+    }
     thread::sleep(Duration::from_secs(2));
 
     let mut workspaces: BTreeMap<String, LegWorkspace> = BTreeMap::new();
