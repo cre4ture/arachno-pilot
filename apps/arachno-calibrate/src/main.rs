@@ -712,7 +712,15 @@ fn sense_workspace(config: &RobotConfig, args: &Args) -> anyhow::Result<()> {
         .stand_timeout_ms
         .unwrap_or(params.move_timeout_ms.saturating_mul(4));
     let output_path = resolve_output_path(&args.workspace_output);
+    let trace_path = resolve_trace_output_path(args, &output_path);
+    let _trace_guard = init_trace_logging(&trace_path)?;
     let femur_steps = args.workspace_femur_steps.max(2);
+
+    info!(robot = %config.robot.name, "workspace calibration");
+    info!(deployment_profile = %config.deployment.profile, "loaded deployment profile");
+    info!(servo_bus = %config.bus.feetech.port, "servo bus");
+    info!(output = %output_path.display(), "workspace output path");
+    info!(trace_output = %trace_path.display(), "trace log path");
 
     let ranges = load_range_report(&args.ranges)
         .with_context(|| format!("loading range report from {}", args.ranges.display()))?;
