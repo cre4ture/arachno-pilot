@@ -864,14 +864,18 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
           <button class="motion-btn" id="btn-stand" type="button" data-cmd="stand">Stand</button>
           <button class="motion-btn" id="btn-stop" type="button" data-cmd="stop">Stop</button>
           <button class="motion-btn" id="btn-walk_forward" type="button" data-cmd="walk_forward">Walk Forward</button>
+          <button class="motion-btn" id="btn-walk_forward_high" type="button" data-cmd="walk_forward_high">Walk Forward High</button>
           <button class="motion-btn" id="btn-walk_backward" type="button" data-cmd="walk_backward">Walk Backward</button>
+          <button class="motion-btn" id="btn-walk_backward_high" type="button" data-cmd="walk_backward_high">Walk Backward High</button>
           <button class="motion-btn" id="btn-sidewalk_left" type="button" data-cmd="sidewalk_left">Sidewalk Left</button>
+          <button class="motion-btn" id="btn-sidewalk_left_high" type="button" data-cmd="sidewalk_left_high">Sidewalk Left High</button>
           <button class="motion-btn" id="btn-sidewalk_right" type="button" data-cmd="sidewalk_right">Sidewalk Right</button>
+          <button class="motion-btn" id="btn-sidewalk_right_high" type="button" data-cmd="sidewalk_right_high">Sidewalk Right High</button>
           <button class="motion-btn" id="btn-rotate_left" type="button" data-cmd="rotate_left">Rotate Left</button>
           <button class="motion-btn" id="btn-rotate_right" type="button" data-cmd="rotate_right">Rotate Right</button>
         </div>
         <div class="stat-note" id="motion-cmd-note" style="margin-top: 12px;">
-          Commands switch the brain mode immediately. The active mode is highlighted. Safety faults clear on any mode switch.
+          Commands switch the brain mode immediately. High-step walk modes target roughly 10 cm of foot clearance for small hurdles. The active mode is highlighted. Safety faults clear on any mode switch.
         </div>
       </div>
     </section>
@@ -1689,11 +1693,15 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
         sit_down: "sit_down",
         stand: "stand",
         slow_walk: "walk_forward",
+        slow_walk_high: "walk_forward_high",
         backward_walk: "walk_backward",
+        backward_walk_high: "walk_backward_high",
         rotate_left: "rotate_left",
         rotate_right: "rotate_right",
         sidewalk_left: "sidewalk_left",
+        sidewalk_left_high: "sidewalk_left_high",
         sidewalk_right: "sidewalk_right",
+        sidewalk_right_high: "sidewalk_right_high",
       };
       const activeCmd = modeToCmd[motionMode] ?? null;
       document.querySelectorAll(".motion-btn").forEach(btn => {

@@ -254,6 +254,8 @@ pub struct TripodWalkConfig {
     pub femur_lift_ticks: i16,
     #[serde(default = "default_tibia_lift_ticks")]
     pub tibia_lift_ticks: i16,
+    #[serde(default = "default_tripod_high_step_height_cm")]
+    pub high_step_height_cm: f32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -598,6 +600,7 @@ impl Default for TripodWalkConfig {
             stride_ticks: default_stride_ticks(),
             femur_lift_ticks: default_femur_lift_ticks(),
             tibia_lift_ticks: default_tibia_lift_ticks(),
+            high_step_height_cm: default_tripod_high_step_height_cm(),
         }
     }
 }
@@ -998,6 +1001,10 @@ fn default_femur_lift_ticks() -> i16 {
 
 fn default_tibia_lift_ticks() -> i16 {
     18
+}
+
+fn default_tripod_high_step_height_cm() -> f32 {
+    10.0
 }
 
 const DEFAULT_COXA_LENGTH_CM: f32 = 18.0;
@@ -1517,6 +1524,7 @@ mod tests {
         assert_eq!(cfg.tripod.stride_ticks, 20);
         assert_eq!(cfg.tripod.femur_lift_ticks, 12);
         assert_eq!(cfg.tripod.tibia_lift_ticks, 18);
+        assert_eq!(cfg.tripod.high_step_height_cm, 10.0);
         assert_eq!(cfg.tripod.cycle_seconds, 5.0);
     }
 

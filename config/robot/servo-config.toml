@@ -49,6 +49,7 @@ cycle_seconds = 5.0
 stride_ticks = 20
 femur_lift_ticks = 20
 tibia_lift_ticks = 30
+high_step_height_cm = 10.0
 
 [[legs]]
 name = "front_left"

@@ -65,77 +65,64 @@ enum BrainMode {
     Stand,
     StandHigh,
     SlowWalk,
+    SlowWalkHigh,
     BackwardWalk,
+    BackwardWalkHigh,
+    RotateLeft,
+    RotateRight,
+    SidewalkLeft,
+    SidewalkLeftHigh,
+    SidewalkRight,
+    SidewalkRightHigh,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TripodLiftMode {
+    Standard,
+    HighStep,
+}
+
+impl TripodLiftMode {
+    fn target_step_height_cm(self, config: &RobotConfig, leg: &arachno_core::LegConfig) -> f32 {
+        let default_step_height_cm = (leg.tibia_length_cm() * 0.14).clamp(1.8, 4.0);
+        match self {
+            Self::Standard => default_step_height_cm,
+            Self::HighStep => config
+                .locomotion
+                .tripod
+                .high_step_height_cm
+                .max(default_step_height_cm)
+                .max(0.0),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TripodMotionKind {
+    Forward,
+    Backward,
     RotateLeft,
     RotateRight,
     SidewalkLeft,
     SidewalkRight,
 }
 
-impl BrainMode {
-    fn as_state_label(self) -> &'static str {
+impl TripodMotionKind {
+    fn summary_label(self) -> &'static str {
         match self {
-            Self::Telemetry => "telemetry",
-            Self::Manual => "manual",
-            Self::LayDown => "lay_down",
-            Self::SitDown => "sit_down",
-            Self::StandUp => "stand_up",
-            Self::StandUpHigh => "stand_up_high",
-            Self::Stand => "stand",
-            Self::StandHigh => "stand_high",
-            Self::SlowWalk => "slow_walk",
-            Self::BackwardWalk => "backward_walk",
-            Self::RotateLeft => "rotate_left",
-            Self::RotateRight => "rotate_right",
-            Self::SidewalkLeft => "sidewalk_left",
-            Self::SidewalkRight => "sidewalk_right",
-        }
-    }
-
-    fn requires_torque(self) -> bool {
-        !matches!(self, Self::Telemetry)
-    }
-
-    fn stand_transition_target(self) -> Option<SemanticPoseKind> {
-        match self {
-            Self::StandUp => Some(SemanticPoseKind::StandReference),
-            Self::StandUpHigh => Some(SemanticPoseKind::StandHigh),
-            _ => None,
-        }
-    }
-
-    fn stand_settle_target(self) -> Option<SemanticPoseKind> {
-        match self {
-            Self::Stand => Some(SemanticPoseKind::StandReference),
-            Self::StandHigh => Some(SemanticPoseKind::StandHigh),
-            _ => None,
-        }
-    }
-
-    fn tripod_motion_label(self) -> &'static str {
-        match self {
-            Self::SlowWalk => "forward",
-            Self::BackwardWalk => "backward",
-            Self::RotateLeft => "rotate left",
-            Self::RotateRight => "rotate right",
+            Self::Forward => "forward",
+            Self::Backward => "backward",
+            Self::RotateLeft => "left rotation",
+            Self::RotateRight => "right rotation",
             Self::SidewalkLeft => "sidewalk left",
             Self::SidewalkRight => "sidewalk right",
-            _ => "tripod",
         }
     }
 
-    /// Direction sign applied to the coxa swing for each leg.
-    ///
-    /// For the sideward gaits the middle legs receive 0.0 so they lift in place
-    /// without striding. Their forward/backward contribution would otherwise
-    /// not cancel and would produce unwanted longitudinal drift.  The front and
-    /// rear angled legs are assigned opposing signs so that, within each tripod
-    /// stance, the forward force from one cancels the backward force from the
-    /// other, leaving only a net sideward force on the body.
     fn coxa_gait_direction_for_leg(self, is_left_side: bool, coxa_zero_heading_deg: f32) -> f32 {
         match self {
-            Self::SlowWalk => 1.0,
-            Self::BackwardWalk => -1.0,
+            Self::Forward => 1.0,
+            Self::Backward => -1.0,
             Self::RotateLeft => {
                 if is_left_side {
                     -1.0
@@ -171,8 +158,111 @@ impl BrainMode {
                     base
                 }
             }
-            _ => 0.0,
         }
+    }
+}
+
+impl BrainMode {
+    fn as_state_label(self) -> &'static str {
+        match self {
+            Self::Telemetry => "telemetry",
+            Self::Manual => "manual",
+            Self::LayDown => "lay_down",
+            Self::SitDown => "sit_down",
+            Self::StandUp => "stand_up",
+            Self::StandUpHigh => "stand_up_high",
+            Self::Stand => "stand",
+            Self::StandHigh => "stand_high",
+            Self::SlowWalk => "slow_walk",
+            Self::SlowWalkHigh => "slow_walk_high",
+            Self::BackwardWalk => "backward_walk",
+            Self::BackwardWalkHigh => "backward_walk_high",
+            Self::RotateLeft => "rotate_left",
+            Self::RotateRight => "rotate_right",
+            Self::SidewalkLeft => "sidewalk_left",
+            Self::SidewalkLeftHigh => "sidewalk_left_high",
+            Self::SidewalkRight => "sidewalk_right",
+            Self::SidewalkRightHigh => "sidewalk_right_high",
+        }
+    }
+
+    fn requires_torque(self) -> bool {
+        !matches!(self, Self::Telemetry)
+    }
+
+    fn enforces_body_attitude_limits(self) -> bool {
+        !matches!(self, Self::Telemetry | Self::Manual)
+    }
+
+    fn stand_transition_target(self) -> Option<SemanticPoseKind> {
+        match self {
+            Self::StandUp => Some(SemanticPoseKind::StandReference),
+            Self::StandUpHigh => Some(SemanticPoseKind::StandHigh),
+            _ => None,
+        }
+    }
+
+    fn stand_settle_target(self) -> Option<SemanticPoseKind> {
+        match self {
+            Self::Stand => Some(SemanticPoseKind::StandReference),
+            Self::StandHigh => Some(SemanticPoseKind::StandHigh),
+            _ => None,
+        }
+    }
+
+    fn tripod_motion_kind(self) -> Option<TripodMotionKind> {
+        match self {
+            Self::SlowWalk | Self::SlowWalkHigh => Some(TripodMotionKind::Forward),
+            Self::BackwardWalk | Self::BackwardWalkHigh => Some(TripodMotionKind::Backward),
+            Self::RotateLeft => Some(TripodMotionKind::RotateLeft),
+            Self::RotateRight => Some(TripodMotionKind::RotateRight),
+            Self::SidewalkLeft | Self::SidewalkLeftHigh => Some(TripodMotionKind::SidewalkLeft),
+            Self::SidewalkRight | Self::SidewalkRightHigh => Some(TripodMotionKind::SidewalkRight),
+            _ => None,
+        }
+    }
+
+    fn tripod_lift_mode(self) -> Option<TripodLiftMode> {
+        match self {
+            Self::SlowWalk
+            | Self::BackwardWalk
+            | Self::RotateLeft
+            | Self::RotateRight
+            | Self::SidewalkLeft
+            | Self::SidewalkRight => Some(TripodLiftMode::Standard),
+            Self::SlowWalkHigh
+            | Self::BackwardWalkHigh
+            | Self::SidewalkLeftHigh
+            | Self::SidewalkRightHigh => Some(TripodLiftMode::HighStep),
+            _ => None,
+        }
+    }
+
+    fn is_tripod_gait(self) -> bool {
+        self.tripod_motion_kind().is_some()
+    }
+
+    fn tripod_motion_summary_label(self) -> Option<String> {
+        let motion = self.tripod_motion_kind()?;
+        let label = motion.summary_label();
+        Some(match self.tripod_lift_mode()? {
+            TripodLiftMode::Standard => label.to_owned(),
+            TripodLiftMode::HighStep => format!("high-step {label}"),
+        })
+    }
+
+    /// Direction sign applied to the coxa swing for each leg.
+    ///
+    /// For the sideward gaits the middle legs receive 0.0 so they lift in place
+    /// without striding. Their forward/backward contribution would otherwise
+    /// not cancel and would produce unwanted longitudinal drift.  The front and
+    /// rear angled legs are assigned opposing signs so that, within each tripod
+    /// stance, the forward force from one cancels the backward force from the
+    /// other, leaving only a net sideward force on the body.
+    fn coxa_gait_direction_for_leg(self, is_left_side: bool, coxa_zero_heading_deg: f32) -> f32 {
+        self.tripod_motion_kind()
+            .map(|motion| motion.coxa_gait_direction_for_leg(is_left_side, coxa_zero_heading_deg))
+            .unwrap_or(0.0)
     }
 }
 
@@ -488,11 +578,15 @@ enum MotionCommand {
     Stand,
     StandHigh,
     WalkForward,
+    WalkForwardHigh,
     WalkBackward,
+    WalkBackwardHigh,
     RotateLeft,
     RotateRight,
     SidewalkLeft,
+    SidewalkLeftHigh,
     SidewalkRight,
+    SidewalkRightHigh,
     Stop,
     Telemetry,
 }
@@ -508,11 +602,15 @@ impl MotionCommand {
             Self::StandHigh => BrainMode::StandHigh,
             Self::Stand | Self::Stop => BrainMode::Stand,
             Self::WalkForward => BrainMode::SlowWalk,
+            Self::WalkForwardHigh => BrainMode::SlowWalkHigh,
             Self::WalkBackward => BrainMode::BackwardWalk,
+            Self::WalkBackwardHigh => BrainMode::BackwardWalkHigh,
             Self::RotateLeft => BrainMode::RotateLeft,
             Self::RotateRight => BrainMode::RotateRight,
             Self::SidewalkLeft => BrainMode::SidewalkLeft,
+            Self::SidewalkLeftHigh => BrainMode::SidewalkLeftHigh,
             Self::SidewalkRight => BrainMode::SidewalkRight,
+            Self::SidewalkRightHigh => BrainMode::SidewalkRightHigh,
             Self::Telemetry => BrainMode::Telemetry,
         }
     }
@@ -797,31 +895,24 @@ impl TelemetryServoState {
 
 impl MotionRuntime {
     fn new(mode: BrainMode, walk_seconds: Option<f32>) -> Self {
-        let summary = match mode {
-            BrainMode::Telemetry => "observation only; no motion commands are being sent",
-            BrainMode::Manual => "waiting for all servo feedback before arming manual control",
-            BrainMode::LayDown => "waiting for all servo feedback before laying down",
-            BrainMode::SitDown => "waiting for all servo feedback before sitting down",
-            BrainMode::StandUp => "waiting for all servo feedback before standing up",
-            BrainMode::StandUpHigh => "waiting for all servo feedback before standing up high",
-            BrainMode::Stand => "waiting for all servo feedback before holding stand",
-            BrainMode::StandHigh => "waiting for all servo feedback before holding high stand",
-            BrainMode::SlowWalk => "waiting for all servo feedback before starting the gait",
-            BrainMode::BackwardWalk => {
-                "waiting for all servo feedback before starting the backward gait"
+        let summary = if mode.is_tripod_gait() {
+            let gait = mode
+                .tripod_motion_summary_label()
+                .expect("tripod gait modes should define a summary label");
+            format!("waiting for all servo feedback before starting the {gait} gait")
+        } else {
+            match mode {
+                BrainMode::Telemetry => "observation only; no motion commands are being sent",
+                BrainMode::Manual => "waiting for all servo feedback before arming manual control",
+                BrainMode::LayDown => "waiting for all servo feedback before laying down",
+                BrainMode::SitDown => "waiting for all servo feedback before sitting down",
+                BrainMode::StandUp => "waiting for all servo feedback before standing up",
+                BrainMode::StandUpHigh => "waiting for all servo feedback before standing up high",
+                BrainMode::Stand => "waiting for all servo feedback before holding stand",
+                BrainMode::StandHigh => "waiting for all servo feedback before holding high stand",
+                _ => unreachable!("non-tripod modes should be handled above"),
             }
-            BrainMode::RotateLeft => {
-                "waiting for all servo feedback before starting the left rotation gait"
-            }
-            BrainMode::RotateRight => {
-                "waiting for all servo feedback before starting the right rotation gait"
-            }
-            BrainMode::SidewalkLeft => {
-                "waiting for all servo feedback before starting the sidewalk left gait"
-            }
-            BrainMode::SidewalkRight => {
-                "waiting for all servo feedback before starting the sidewalk right gait"
-            }
+            .to_owned()
         };
 
         Self {
@@ -832,7 +923,7 @@ impl MotionRuntime {
             hold_pose: None,
             body_attitude_strikes: 0,
             low_voltage_strikes: BTreeMap::new(),
-            summary: summary.to_owned(),
+            summary,
             fault: None,
         }
     }
@@ -855,24 +946,16 @@ impl MotionRuntime {
             BrainMode::StandUpHigh => "starting high stand-up transition".to_owned(),
             BrainMode::Stand => "holding the configured stand-reference pose".to_owned(),
             BrainMode::StandHigh => "holding the configured stand-high pose".to_owned(),
-            BrainMode::SlowWalk => "holding the measured stand pose before gait".to_owned(),
-            BrainMode::BackwardWalk => {
-                "holding the measured stand pose before backward gait".to_owned()
-            }
-            BrainMode::RotateLeft => {
-                "holding the measured stand pose before left rotation gait".to_owned()
-            }
-            BrainMode::RotateRight => {
-                "holding the measured stand pose before right rotation gait".to_owned()
-            }
-            BrainMode::SidewalkLeft => {
-                "holding the measured stand pose before sidewalk left gait".to_owned()
-            }
-            BrainMode::SidewalkRight => {
-                "holding the measured stand pose before sidewalk right gait".to_owned()
-            }
             BrainMode::Telemetry => {
                 "observation only; no motion commands are being sent".to_owned()
+            }
+            mode => {
+                debug_assert!(mode.is_tripod_gait());
+                format!(
+                    "holding the measured stand pose before {} gait",
+                    mode.tripod_motion_summary_label()
+                        .expect("tripod gait modes should define a summary label")
+                )
             }
         };
         info!(
@@ -912,25 +995,23 @@ impl MotionRuntime {
         match self.mode {
             BrainMode::Telemetry => "observation only".to_owned(),
             BrainMode::Manual => {
-                if imu_enabled {
-                    "manual control active; monitoring roll, pitch, bus voltage, and temperature"
-                        .to_owned()
-                } else {
-                    "manual control active; monitoring bus voltage and temperature".to_owned()
-                }
+                let _ = imu_enabled;
+                "manual control active; monitoring bus voltage and temperature".to_owned()
             }
             BrainMode::LayDown
             | BrainMode::SitDown
             | BrainMode::StandUp
             | BrainMode::StandUpHigh
             | BrainMode::Stand
-            | BrainMode::StandHigh
-            | BrainMode::SlowWalk
-            | BrainMode::BackwardWalk
-            | BrainMode::RotateLeft
-            | BrainMode::RotateRight
-            | BrainMode::SidewalkLeft
-            | BrainMode::SidewalkRight => {
+            | BrainMode::StandHigh => {
+                if imu_enabled {
+                    "monitoring roll, pitch, bus voltage, and temperature".to_owned()
+                } else {
+                    "monitoring bus voltage and temperature".to_owned()
+                }
+            }
+            mode => {
+                debug_assert!(mode.is_tripod_gait());
                 if imu_enabled {
                     "monitoring roll, pitch, bus voltage, and temperature".to_owned()
                 } else {
@@ -947,48 +1028,13 @@ impl MotionRuntime {
         servo_states: &BTreeMap<u8, TelemetryServoState>,
         imu_state: Option<&TelemetryImuState>,
     ) -> Option<String> {
-        if let Some(imu) = imu_state {
-            let attitude_reason = if let Some(roll_deg) = imu.roll_deg {
-                if roll_deg.abs() > config.safety.max_body_roll_deg {
-                    Some(format!(
-                        "body roll {:.1} deg exceeded limit {:.1} deg",
-                        roll_deg, config.safety.max_body_roll_deg
-                    ))
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-            .or_else(|| {
-                let pitch_deg = imu.pitch_deg?;
-                (pitch_deg.abs() > config.safety.max_body_pitch_deg).then(|| {
-                    format!(
-                        "body pitch {:.1} deg exceeded limit {:.1} deg",
-                        pitch_deg, config.safety.max_body_pitch_deg
-                    )
-                })
-            });
-
-            if let Some(reason) = attitude_reason {
-                let accel_near_gravity = imu
-                    .accel_norm_mps2
-                    .map(|norm| (norm - 9.81).abs() <= BODY_ATTITUDE_ACCEL_NORM_TOLERANCE_MPS2)
-                    .unwrap_or(true);
-                if accel_near_gravity {
-                    self.body_attitude_strikes = self.body_attitude_strikes.saturating_add(1);
-                    if self.body_attitude_strikes >= BODY_ATTITUDE_STRIKES_TO_TRIP {
-                        return Some(format!(
-                            "{} for {} consecutive samples",
-                            reason, BODY_ATTITUDE_STRIKES_TO_TRIP
-                        ));
-                    }
-                } else {
-                    self.body_attitude_strikes = 0;
-                }
-            } else {
-                self.body_attitude_strikes = 0;
-            }
+        if let Some(reason) = body_attitude_fault_reason(
+            self.mode,
+            &config.safety,
+            imu_state,
+            &mut self.body_attitude_strikes,
+        ) {
+            return Some(reason);
         }
 
         for servo_id in servo_ids {
@@ -1109,24 +1155,20 @@ impl MotionRuntime {
                     self.summary = summary;
                     pose
                 }
-                BrainMode::SlowWalk
-                | BrainMode::BackwardWalk
-                | BrainMode::RotateLeft
-                | BrainMode::RotateRight
-                | BrainMode::SidewalkLeft
-                | BrainMode::SidewalkRight => {
+                BrainMode::Telemetry => unreachable!(),
+                mode => {
+                    debug_assert!(mode.is_tripod_gait());
                     let (pose, summary) = tripod_gait_pose(
                         config,
                         calibration,
                         &base_pose,
                         elapsed,
-                        self.mode,
+                        mode,
                         self.walk_seconds,
                     );
                     self.summary = summary;
                     pose
                 }
-                BrainMode::Telemetry => unreachable!(),
             }
         };
 
@@ -1155,17 +1197,75 @@ impl MotionRuntime {
             BrainMode::StandHigh => {
                 named_pose_with_calibration(config, calibration, SemanticPoseKind::StandHigh)
             }
-            BrainMode::SlowWalk
-            | BrainMode::BackwardWalk
-            | BrainMode::RotateLeft
-            | BrainMode::RotateRight
-            | BrainMode::SidewalkLeft
-            | BrainMode::SidewalkRight
-            | BrainMode::Telemetry => {
+            BrainMode::Telemetry => {
+                named_pose_with_calibration(config, calibration, SemanticPoseKind::StandReference)
+            }
+            mode => {
+                debug_assert!(mode.is_tripod_gait());
                 named_pose_with_calibration(config, calibration, SemanticPoseKind::StandReference)
             }
         }
     }
+}
+
+fn body_attitude_fault_reason(
+    mode: BrainMode,
+    safety: &arachno_core::SafetyConfig,
+    imu_state: Option<&TelemetryImuState>,
+    body_attitude_strikes: &mut u8,
+) -> Option<String> {
+    if !mode.enforces_body_attitude_limits() {
+        *body_attitude_strikes = 0;
+        return None;
+    }
+
+    let Some(imu) = imu_state else {
+        return None;
+    };
+
+    let attitude_reason = if let Some(roll_deg) = imu.roll_deg {
+        if roll_deg.abs() > safety.max_body_roll_deg {
+            Some(format!(
+                "body roll {:.1} deg exceeded limit {:.1} deg",
+                roll_deg, safety.max_body_roll_deg
+            ))
+        } else {
+            None
+        }
+    } else {
+        None
+    }
+    .or_else(|| {
+        let pitch_deg = imu.pitch_deg?;
+        (pitch_deg.abs() > safety.max_body_pitch_deg).then(|| {
+            format!(
+                "body pitch {:.1} deg exceeded limit {:.1} deg",
+                pitch_deg, safety.max_body_pitch_deg
+            )
+        })
+    });
+
+    if let Some(reason) = attitude_reason {
+        let accel_near_gravity = imu
+            .accel_norm_mps2
+            .map(|norm| (norm - 9.81).abs() <= BODY_ATTITUDE_ACCEL_NORM_TOLERANCE_MPS2)
+            .unwrap_or(true);
+        if accel_near_gravity {
+            *body_attitude_strikes = body_attitude_strikes.saturating_add(1);
+            if *body_attitude_strikes >= BODY_ATTITUDE_STRIKES_TO_TRIP {
+                return Some(format!(
+                    "{} for {} consecutive samples",
+                    reason, BODY_ATTITUDE_STRIKES_TO_TRIP
+                ));
+            }
+        } else {
+            *body_attitude_strikes = 0;
+        }
+    } else {
+        *body_attitude_strikes = 0;
+    }
+
+    None
 }
 
 fn validate_servo_eeprom_profile(config: &RobotConfig) -> anyhow::Result<()> {
@@ -2595,10 +2695,11 @@ struct DerivedTripodProfile {
 fn derive_tripod_profile(
     config: &RobotConfig,
     leg: &arachno_core::LegConfig,
-    stand_reference: LegPoseAngles,
+    stance_pose: LegPoseAngles,
+    lift_mode: TripodLiftMode,
 ) -> DerivedTripodProfile {
     let gait = &config.locomotion.tripod;
-    let stand_side = leg.side_view_pose(stand_reference.femur_deg, stand_reference.tibia_deg);
+    let stand_side = leg.side_view_pose(stance_pose.femur_deg, stance_pose.tibia_deg);
     let horizontal_reach_cm = (stand_side.tibia_end.x - stand_side.coxa_end.x)
         .abs()
         .max(1.0);
@@ -2608,9 +2709,9 @@ fn derive_tripod_profile(
     let coxa_ratio = ((stride_cm * 0.5) / coxa_radius_cm).clamp(0.0, 0.45);
     let derived_coxa_swing_deg = coxa_ratio.asin().to_degrees().clamp(6.0, 18.0);
 
-    let desired_step_height_cm = (leg.tibia_length_cm() * 0.14).clamp(1.8, 4.0);
+    let desired_step_height_cm = lift_mode.target_step_height_cm(config, leg);
     let (derived_femur_lift_deg, derived_tibia_lift_deg, _achieved_step_height_cm) =
-        derive_leg_lift_deltas(leg, stand_reference, desired_step_height_cm);
+        derive_leg_lift_deltas(leg, stance_pose, desired_step_height_cm);
 
     DerivedTripodProfile {
         coxa_swing_deg: derived_coxa_swing_deg.max(legacy_semantic_delta_deg(gait.stride_ticks)),
@@ -2623,18 +2724,23 @@ fn derive_tripod_profile(
 
 fn derive_leg_lift_deltas(
     leg: &arachno_core::LegConfig,
-    stand_reference: LegPoseAngles,
+    stance_pose: LegPoseAngles,
     target_step_height_cm: f32,
 ) -> (f32, f32, f32) {
-    let stand_pose = leg.side_view_pose(stand_reference.femur_deg, stand_reference.tibia_deg);
+    let stand_pose = leg.side_view_pose(stance_pose.femur_deg, stance_pose.tibia_deg);
     let stand_tip = stand_pose.tibia_end;
+
+    if let Some(solution) = direct_leg_lift_deltas(leg, stance_pose, target_step_height_cm) {
+        return solution;
+    }
+
     let mut best = None::<(f32, f32, f32, f32)>;
 
-    for femur_lift_deg in (4..=28).map(|value| value as f32) {
-        for tibia_lift_deg in (6..=42).map(|value| value as f32) {
+    for femur_lift_deg in (4..=56).map(|value| value as f32) {
+        for tibia_lift_deg in (6..=88).map(|value| value as f32) {
             let lifted_pose = leg.side_view_pose(
-                stand_reference.femur_deg + femur_lift_deg,
-                stand_reference.tibia_deg + tibia_lift_deg,
+                stance_pose.femur_deg + femur_lift_deg,
+                stance_pose.tibia_deg + tibia_lift_deg,
             );
             let step_height_cm = (stand_tip.y - lifted_pose.tibia_end.y).max(0.0);
             let horizontal_shift_cm = (lifted_pose.tibia_end.x - stand_tip.x).abs();
@@ -2654,6 +2760,27 @@ fn derive_leg_lift_deltas(
         (femur_lift_deg, tibia_lift_deg, achieved_height_cm)
     })
     .unwrap_or((12.0, 18.0, 0.0))
+}
+
+fn direct_leg_lift_deltas(
+    leg: &arachno_core::LegConfig,
+    stance_pose: LegPoseAngles,
+    target_step_height_cm: f32,
+) -> Option<(f32, f32, f32)> {
+    let stand_pose = leg.side_view_pose(stance_pose.femur_deg, stance_pose.tibia_deg);
+    let reach_cm = (stand_pose.tibia_end.x - stand_pose.coxa_end.x).abs();
+    let height_cm = stand_pose.tibia_end.y - stand_pose.coxa_end.y;
+    let target_height_cm = height_cm - target_step_height_cm.max(0.0);
+    let lifted_pose = leg
+        .foot_to_angles_2d(stance_pose.coxa_deg, reach_cm, target_height_cm)
+        .ok()?;
+    let lifted_side = leg.side_view_pose(lifted_pose.femur_deg, lifted_pose.tibia_deg);
+    let achieved_height_cm = (stand_pose.tibia_end.y - lifted_side.tibia_end.y).max(0.0);
+    Some((
+        lifted_pose.femur_deg - stance_pose.femur_deg,
+        lifted_pose.tibia_deg - stance_pose.tibia_deg,
+        achieved_height_cm,
+    ))
 }
 
 fn legacy_semantic_delta_deg(delta_ticks: i16) -> f32 {
@@ -2860,12 +2987,17 @@ fn walk_pose_from_base(
                 .unwrap_or(stand_reference.tibia_deg),
         };
 
-        let profile = derive_tripod_profile(config, leg, stand_reference);
         let leg_phase = if leg.is_tripod_a() {
             phase
         } else {
             (phase + 0.5).fract()
         };
+        let profile = derive_tripod_profile(
+            config,
+            leg,
+            base_semantic,
+            mode.tripod_lift_mode().unwrap_or(TripodLiftMode::Standard),
+        );
         let (coxa_delta_deg, lift_ratio) = leg_cycle_shape_deg(leg_phase, profile.coxa_swing_deg);
         let coxa_direction_sign =
             mode.coxa_gait_direction_for_leg(leg.is_left_side(), leg.coxa_zero_heading_deg());
@@ -3067,12 +3199,15 @@ fn tripod_gait_pose(
     walk_seconds: Option<f32>,
 ) -> (BTreeMap<u8, u16>, String) {
     let settle = config.locomotion.tripod.settle_seconds.max(0.25);
+    let gait_label = mode
+        .tripod_motion_summary_label()
+        .unwrap_or_else(|| "tripod".to_owned());
 
     if elapsed < settle {
         let progress = (elapsed / settle).clamp(0.0, 1.0);
         let summary = format!(
             "holding the measured stand pose before {} gait ({:.0}%)",
-            mode.tripod_motion_label(),
+            gait_label,
             progress * 100.0
         );
         (base_pose.clone(), summary)
@@ -3081,9 +3216,7 @@ fn tripod_gait_pose(
         let limit = walk_seconds.unwrap_or_default();
         let summary = format!(
             "{} gait duration reached after {:.1}s / {:.1}s; holding the measured stand pose",
-            mode.tripod_motion_label(),
-            gait_elapsed,
-            limit
+            gait_label, gait_elapsed, limit
         );
         (base_pose.clone(), summary)
     } else {
@@ -3098,7 +3231,7 @@ fn tripod_gait_pose(
         };
         let summary = format!(
             "slow tripod {} gait active; phase {:.2} / cycle {:.1}s / blend {:.0}%",
-            mode.tripod_motion_label(),
+            gait_label,
             phase,
             cycle_seconds,
             amplitude_scale * 100.0,
@@ -3937,9 +4070,55 @@ mod tests {
     };
 
     use super::{
-        BrainMode, ManualControlState, MotionCommand, stand_pose_labels, sync_manual_mode_state,
+        BODY_ATTITUDE_STRIKES_TO_TRIP, BrainMode, LegPoseAngles, ManualControlState, MotionCommand,
+        MotionRuntime, TelemetryImuState, body_attitude_fault_reason, derive_leg_lift_deltas,
+        stand_pose_labels, sync_manual_mode_state,
     };
-    use arachno_core::SemanticPoseKind;
+    use arachno_core::{LegConfig, SafetyConfig, SemanticPoseKind};
+
+    fn make_tripod_test_leg() -> LegConfig {
+        LegConfig {
+            name: "front_right".to_owned(),
+            coxa_servo_id: 41,
+            femur_servo_id: 42,
+            tibia_servo_id: 43,
+            coxa_stand_reference_ticks: None,
+            femur_stand_reference_ticks: None,
+            tibia_stand_reference_ticks: None,
+            coxa_lay_down_ticks: None,
+            femur_lay_down_ticks: None,
+            tibia_lay_down_ticks: None,
+            coxa_zero_reference_ticks: None,
+            femur_zero_reference_ticks: None,
+            tibia_zero_reference_ticks: None,
+            coxa_forward_sign: 1,
+            femur_lift_sign: 1,
+            tibia_lift_sign: -1,
+            coxa_zero_heading_deg: Some(45.0),
+            coxa_length_cm: Some(3.0),
+            femur_length_cm: Some(8.5),
+            tibia_length_cm: Some(14.5),
+        }
+    }
+
+    fn make_test_imu_state(roll_deg: Option<f32>, pitch_deg: Option<f32>) -> TelemetryImuState {
+        TelemetryImuState {
+            enabled: true,
+            mode: "test".to_owned(),
+            device: None,
+            sensor_kind: None,
+            sample_hz: None,
+            spi_mode: None,
+            observed_who_am_i: None,
+            description: None,
+            last_error: None,
+            telemetry: None,
+            roll_deg,
+            pitch_deg,
+            accel_norm_mps2: Some(9.81),
+            gyro_norm_deg_s: None,
+        }
+    }
 
     #[test]
     fn manual_motion_command_maps_to_manual_mode() {
@@ -4008,6 +4187,122 @@ mod tests {
         assert_eq!(
             stand_pose_labels(SemanticPoseKind::StandHigh),
             ("stand-high", "high stand")
+        );
+    }
+
+    #[test]
+    fn high_step_walk_motion_commands_map_to_new_modes() {
+        assert_eq!(
+            MotionCommand::WalkForwardHigh.as_brain_mode(),
+            BrainMode::SlowWalkHigh
+        );
+        assert_eq!(
+            MotionCommand::WalkBackwardHigh.as_brain_mode(),
+            BrainMode::BackwardWalkHigh
+        );
+        assert_eq!(
+            MotionCommand::SidewalkLeftHigh.as_brain_mode(),
+            BrainMode::SidewalkLeftHigh
+        );
+        assert_eq!(
+            MotionCommand::SidewalkRightHigh.as_brain_mode(),
+            BrainMode::SidewalkRightHigh
+        );
+    }
+
+    #[test]
+    fn high_step_walk_modes_report_high_step_state_labels() {
+        assert_eq!(BrainMode::SlowWalkHigh.as_state_label(), "slow_walk_high");
+        assert_eq!(
+            BrainMode::SlowWalkHigh
+                .tripod_motion_summary_label()
+                .as_deref(),
+            Some("high-step forward")
+        );
+        assert_eq!(
+            BrainMode::BackwardWalkHigh
+                .tripod_motion_summary_label()
+                .as_deref(),
+            Some("high-step backward")
+        );
+        assert_eq!(
+            BrainMode::SidewalkLeftHigh
+                .tripod_motion_summary_label()
+                .as_deref(),
+            Some("high-step sidewalk left")
+        );
+        assert_eq!(
+            BrainMode::SidewalkRightHigh
+                .tripod_motion_summary_label()
+                .as_deref(),
+            Some("high-step sidewalk right")
+        );
+    }
+
+    #[test]
+    fn derive_leg_lift_deltas_reaches_the_requested_high_step_height() {
+        let leg = make_tripod_test_leg();
+        let stand_reference = LegPoseAngles {
+            coxa_deg: 0.0,
+            femur_deg: 50.8,
+            tibia_deg: -121.6,
+        };
+
+        let (femur_delta_deg, tibia_delta_deg, achieved_height_cm) =
+            derive_leg_lift_deltas(&leg, stand_reference, 10.0);
+
+        assert!(
+            femur_delta_deg.is_finite() && tibia_delta_deg.is_finite(),
+            "expected finite lift deltas, got femur={femur_delta_deg}, tibia={tibia_delta_deg}"
+        );
+        assert!(
+            achieved_height_cm >= 9.5,
+            "expected about 10 cm of lift, got {achieved_height_cm:.2} cm"
+        );
+    }
+
+    #[test]
+    fn manual_mode_does_not_trip_body_attitude_faults() {
+        let safety = SafetyConfig::default();
+        let imu = make_test_imu_state(Some(20.4), None);
+        let mut strikes = 0;
+
+        for _ in 0..BODY_ATTITUDE_STRIKES_TO_TRIP {
+            assert_eq!(
+                body_attitude_fault_reason(BrainMode::Manual, &safety, Some(&imu), &mut strikes),
+                None
+            );
+        }
+
+        assert_eq!(strikes, 0);
+    }
+
+    #[test]
+    fn automatic_modes_still_trip_body_attitude_faults() {
+        let safety = SafetyConfig::default();
+        let imu = make_test_imu_state(Some(20.4), None);
+        let mut strikes = 0;
+
+        for _ in 0..BODY_ATTITUDE_STRIKES_TO_TRIP - 1 {
+            assert_eq!(
+                body_attitude_fault_reason(BrainMode::Stand, &safety, Some(&imu), &mut strikes),
+                None
+            );
+        }
+
+        let reason =
+            body_attitude_fault_reason(BrainMode::Stand, &safety, Some(&imu), &mut strikes)
+                .expect("stand mode should still trip after consecutive roll strikes");
+        assert!(reason.contains("body roll 20.4 deg exceeded limit 20.0 deg"));
+        assert!(reason.contains("3 consecutive samples"));
+    }
+
+    #[test]
+    fn manual_safety_status_reports_only_bus_and_temperature_monitoring() {
+        let motion = MotionRuntime::new(BrainMode::Manual, None);
+        assert_eq!(
+            motion.safety_status(true),
+            "manual control active; monitoring bus voltage and temperature"
         );
     }
 }
