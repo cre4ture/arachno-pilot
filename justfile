@@ -24,8 +24,14 @@ lay-down:
 stand-up:
     cargo run -p arachno-brain -- --config config/robot/host-usb.toml --listen 127.0.0.1:4000 --mode stand-up --dashboard
 
+stand-up-high:
+    cargo run -p arachno-brain -- --config config/robot/host-usb.toml --listen 127.0.0.1:4000 --mode stand-up-high --dashboard
+
 stand:
     cargo run -p arachno-brain -- --config config/robot/host-usb.toml --listen 127.0.0.1:4000 --mode stand --dashboard
+
+stand-high:
+    cargo run -p arachno-brain -- --config config/robot/host-usb.toml --listen 127.0.0.1:4000 --mode stand-high --dashboard
 
 slow-walk:
     cargo run -p arachno-brain -- --config config/robot/host-usb.toml --listen 127.0.0.1:4000 --mode slow-walk --walk-seconds 8 --dashboard

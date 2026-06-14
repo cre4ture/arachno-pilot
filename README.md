@@ -12,7 +12,7 @@ Rust-first starter workspace for a hexapod that can run either on a tethered Lin
 
 ## Workspace map
 
-- `apps/arachno-brain`: hardware-owning runtime that now serves telemetry, camera, dashboard, manual control, `lay_down`, `stand_up`, `stand`, `slow_walk`, `backward_walk`, `rotate_left`, and `rotate_right` from one process.
+- `apps/arachno-brain`: hardware-owning runtime that now serves telemetry, camera, dashboard, manual control, `lay_down`, `stand_up`, `stand_up_high`, `stand`, `stand_high`, `slow_walk`, `backward_walk`, `rotate_left`, and `rotate_right` from one process.
 - `apps/arachno-calibrate`: servo ID, EEPROM-profile, range-scan, pose-check, and pose-suggestion tooling.
 - `apps/arachno-fw-info`: host-side firmware version and capability query for the RP2040 IMU bridge.
 - `apps/arachno-probe`: host-device reachability checks for configured camera and servo bridge paths.
@@ -53,7 +53,9 @@ Implemented now:
 - `verify-eeprom`: performs the same EEPROM profile validation without writing any values
 - `lay-down`: moves into a known stretched rest pose
 - `stand-up`: raises the femurs first, lowers the tibias to replant the feet, then lifts the body with coordinated femur+tibia motion before aligning the coxae
+- `stand-up-high`: runs the same staged stand-up transition, but finishes at the configured `stand_high` pose
 - `stand`: settles into and holds the configured stand-reference pose
+- `stand-high`: settles into and holds the configured `stand_high` pose
 - `manual`: captures the current robot pose as a zero-reference and accepts grouped semantic angle commands from the dashboard in `forward/back` and `up/down` space
 - `slow-walk`: a cautious tripod gait that now derives semantic swing and lift amplitudes from the calibrated stand pose, leg lengths, and angle-to-tick conversion instead of using tiny fixed tick offsets
 - `backward-walk`: the same derived tripod gait profile as `slow-walk`, but with reversed coxa swing for backward motion
@@ -86,7 +88,7 @@ just dashboard
 It currently provides:
 
 - a single hardware owner in `arachno-brain` for the Feetech bridge, IMU bridge, camera route, and optional browser dashboard
-- live motion status for `telemetry`, `manual`, `lay_down`, `stand_up`, `stand`, `slow_walk`, `backward_walk`, `rotate_left`, and `rotate_right`
+- live motion status for `telemetry`, `manual`, `lay_down`, `stand_up`, `stand_up_high`, `stand`, `stand_high`, `slow_walk`, `backward_walk`, `rotate_left`, and `rotate_right`
 - live servo polling through the real Feetech bus path via the brain API
 - live RP2040 IMU bridge state with roll/pitch sanity estimates and raw motion health
 - fault-tolerant telemetry cards per configured servo
@@ -133,7 +135,9 @@ cargo run -p arachno-brain -- --config config/robot/host-usb.toml --listen 127.0
 cargo run -p arachno-brain -- --config config/robot/host-usb.toml --listen 127.0.0.1:4000 --mode manual --dashboard
 cargo run -p arachno-brain -- --config config/robot/host-usb.toml --listen 127.0.0.1:4000 --mode lay-down --dashboard
 cargo run -p arachno-brain -- --config config/robot/host-usb.toml --listen 127.0.0.1:4000 --mode stand-up --dashboard
+cargo run -p arachno-brain -- --config config/robot/host-usb.toml --listen 127.0.0.1:4000 --mode stand-up-high --dashboard
 cargo run -p arachno-brain -- --config config/robot/host-usb.toml --listen 127.0.0.1:4000 --mode stand --dashboard
+cargo run -p arachno-brain -- --config config/robot/host-usb.toml --listen 127.0.0.1:4000 --mode stand-high --dashboard
 cargo run -p arachno-brain -- --config config/robot/host-usb.toml --listen 127.0.0.1:4000 --mode slow-walk --walk-seconds 8 --dashboard
 cargo run -p arachno-brain -- --config config/robot/host-usb.toml --listen 127.0.0.1:4000 --mode backward-walk --walk-seconds 8 --dashboard
 cargo run -p arachno-brain -- --config config/robot/host-usb.toml --listen 127.0.0.1:4000 --mode rotate-left --walk-seconds 8 --dashboard
@@ -142,7 +146,7 @@ cargo run -p arachno-brain -- --config config/robot/jetson-onboard.toml --listen
 cargo check --manifest-path firmware/Cargo.toml -p rp2040-imu-bridge --target thumbv6m-none-eabi
 ```
 
-`arachno-brain` now owns the live hardware-facing telemetry API at `/api/state`, the camera route at `/camera.mjpg`, the rich dashboard UI at `/` and `/dashboard` when started with `--dashboard`, the grouped manual-control API at `/api/manual/*`, the dashboard pose-copy utility, and the first hardware motion modes through `--mode telemetry`, `--mode manual`, `--mode lay-down`, `--mode stand-up`, `--mode stand`, `--mode slow-walk`, `--mode backward-walk`, `--mode rotate-left`, and `--mode rotate-right`.
+`arachno-brain` now owns the live hardware-facing telemetry API at `/api/state`, the camera route at `/camera.mjpg`, the rich dashboard UI at `/` and `/dashboard` when started with `--dashboard`, the grouped manual-control API at `/api/manual/*`, the dashboard pose-copy utility, and the first hardware motion modes through `--mode telemetry`, `--mode manual`, `--mode lay-down`, `--mode stand-up`, `--mode stand-up-high`, `--mode stand`, `--mode stand-high`, `--mode slow-walk`, `--mode backward-walk`, `--mode rotate-left`, and `--mode rotate-right`.
 
 Servo EEPROM policy lives in `config/robot/servo-config.toml` under `[[servo_eeprom.entries]]`. Only `arachno-calibrate --mode apply-eeprom` writes those persistent registers. Normal runtime writes are blocked from EEPROM registers in the STS driver, and `arachno-brain` validates the configured EEPROM values before it starts the control worker.
 

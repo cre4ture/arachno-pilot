@@ -32,6 +32,36 @@ coxa_deg = 1.5
 femur_deg = 50.1
 tibia_deg = -123.2
 
+[stand_high.front_left]
+coxa_deg = 0.35
+femur_deg = -78.66
+tibia_deg = 27.16
+
+[stand_high.middle_left]
+coxa_deg = 0.53
+femur_deg = -77.61
+tibia_deg = 26.98
+
+[stand_high.rear_left]
+coxa_deg = 0.44
+femur_deg = -77.52
+tibia_deg = 28.30
+
+[stand_high.front_right]
+coxa_deg = 0.62
+femur_deg = -78.49
+tibia_deg = 26.89
+
+[stand_high.middle_right]
+coxa_deg = 0.53
+femur_deg = -78.66
+tibia_deg = 27.69
+
+[stand_high.rear_right]
+coxa_deg = 0.62
+femur_deg = -79.10
+tibia_deg = 26.28
+
 [lay_down.front_left]
 coxa_deg = 0.0
 femur_deg = 0.0

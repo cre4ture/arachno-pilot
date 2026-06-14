@@ -855,7 +855,10 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
       </div>
       <div class="panel-body">
         <div class="motion-cmd-grid">
+          <button class="motion-btn" id="btn-manual" type="button" data-cmd="manual">Manual</button>
           <button class="motion-btn" id="btn-stand_up" type="button" data-cmd="stand_up">Stand Up</button>
+          <button class="motion-btn" id="btn-stand_up_high" type="button" data-cmd="stand_up_high">Stand Up High</button>
+          <button class="motion-btn" id="btn-stand_high" type="button" data-cmd="stand_high">Stand High</button>
           <button class="motion-btn" id="btn-lay_down" type="button" data-cmd="lay_down">Lay Down</button>
           <button class="motion-btn" id="btn-sit_down" type="button" data-cmd="sit_down">Sit Down</button>
           <button class="motion-btn" id="btn-stand" type="button" data-cmd="stand">Stand</button>
@@ -948,7 +951,7 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
           <div class="manual-card">
             <div class="stat-label">Manual Mode</div>
             <div class="stat-value" id="manual-mode-state">disabled</div>
-            <div class="stat-note" id="manual-mode-note">Start arachno-brain with <code>--mode manual</code> to enable dashboard-based servo control.</div>
+            <div class="stat-note" id="manual-mode-note">Switch the motion mode to <code>Manual</code> to enable dashboard-based servo control.</div>
           </div>
         </div>
 
@@ -1114,6 +1117,7 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
     let manualLiveApplyPending = false;
     let lastManualLiveApplyAt = 0;
     let manualSlidersInitialized = { value: false };
+    const manualPanelState = { enabled: false, ready: false };
     const LEG_ORDER = [
       "front_left",
       "middle_left",
@@ -1677,7 +1681,10 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
 
     function updateMotionButtons(motionMode) {
       const modeToCmd = {
+        manual: "manual",
         stand_up: "stand_up",
+        stand_up_high: "stand_up_high",
+        stand_high: "stand_high",
         lay_down: "lay_down",
         sit_down: "sit_down",
         stand: "stand",
@@ -1905,19 +1912,27 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
       bindManualControls();
       ensureManualGroups(window.__manualGroups);
       syncManualSliderSpecs(manual?.joints ?? []);
-      setManualSlidersFromGroupValue(!manualSlidersInitialized.value);
+      const enabled = Boolean(manual?.enabled);
+      const ready = Boolean(manual?.ready);
+      const becameEnabled = enabled && !manualPanelState.enabled;
+      const becameReady = enabled && ready && !(manualPanelState.enabled && manualPanelState.ready);
+      setManualSlidersFromGroupValue(
+        !manualSlidersInitialized.value || becameEnabled || becameReady
+      );
+      manualPanelState.enabled = enabled;
+      manualPanelState.ready = ready;
 
       document.getElementById("manual-summary").textContent = manual?.summary ?? "manual control unavailable";
-      document.getElementById("manual-mode-state").textContent = manual?.enabled
-        ? (manual.ready ? "ready" : "waiting")
+      document.getElementById("manual-mode-state").textContent = enabled
+        ? (ready ? "ready" : "waiting")
         : "disabled";
-      document.getElementById("manual-mode-note").textContent = manual?.enabled
+      document.getElementById("manual-mode-note").textContent = enabled
         ? (manual.base_pose_captured
             ? "Manual zero is captured for reset actions. Sliders show absolute semantic angles."
             : "Sliders show absolute semantic angles. Capture the current pose if you want reset-to-zero behavior.")
-        : "Start arachno-brain with --mode manual to enable dashboard-based servo control.";
+        : "Switch the motion mode to Manual to enable dashboard-based servo control.";
 
-      setManualControlsEnabled(Boolean(manual?.enabled && manualGroupsReady));
+      setManualControlsEnabled(Boolean(enabled && manualGroupsReady));
     }
 
     function updateCalibrationPanel(calibration) {

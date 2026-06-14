@@ -108,6 +108,8 @@ pub struct SemanticPoseSet {
     #[serde(default, alias = "home")]
     pub stand_reference: BTreeMap<String, LegPoseAngles>,
     #[serde(default)]
+    pub stand_high: BTreeMap<String, LegPoseAngles>,
+    #[serde(default)]
     pub lay_down: BTreeMap<String, LegPoseAngles>,
     #[serde(default, alias = "zero")]
     pub zero_pose: BTreeMap<String, LegPoseAngles>,
@@ -125,6 +127,7 @@ pub struct LegPoseAngles {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SemanticPoseKind {
     StandReference,
+    StandHigh,
     LayDown,
     ZeroPose,
     SitDown,
@@ -391,6 +394,8 @@ pub struct SharedPoseConfigFile {
     #[serde(default, alias = "home")]
     pub stand_reference: BTreeMap<String, LegPoseAngles>,
     #[serde(default)]
+    pub stand_high: BTreeMap<String, LegPoseAngles>,
+    #[serde(default)]
     pub lay_down: BTreeMap<String, LegPoseAngles>,
     #[serde(default, alias = "zero")]
     pub zero_pose: BTreeMap<String, LegPoseAngles>,
@@ -466,6 +471,7 @@ impl RobotConfig {
             let pose_file: SharedPoseConfigFile = read_toml(&pose_path)?;
             config.poses = SemanticPoseSet {
                 stand_reference: pose_file.stand_reference,
+                stand_high: pose_file.stand_high,
                 lay_down: pose_file.lay_down,
                 zero_pose: pose_file.zero_pose,
                 sit_down: pose_file.sit_down,
@@ -497,6 +503,12 @@ impl RobotConfig {
     pub fn pose_for_leg(&self, kind: SemanticPoseKind, leg_name: &str) -> Option<LegPoseAngles> {
         match kind {
             SemanticPoseKind::StandReference => self.poses.stand_reference.get(leg_name).copied(),
+            SemanticPoseKind::StandHigh => self
+                .poses
+                .stand_high
+                .get(leg_name)
+                .copied()
+                .or_else(|| self.poses.stand_reference.get(leg_name).copied()),
             SemanticPoseKind::LayDown => self
                 .poses
                 .lay_down
@@ -657,6 +669,7 @@ impl LegConfig {
                 self.femur_stand_reference_ticks?,
                 self.tibia_stand_reference_ticks?,
             )),
+            SemanticPoseKind::StandHigh => self.legacy_pose_ticks(SemanticPoseKind::StandReference),
             SemanticPoseKind::LayDown => {
                 let (coxa_stand, femur_stand, tibia_stand) =
                     self.legacy_pose_ticks(SemanticPoseKind::StandReference)?;
@@ -1614,6 +1627,11 @@ coxa_deg = 1.0
 femur_deg = 52.5
 tibia_deg = -120.0
 
+[stand_high.front_left]
+coxa_deg = 0.5
+femur_deg = -48.5
+tibia_deg = -46.0
+
 [lay_down.front_left]
 coxa_deg = 0.0
 femur_deg = 0.0
@@ -1640,6 +1658,12 @@ tibia_deg = 0.0
         assert_eq!(stand_reference_pose.coxa_deg, 1.0);
         assert_eq!(stand_reference_pose.femur_deg, 52.5);
         assert_eq!(stand_reference_pose.tibia_deg, -120.0);
+        let stand_high_pose = config
+            .pose_for_leg(SemanticPoseKind::StandHigh, "front_left")
+            .expect("pose store should provide a stand-high pose");
+        assert_eq!(stand_high_pose.coxa_deg, 0.5);
+        assert_eq!(stand_high_pose.femur_deg, -48.5);
+        assert_eq!(stand_high_pose.tibia_deg, -46.0);
 
         fs::remove_dir_all(&temp_dir).expect("failed to clean temp config dir");
     }

@@ -61,7 +61,9 @@ enum BrainMode {
     LayDown,
     SitDown,
     StandUp,
+    StandUpHigh,
     Stand,
+    StandHigh,
     SlowWalk,
     BackwardWalk,
     RotateLeft,
@@ -78,7 +80,9 @@ impl BrainMode {
             Self::LayDown => "lay_down",
             Self::SitDown => "sit_down",
             Self::StandUp => "stand_up",
+            Self::StandUpHigh => "stand_up_high",
             Self::Stand => "stand",
+            Self::StandHigh => "stand_high",
             Self::SlowWalk => "slow_walk",
             Self::BackwardWalk => "backward_walk",
             Self::RotateLeft => "rotate_left",
@@ -90,6 +94,22 @@ impl BrainMode {
 
     fn requires_torque(self) -> bool {
         !matches!(self, Self::Telemetry)
+    }
+
+    fn stand_transition_target(self) -> Option<SemanticPoseKind> {
+        match self {
+            Self::StandUp => Some(SemanticPoseKind::StandReference),
+            Self::StandUpHigh => Some(SemanticPoseKind::StandHigh),
+            _ => None,
+        }
+    }
+
+    fn stand_settle_target(self) -> Option<SemanticPoseKind> {
+        match self {
+            Self::Stand => Some(SemanticPoseKind::StandReference),
+            Self::StandHigh => Some(SemanticPoseKind::StandHigh),
+            _ => None,
+        }
     }
 
     fn tripod_motion_label(self) -> &'static str {
@@ -460,10 +480,13 @@ struct ManualCommandResponse {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum MotionCommand {
+    Manual,
     StandUp,
+    StandUpHigh,
     LayDown,
     SitDown,
     Stand,
+    StandHigh,
     WalkForward,
     WalkBackward,
     RotateLeft,
@@ -477,9 +500,12 @@ enum MotionCommand {
 impl MotionCommand {
     fn as_brain_mode(self) -> BrainMode {
         match self {
+            Self::Manual => BrainMode::Manual,
             Self::StandUp => BrainMode::StandUp,
+            Self::StandUpHigh => BrainMode::StandUpHigh,
             Self::LayDown => BrainMode::LayDown,
             Self::SitDown => BrainMode::SitDown,
+            Self::StandHigh => BrainMode::StandHigh,
             Self::Stand | Self::Stop => BrainMode::Stand,
             Self::WalkForward => BrainMode::SlowWalk,
             Self::WalkBackward => BrainMode::BackwardWalk,
@@ -573,7 +599,7 @@ impl ManualControlState {
         let summary = if enabled {
             "waiting for the current robot pose before manual angle control becomes ready"
         } else {
-            "manual control is disabled; start arachno-brain with --mode manual to enable dashboard sliders"
+            "manual control is disabled; switch the motion mode to manual to enable dashboard sliders"
         };
 
         Self {
@@ -583,6 +609,12 @@ impl ManualControlState {
             summary: summary.to_owned(),
             pending_actions: VecDeque::new(),
         }
+    }
+}
+
+fn sync_manual_mode_state(manual: &Arc<RwLock<ManualControlState>>, mode: BrainMode) {
+    if let Ok(mut control) = manual.write() {
+        *control = ManualControlState::for_mode(mode);
     }
 }
 
@@ -771,7 +803,9 @@ impl MotionRuntime {
             BrainMode::LayDown => "waiting for all servo feedback before laying down",
             BrainMode::SitDown => "waiting for all servo feedback before sitting down",
             BrainMode::StandUp => "waiting for all servo feedback before standing up",
+            BrainMode::StandUpHigh => "waiting for all servo feedback before standing up high",
             BrainMode::Stand => "waiting for all servo feedback before holding stand",
+            BrainMode::StandHigh => "waiting for all servo feedback before holding high stand",
             BrainMode::SlowWalk => "waiting for all servo feedback before starting the gait",
             BrainMode::BackwardWalk => {
                 "waiting for all servo feedback before starting the backward gait"
@@ -818,7 +852,9 @@ impl MotionRuntime {
             BrainMode::LayDown => "starting lay-down transition".to_owned(),
             BrainMode::SitDown => "starting sit-down transition".to_owned(),
             BrainMode::StandUp => "starting stand-up transition".to_owned(),
+            BrainMode::StandUpHigh => "starting high stand-up transition".to_owned(),
             BrainMode::Stand => "holding the configured stand-reference pose".to_owned(),
+            BrainMode::StandHigh => "holding the configured stand-high pose".to_owned(),
             BrainMode::SlowWalk => "holding the measured stand pose before gait".to_owned(),
             BrainMode::BackwardWalk => {
                 "holding the measured stand pose before backward gait".to_owned()
@@ -886,7 +922,9 @@ impl MotionRuntime {
             BrainMode::LayDown
             | BrainMode::SitDown
             | BrainMode::StandUp
+            | BrainMode::StandUpHigh
             | BrainMode::Stand
+            | BrainMode::StandHigh
             | BrainMode::SlowWalk
             | BrainMode::BackwardWalk
             | BrainMode::RotateLeft
@@ -1051,15 +1089,23 @@ impl MotionRuntime {
                     self.summary = summary;
                     pose
                 }
-                BrainMode::StandUp => {
+                BrainMode::StandUp | BrainMode::StandUpHigh => {
+                    let target_kind = self
+                        .mode
+                        .stand_transition_target()
+                        .expect("stand-up modes should define a target pose");
                     let (pose, summary) =
-                        staged_stand_up_pose(config, calibration, &base_pose, elapsed);
+                        staged_stand_up_pose(config, calibration, &base_pose, elapsed, target_kind);
                     self.summary = summary;
                     pose
                 }
-                BrainMode::Stand => {
+                BrainMode::Stand | BrainMode::StandHigh => {
+                    let target_kind = self
+                        .mode
+                        .stand_settle_target()
+                        .expect("stand modes should define a settle target pose");
                     let (pose, summary) =
-                        stand_settle_pose(config, calibration, &base_pose, elapsed);
+                        stand_settle_pose(config, calibration, &base_pose, elapsed, target_kind);
                     self.summary = summary;
                     pose
                 }
@@ -1097,14 +1143,19 @@ impl MotionRuntime {
             BrainMode::Manual => {
                 named_pose_with_calibration(config, calibration, SemanticPoseKind::StandReference)
             }
-            BrainMode::LayDown | BrainMode::StandUp => {
+            BrainMode::LayDown | BrainMode::StandUp | BrainMode::StandUpHigh => {
                 named_pose_with_calibration(config, calibration, SemanticPoseKind::LayDown)
             }
             BrainMode::SitDown => {
                 named_pose_with_calibration(config, calibration, SemanticPoseKind::SitDown)
             }
-            BrainMode::Stand
-            | BrainMode::SlowWalk
+            BrainMode::Stand => {
+                named_pose_with_calibration(config, calibration, SemanticPoseKind::StandReference)
+            }
+            BrainMode::StandHigh => {
+                named_pose_with_calibration(config, calibration, SemanticPoseKind::StandHigh)
+            }
+            BrainMode::SlowWalk
             | BrainMode::BackwardWalk
             | BrainMode::RotateLeft
             | BrainMode::RotateRight
@@ -1300,6 +1351,7 @@ fn spawn_control_worker(
                 mode = new_mode;
                 motion = MotionRuntime::new(new_mode, walk_seconds);
                 loop_period = motion_loop_period(new_mode, &config);
+                sync_manual_mode_state(&manual, new_mode);
                 if !new_mode.requires_torque() && torque_enabled {
                     if let Some(b) = bus.as_mut()
                         && let Err(e) = b.enable_torque(false)
@@ -2209,7 +2261,7 @@ fn ensure_manual_enabled(state: &AppState) -> Result<(), (StatusCode, String)> {
     } else {
         Err(manual_api_error(
             StatusCode::CONFLICT,
-            "manual control is disabled; restart arachno-brain with --mode manual",
+            "manual control is disabled; switch the motion mode to manual first",
         ))
     }
 }
@@ -2864,23 +2916,24 @@ fn staged_stand_up_pose(
     calibration: &SemanticCalibrationState,
     base_pose: &BTreeMap<u8, u16>,
     elapsed: f32,
+    target_kind: SemanticPoseKind,
 ) -> (BTreeMap<u8, u16>, String) {
-    let stand_reference_pose =
-        named_pose_with_calibration(config, calibration, SemanticPoseKind::StandReference);
+    let target_pose = named_pose_with_calibration(config, calibration, target_kind);
+    let (hold_label, align_label) = stand_pose_labels(target_kind);
     let duration = config.locomotion.stand_up.duration_seconds.max(0.5);
     let progress = (elapsed / duration).clamp(0.0, 1.0);
 
     if progress >= 1.0 {
         return (
-            stand_reference_pose,
-            "holding the configured stand-reference pose".to_owned(),
+            target_pose,
+            format!("holding the configured {hold_label} pose"),
         );
     }
 
     let lay_down_pose = named_pose_with_calibration(config, calibration, SemanticPoseKind::LayDown);
     let femur_lift_pose = femur_lift_pose(config, &lay_down_pose, base_pose);
     let foot_plant_pose = foot_plant_pose(config, &lay_down_pose, base_pose, &femur_lift_pose);
-    let body_raise_pose = body_raise_pose(config, &lay_down_pose, base_pose, &stand_reference_pose);
+    let body_raise_pose = body_raise_pose(config, &lay_down_pose, base_pose, &target_pose);
 
     let femur_phase = (duration * STAND_UP_FEMUR_PREP_RATIO).max(0.1);
     let tibia_phase = (duration * STAND_UP_TIBIA_PLANT_RATIO).max(0.1);
@@ -2920,9 +2973,22 @@ fn staged_stand_up_pose(
         let phase_elapsed = elapsed - femur_phase - tibia_phase - body_phase;
         let phase_progress = smoothstep((phase_elapsed / coxa_phase).clamp(0.0, 1.0));
         (
-            interpolate_pose(&body_raise_pose, &stand_reference_pose, phase_progress),
-            format!("aligning coxae into stand ({:.0}%)", phase_progress * 100.0),
+            interpolate_pose(&body_raise_pose, &target_pose, phase_progress),
+            format!(
+                "aligning coxae into {align_label} ({:.0}%)",
+                phase_progress * 100.0
+            ),
         )
+    }
+}
+
+fn stand_pose_labels(kind: SemanticPoseKind) -> (&'static str, &'static str) {
+    match kind {
+        SemanticPoseKind::StandReference => ("stand-reference", "stand"),
+        SemanticPoseKind::StandHigh => ("stand-high", "high stand"),
+        SemanticPoseKind::LayDown => ("lay-down", "lay-down"),
+        SemanticPoseKind::ZeroPose => ("zero", "zero"),
+        SemanticPoseKind::SitDown => ("sit-down", "sit-down"),
     }
 }
 
@@ -2971,20 +3037,22 @@ fn stand_settle_pose(
     calibration: &SemanticCalibrationState,
     base_pose: &BTreeMap<u8, u16>,
     elapsed: f32,
+    target_kind: SemanticPoseKind,
 ) -> (BTreeMap<u8, u16>, String) {
+    let (hold_label, _) = stand_pose_labels(target_kind);
     let settle = config.locomotion.stand.settle_seconds.max(0.25);
     let progress = (elapsed / settle).clamp(0.0, 1.0);
     let summary = if progress < 1.0 {
         format!(
-            "settling into the configured stand-reference pose ({:.0}%)",
+            "settling into the configured {hold_label} pose ({:.0}%)",
             progress * 100.0
         )
     } else {
-        "holding the configured stand-reference pose".to_owned()
+        format!("holding the configured {hold_label} pose")
     };
     let pose = interpolate_pose(
         base_pose,
-        &named_pose_with_calibration(config, calibration, SemanticPoseKind::StandReference),
+        &named_pose_with_calibration(config, calibration, target_kind),
         smoothstep(progress),
     );
     (pose, summary)
@@ -3859,4 +3927,87 @@ fn ticks_to_deg(ticks: u16) -> f32 {
 
 fn speed_ticks_to_rpm(speed_ticks: i16) -> f32 {
     speed_ticks as f32 * 60.0 / 4096.0
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        collections::BTreeMap,
+        sync::{Arc, RwLock},
+    };
+
+    use super::{
+        BrainMode, ManualControlState, MotionCommand, stand_pose_labels, sync_manual_mode_state,
+    };
+    use arachno_core::SemanticPoseKind;
+
+    #[test]
+    fn manual_motion_command_maps_to_manual_mode() {
+        assert_eq!(MotionCommand::Manual.as_brain_mode(), BrainMode::Manual);
+    }
+
+    #[test]
+    fn syncing_manual_mode_state_reinitializes_manual_control() {
+        let manual = Arc::new(RwLock::new(ManualControlState {
+            enabled: false,
+            base_pose: Some(BTreeMap::from([(11, 2048u16)])),
+            target_pose: Some(BTreeMap::from([(11, 2200u16)])),
+            summary: "stale".to_owned(),
+            pending_actions: Default::default(),
+        }));
+
+        sync_manual_mode_state(&manual, BrainMode::Manual);
+
+        let control = manual.read().expect("manual control should lock");
+        assert!(control.enabled);
+        assert!(control.base_pose.is_none());
+        assert!(control.target_pose.is_none());
+        assert!(
+            control
+                .summary
+                .contains("waiting for the current robot pose")
+        );
+    }
+
+    #[test]
+    fn stand_up_high_mode_targets_the_high_stand_pose() {
+        assert_eq!(
+            BrainMode::StandUpHigh.stand_transition_target(),
+            Some(SemanticPoseKind::StandHigh)
+        );
+        assert_eq!(BrainMode::StandUpHigh.as_state_label(), "stand_up_high");
+    }
+
+    #[test]
+    fn stand_up_high_motion_command_maps_to_the_new_mode() {
+        assert_eq!(
+            MotionCommand::StandUpHigh.as_brain_mode(),
+            BrainMode::StandUpHigh
+        );
+    }
+
+    #[test]
+    fn stand_high_mode_targets_the_high_stand_pose() {
+        assert_eq!(
+            BrainMode::StandHigh.stand_settle_target(),
+            Some(SemanticPoseKind::StandHigh)
+        );
+        assert_eq!(BrainMode::StandHigh.as_state_label(), "stand_high");
+    }
+
+    #[test]
+    fn stand_high_motion_command_maps_to_the_new_mode() {
+        assert_eq!(
+            MotionCommand::StandHigh.as_brain_mode(),
+            BrainMode::StandHigh
+        );
+    }
+
+    #[test]
+    fn stand_high_pose_labels_match_transition_copy() {
+        assert_eq!(
+            stand_pose_labels(SemanticPoseKind::StandHigh),
+            ("stand-high", "high stand")
+        );
+    }
 }
