@@ -689,11 +689,19 @@ impl LegConfig {
     }
 
     pub fn femur_deg_from_ticks(&self, ticks: u16) -> f32 {
-        ticks_to_semantic_deg(self.femur_zero_reference_ticks(), self.femur_lift_sign(), ticks)
+        ticks_to_semantic_deg(
+            self.femur_zero_reference_ticks(),
+            self.femur_lift_sign(),
+            ticks,
+        )
     }
 
     pub fn tibia_deg_from_ticks(&self, ticks: u16) -> f32 {
-        ticks_to_semantic_deg(self.tibia_zero_reference_ticks(), self.tibia_lift_sign(), ticks)
+        ticks_to_semantic_deg(
+            self.tibia_zero_reference_ticks(),
+            self.tibia_lift_sign(),
+            ticks,
+        )
     }
 
     pub fn pose_ticks_from_angles(&self, pose: LegPoseAngles) -> (u16, u16, u16) {
