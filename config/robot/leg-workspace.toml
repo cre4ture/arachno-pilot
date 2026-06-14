@@ -1,0 +1,35 @@
+[front_left]
+min_reach_cm = 6.5
+max_reach_cm = 13.699999809265137
+min_height_cm = -22.0
+max_height_cm = 6.5
+
+[front_right]
+min_reach_cm = 6.199999809265137
+max_reach_cm = 16.299999237060547
+min_height_cm = -22.100000381469727
+max_height_cm = 7.099999904632568
+
+[middle_left]
+min_reach_cm = 6.800000190734863
+max_reach_cm = 15.300000190734863
+min_height_cm = -21.700000762939453
+max_height_cm = 7.099999904632568
+
+[middle_right]
+min_reach_cm = 6.699999809265137
+max_reach_cm = 15.5
+min_height_cm = -21.899999618530273
+max_height_cm = 7.199999809265137
+
+[rear_left]
+min_reach_cm = 6.400000095367432
+max_reach_cm = 16.899999618530273
+min_height_cm = -21.200000762939453
+max_height_cm = 6.900000095367432
+
+[rear_right]
+min_reach_cm = 6.699999809265137
+max_reach_cm = 15.300000190734863
+min_height_cm = -21.5
+max_height_cm = 7.400000095367432

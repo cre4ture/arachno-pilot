@@ -15,15 +15,14 @@ use arachno_feetech_sts::{
     validate_servo_eeprom_entry_value as validate_bus_servo_eeprom_entry_value,
     validate_servo_eeprom_profile as validate_bus_servo_eeprom_profile,
 };
-use arachno_hal::{
-    ServoBus, ServoPollParams, enable_torque_on_current_position, servo_has_stopped,
-    wait_for_servos_to_settle,
-};
+use arachno_hal::{ServoBus, enable_torque_on_current_position, servo_has_stopped};
 use arachno_msg::{JointCommand, ServoTelemetry};
 use clap::{Parser, ValueEnum};
 use serde::{Deserialize, Serialize};
 use tracing::{info, info_span, warn};
 use tracing_appender::non_blocking::WorkerGuard;
+
+mod workspace;
 use tracing_subscriber::{
     filter::LevelFilter,
     fmt::{self, format::FmtSpan},
@@ -38,7 +37,7 @@ const FEEDBACK_RETRY_SLEEP_MS: u64 = 15;
 const EEPROM_WRITE_SETTLE_MS: u64 = 80;
 const EEPROM_LOCK_SETTLE_MS: u64 = 50;
 const POSITION_SETTLE_CONFIRM_CYCLES: u8 = 2;
-const PHASE_SETTLE_SLEEP_MS: u64 = 250;
+pub(crate) const PHASE_SETTLE_SLEEP_MS: u64 = 250;
 const POSE_EDGE_WARNING_MIN_TICKS: u16 = 20;
 const COXA_SUSPICIOUS_SPAN_TICKS: u16 = 20;
 const FEMUR_STAND_REFERENCE_RATIO: f32 = 0.40;
@@ -75,9 +74,9 @@ struct Args {
     ranges: PathBuf,
     #[arg(long)]
     suggestions_output: Option<PathBuf>,
-    #[arg(long, default_value_t = 100)]
+    #[arg(long, default_value_t = 70)]
     probe_torque_limit: u16,
-    #[arg(long, default_value_t = 1000)]
+    #[arg(long, default_value_t = 400)]
     restore_torque_limit: u16,
     #[arg(long, default_value_t = 120)]
     poll_ms: u64,
@@ -104,13 +103,21 @@ struct Args {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct SenseParams {
-    probe_torque_limit: u16,
-    restore_torque_limit: u16,
-    poll_ms: u64,
-    stop_speed_ticks: u16,
-    confirm_stopped_samples: u8,
-    move_timeout_ms: u64,
+pub(crate) struct SenseParams {
+    pub(crate) probe_torque_limit: u16,
+    pub(crate) restore_torque_limit: u16,
+    pub(crate) poll_ms: u64,
+    pub(crate) stop_speed_ticks: u16,
+    pub(crate) confirm_stopped_samples: u8,
+    pub(crate) move_timeout_ms: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TorqueMode {
+    Sense,
+    Move,
+    Hold,
+    TryMove,
 }
 
 #[derive(Debug, Clone)]
@@ -130,28 +137,28 @@ struct BoundProbeState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct ResistanceObservation {
-    position_ticks: u16,
-    detection: String,
-    load_pct: f32,
-    current_ma: Option<u16>,
-    moving: bool,
-    status_bits: Option<u8>,
-    faults: Vec<String>,
+pub(crate) struct ResistanceObservation {
+    pub(crate) position_ticks: u16,
+    pub(crate) detection: String,
+    pub(crate) load_pct: f32,
+    pub(crate) current_ma: Option<u16>,
+    pub(crate) moving: bool,
+    pub(crate) status_bits: Option<u8>,
+    pub(crate) faults: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct JointRangeMeasurement {
-    joint: String,
-    servo_id: u8,
-    logical_positive_label: String,
-    logical_negative_end_ticks: u16,
-    logical_positive_end_ticks: u16,
-    midpoint_ticks: u16,
-    upper_seventy_percent_ticks: u16,
-    span_ticks: u16,
-    positive_limit: ResistanceObservation,
-    negative_limit: ResistanceObservation,
+pub(crate) struct JointRangeMeasurement {
+    pub(crate) joint: String,
+    pub(crate) servo_id: u8,
+    pub(crate) logical_positive_label: String,
+    pub(crate) logical_negative_end_ticks: u16,
+    pub(crate) logical_positive_end_ticks: u16,
+    pub(crate) midpoint_ticks: u16,
+    pub(crate) upper_seventy_percent_ticks: u16,
+    pub(crate) span_ticks: u16,
+    pub(crate) positive_limit: ResistanceObservation,
+    pub(crate) negative_limit: ResistanceObservation,
 }
 
 #[derive(Debug, Clone)]
@@ -708,19 +715,20 @@ fn sense_workspace(config: &RobotConfig, args: &Args) -> anyhow::Result<()> {
         confirm_stopped_samples: args.confirm_stopped_samples.max(1),
         move_timeout_ms: args.move_timeout_ms.max(1_000),
     };
-    let stand_timeout_ms = args
-        .stand_timeout_ms
-        .unwrap_or(params.move_timeout_ms.saturating_mul(4));
+    let torque_limits = workspace::WorkspaceTorqueLimits::from(&params);
     let output_path = resolve_output_path(&args.workspace_output);
     let trace_path = resolve_trace_output_path(args, &output_path);
     let _trace_guard = init_trace_logging(&trace_path)?;
-    let femur_steps = args.workspace_femur_steps.max(2);
-
     info!(robot = %config.robot.name, "workspace calibration");
     info!(deployment_profile = %config.deployment.profile, "loaded deployment profile");
     info!(servo_bus = %config.bus.feetech.port, "servo bus");
     info!(output = %output_path.display(), "workspace output path");
     info!(trace_output = %trace_path.display(), "trace log path");
+    info!(
+        sensing_torque_limit = torque_limits.sense_limit,
+        move_torque_limit = torque_limits.move_limit,
+        "workspace torque policy"
+    );
 
     let ranges = load_range_report(&args.ranges)
         .with_context(|| format!("loading range report from {}", args.ranges.display()))?;
@@ -741,32 +749,22 @@ fn sense_workspace(config: &RobotConfig, args: &Args) -> anyhow::Result<()> {
     set_verified_torque_limit_on_current_position_for_ids(
         &mut bus,
         &servo_ids,
-        params.restore_torque_limit,
-        "setting default torque before workspace calibration",
+        torque_limits.sense_limit,
+        "setting low torque limits for workspace sensing",
     )?;
 
-    let gait = TripodGait;
-    let stand_pose = gait.stand_reference_pose(config);
-
     if args.skip_initial_stand {
-        info!("skipping initial stand move; assuming robot is already in standing pose");
+        info!("assuming the current pose is already standing for workspace calibration");
     } else {
-        move_pose_until_close(
-            &mut bus,
-            &stand_pose,
-            &servo_ids,
-            params.poll_ms,
-            stand_timeout_ms,
-            "moving to stand reference for workspace calibration",
-        )
-        .with_context(|| {
-            format!(
-                "If the robot is in an awkward position after a previous failed run, \
-                 manually position it in standing pose and re-run with --skip-initial-stand"
-            )
-        })?;
+        info!(
+            "assuming the current pose is already standing; skipping configured stand-reference move"
+        );
     }
-    thread::sleep(Duration::from_secs(2));
+
+    let stand_pose = read_pose(&mut bus, &servo_ids).with_context(|| {
+        "failed to read current pose; workspace calibration now assumes the robot is already standing"
+    })?;
+    thread::sleep(Duration::from_millis(PHASE_SETTLE_SLEEP_MS));
 
     let mut workspaces: BTreeMap<String, LegWorkspace> = BTreeMap::new();
 
@@ -787,14 +785,13 @@ fn sense_workspace(config: &RobotConfig, args: &Args) -> anyhow::Result<()> {
             println!("calibrating workspace for leg {}", leg.name);
             info!(leg = %leg.name, "workspace calibration");
 
-            let workspace = calibrate_leg_workspace(
+            let workspace = workspace::calibrate_leg_workspace(
                 &mut bus,
                 &stand_pose,
                 leg,
                 femur_ranges,
                 tibia_ranges,
                 &params,
-                femur_steps,
             )?;
 
             println!(
@@ -808,14 +805,15 @@ fn sense_workspace(config: &RobotConfig, args: &Args) -> anyhow::Result<()> {
 
             workspaces.insert(leg.name.clone(), workspace);
 
-            move_pose_until_close(
-                &mut bus,
-                &stand_pose,
-                &[leg.femur_servo_id, leg.tibia_servo_id],
-                params.poll_ms,
-                params.move_timeout_ms,
-                "restoring leg to stand pose between workspace probes",
-            )?;
+            let mut stand_reset_pose = stand_pose.clone();
+            workspace::WorkspaceLegMotion::new(&mut bus, &mut stand_reset_pose, leg, &params)
+                .move_femur_and_tibia_with_torque_mode(
+                    TorqueMode::Move,
+                    TorqueMode::Sense,
+                    "raising torque to restore leg to stand pose",
+                    "restoring low torque after leg stand reset",
+                    "restoring leg to stand pose between workspace probes",
+                )?;
             thread::sleep(Duration::from_millis(PHASE_SETTLE_SLEEP_MS));
         }
         Ok(())
@@ -824,8 +822,8 @@ fn sense_workspace(config: &RobotConfig, args: &Args) -> anyhow::Result<()> {
     let restore = set_verified_torque_limit_on_current_position_for_ids(
         &mut bus,
         &servo_ids,
-        params.restore_torque_limit,
-        "restoring default torque limits after workspace calibration",
+        torque_limits.sense_limit,
+        "restoring low torque limits after workspace calibration",
     );
     if let Err(err) = restore {
         warn!("torque-limit restore warning: {err:#}");
@@ -844,167 +842,6 @@ fn sense_workspace(config: &RobotConfig, args: &Args) -> anyhow::Result<()> {
     println!("wrote leg workspace to {}", output_path.display());
 
     Ok(())
-}
-
-fn calibrate_leg_workspace(
-    bus: &mut RealStsBus,
-    stand_pose: &BTreeMap<u8, u16>,
-    leg: &LegConfig,
-    femur_ranges: &JointRangeMeasurement,
-    tibia_ranges: &JointRangeMeasurement,
-    params: &SenseParams,
-    femur_steps: u8,
-) -> anyhow::Result<LegWorkspace> {
-    let femur_stand_ticks = *stand_pose
-        .get(&leg.femur_servo_id)
-        .with_context(|| format!("missing stand pose for femur servo {}", leg.femur_servo_id))?;
-    let tibia_stand_ticks = *stand_pose
-        .get(&leg.tibia_servo_id)
-        .with_context(|| format!("missing stand pose for tibia servo {}", leg.tibia_servo_id))?;
-
-    // Sweep femur toward the lift (positive) limit: foot rises above floor.
-    let femur_lift_limit_ticks = femur_ranges.logical_positive_end_ticks;
-
-    // Tibia safe-up position: 70% toward the lift (positive) limit.
-    let tibia_safe_up_ticks = tibia_ranges.upper_seventy_percent_ticks;
-
-    // Tibia down limit: anti-lift (negative) end = maximum foot extension.
-    let tibia_down_limit_ticks = tibia_ranges.logical_negative_end_ticks;
-
-    // Tibia range scan limit (max extension from range data) for below-floor FK computation.
-    let tibia_max_ext_deg = leg.tibia_deg_from_ticks(tibia_down_limit_ticks);
-
-    let poll_params = ServoPollParams {
-        poll_ms: params.poll_ms,
-        stop_speed_ticks: params.stop_speed_ticks,
-        confirm_stopped_samples: params.confirm_stopped_samples,
-        timeout_ms: params.move_timeout_ms,
-    };
-
-    let mut fk_points: Vec<(f32, f32)> = Vec::new();
-
-    // Include stand reference as a seed point.
-    {
-        let femur_deg = leg.femur_deg_from_ticks(femur_stand_ticks);
-        let tibia_deg = leg.tibia_deg_from_ticks(tibia_stand_ticks);
-        let sv = leg.side_view_pose(femur_deg, tibia_deg);
-        fk_points.push((
-            (sv.tibia_end.x - sv.coxa_end.x).abs(),
-            sv.tibia_end.y - sv.coxa_end.y,
-        ));
-    }
-
-    for step_idx in 0..femur_steps {
-        let ratio = step_idx as f32 / (femur_steps - 1).max(1) as f32;
-        let femur_target_ticks =
-            interpolate_ticks(femur_stand_ticks, femur_lift_limit_ticks, ratio);
-
-        // Build pose for this probe step: femur at target, tibia retracted to safe-up position.
-        let mut pose = stand_pose.clone();
-        pose.insert(leg.femur_servo_id, femur_target_ticks);
-        pose.insert(leg.tibia_servo_id, tibia_safe_up_ticks);
-
-        move_pose_until_close(
-            bus,
-            &pose,
-            &[leg.femur_servo_id, leg.tibia_servo_id],
-            params.poll_ms,
-            params.move_timeout_ms,
-            "moving to femur sweep position",
-        )?;
-
-        let femur_deg = leg.femur_deg_from_ticks(femur_target_ticks);
-
-        // Record FK at safe-up tibia position (maximum lift = minimum height candidate).
-        {
-            let tibia_up_deg = leg.tibia_deg_from_ticks(tibia_safe_up_ticks);
-            let sv = leg.side_view_pose(femur_deg, tibia_up_deg);
-            fk_points.push((
-                (sv.tibia_end.x - sv.coxa_end.x).abs(),
-                sv.tibia_end.y - sv.coxa_end.y,
-            ));
-        }
-
-        // Record FK at range-scan tibia extension limit (below-floor = maximum height candidate).
-        {
-            let sv = leg.side_view_pose(femur_deg, tibia_max_ext_deg);
-            fk_points.push((
-                (sv.tibia_end.x - sv.coxa_end.x).abs(),
-                sv.tibia_end.y - sv.coxa_end.y,
-            ));
-        }
-
-        // Probe tibia toward floor with torque limit: detect actual floor contact.
-        set_verified_torque_limit_on_current_position_for_ids(
-            bus,
-            &[leg.tibia_servo_id],
-            params.probe_torque_limit,
-            "setting probe torque for workspace tibia probe",
-        )?;
-
-        pose.insert(leg.tibia_servo_id, tibia_down_limit_ticks);
-        sync_full_pose(bus, &pose)?;
-
-        // Wait one poll interval so servo starts moving before settle check.
-        thread::sleep(Duration::from_millis(params.poll_ms));
-
-        let settled = wait_for_servos_to_settle(bus, &[leg.tibia_servo_id], poll_params)
-            .with_context(|| {
-                format!("timeout waiting for tibia probe on leg {}", leg.name)
-            })?;
-
-        let settled_tibia_ticks = settled[&leg.tibia_servo_id].present_position_ticks;
-
-        set_verified_torque_limit_on_current_position_for_ids(
-            bus,
-            &[leg.tibia_servo_id],
-            params.restore_torque_limit,
-            "restoring tibia torque after workspace probe",
-        )?;
-
-        // Record FK at floor-contact position.
-        let tibia_contact_deg = leg.tibia_deg_from_ticks(settled_tibia_ticks);
-        let sv = leg.side_view_pose(femur_deg, tibia_contact_deg);
-        fk_points.push((
-            (sv.tibia_end.x - sv.coxa_end.x).abs(),
-            sv.tibia_end.y - sv.coxa_end.y,
-        ));
-
-        // Return tibia to safe-up position before next femur step.
-        pose.insert(leg.tibia_servo_id, tibia_safe_up_ticks);
-        move_pose_until_close(
-            bus,
-            &pose,
-            &[leg.tibia_servo_id],
-            params.poll_ms,
-            params.move_timeout_ms,
-            "retracting tibia after probe",
-        )?;
-    }
-
-    let min_reach = fk_points
-        .iter()
-        .map(|(r, _)| *r)
-        .fold(f32::MAX, f32::min);
-    let max_reach = fk_points
-        .iter()
-        .map(|(r, _)| *r)
-        .fold(f32::MIN, f32::max);
-    let min_height = fk_points
-        .iter()
-        .map(|(_, h)| *h)
-        .fold(f32::MAX, f32::min);
-    let max_height = fk_points
-        .iter()
-        .map(|(_, h)| *h)
-        .fold(f32::MIN, f32::max);
-
-    Ok(LegWorkspace {
-        min_reach_cm: (min_reach * 10.0).round() / 10.0,
-        max_reach_cm: (max_reach * 10.0).round() / 10.0,
-        min_height_cm: (min_height * 10.0).round() / 10.0,
-        max_height_cm: (max_height * 10.0).round() / 10.0,
-    })
 }
 
 fn joint_probes(config: &RobotConfig, joint: JointKind) -> Vec<JointProbe> {
@@ -1110,7 +947,7 @@ fn sense_joint_group_range(
     Ok(measurements)
 }
 
-fn set_verified_torque_limit_on_current_position_for_ids(
+pub(crate) fn set_verified_torque_limit_on_current_position_for_ids(
     bus: &mut RealStsBus,
     servo_ids: &[u8],
     torque_limit: u16,
@@ -1212,14 +1049,17 @@ fn move_joint_group_to_ratio(
     Ok(())
 }
 
-fn move_pose_until_close(
-    bus: &mut RealStsBus,
+fn move_pose_to_target<B>(
+    bus: &mut B,
     target_pose: &BTreeMap<u8, u16>,
     tracked_servo_ids: &[u8],
     poll_ms: u64,
     move_timeout_ms: u64,
     label: &str,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<bool>
+where
+    B: ServoBus,
+{
     let _span = info_span!(
         "move_pose_until_close",
         label = label,
@@ -1272,7 +1112,7 @@ fn move_pose_until_close(
 
         if stable_cycles >= POSITION_SETTLE_CONFIRM_CYCLES {
             info!("pose settled");
-            return Ok(());
+            return Ok(true);
         }
 
         if started.elapsed().unwrap_or_default().as_millis() > u128::from(move_timeout_ms) {
@@ -1294,9 +1134,59 @@ fn move_pose_until_close(
                     );
                 }
             }
-            bail!("{label} did not settle within the timeout");
+            return Ok(false);
         }
     }
+}
+
+pub(crate) fn move_pose_until_close<B>(
+    bus: &mut B,
+    target_pose: &BTreeMap<u8, u16>,
+    tracked_servo_ids: &[u8],
+    poll_ms: u64,
+    move_timeout_ms: u64,
+    label: &str,
+) -> anyhow::Result<()>
+where
+    B: ServoBus,
+{
+    if move_pose_to_target(
+        bus,
+        target_pose,
+        tracked_servo_ids,
+        poll_ms,
+        move_timeout_ms,
+        label,
+    )? {
+        Ok(())
+    } else {
+        bail!("{label} did not settle within the timeout")
+    }
+}
+
+pub(crate) fn try_move_pose<B>(
+    bus: &mut B,
+    target_pose: &BTreeMap<u8, u16>,
+    tracked_servo_ids: &[u8],
+    poll_ms: u64,
+    move_timeout_ms: u64,
+    label: &str,
+) -> anyhow::Result<()>
+where
+    B: ServoBus,
+{
+    if !move_pose_to_target(
+        bus,
+        target_pose,
+        tracked_servo_ids,
+        poll_ms,
+        move_timeout_ms,
+        label,
+    )? {
+        warn!("{label} did not fully settle within the timeout; continuing best-effort");
+    }
+
+    Ok(())
 }
 
 fn wait_for_group_stop(
@@ -1658,7 +1548,10 @@ fn write_suggested_pose_report(path: &Path, report: &SuggestedPoseReport) -> any
     fs::write(path, text).with_context(|| format!("failed to write {}", path.display()))
 }
 
-fn read_pose(bus: &mut RealStsBus, servo_ids: &[u8]) -> anyhow::Result<BTreeMap<u8, u16>> {
+fn read_pose<B>(bus: &mut B, servo_ids: &[u8]) -> anyhow::Result<BTreeMap<u8, u16>>
+where
+    B: ServoBus,
+{
     let feedback = read_feedback_map(bus, servo_ids)?;
     let mut pose = BTreeMap::new();
     for servo_id in servo_ids {
@@ -1670,10 +1563,31 @@ fn read_pose(bus: &mut RealStsBus, servo_ids: &[u8]) -> anyhow::Result<BTreeMap<
     Ok(pose)
 }
 
-fn read_feedback_map(
-    bus: &mut RealStsBus,
+pub(crate) fn sync_pose_targets_to_current_for_ids<B>(
+    bus: &mut B,
+    pose: &mut BTreeMap<u8, u16>,
     servo_ids: &[u8],
-) -> anyhow::Result<BTreeMap<u8, ServoTelemetry>> {
+) -> anyhow::Result<()>
+where
+    B: ServoBus,
+{
+    let current_pose = read_pose(bus, servo_ids)?;
+    for servo_id in servo_ids {
+        let current_ticks = *current_pose
+            .get(servo_id)
+            .with_context(|| format!("missing current pose for servo {}", servo_id))?;
+        pose.insert(*servo_id, current_ticks);
+    }
+    Ok(())
+}
+
+pub(crate) fn read_feedback_map<B>(
+    bus: &mut B,
+    servo_ids: &[u8],
+) -> anyhow::Result<BTreeMap<u8, ServoTelemetry>>
+where
+    B: ServoBus,
+{
     let mut feedback = BTreeMap::new();
     for servo_id in servo_ids {
         let telemetry = read_feedback_with_retries(bus, *servo_id)?;
@@ -1682,10 +1596,10 @@ fn read_feedback_map(
     Ok(feedback)
 }
 
-fn read_feedback_map_best_effort(
-    bus: &mut RealStsBus,
-    servo_ids: &[u8],
-) -> BTreeMap<u8, ServoTelemetry> {
+fn read_feedback_map_best_effort<B>(bus: &mut B, servo_ids: &[u8]) -> BTreeMap<u8, ServoTelemetry>
+where
+    B: ServoBus,
+{
     let mut feedback = BTreeMap::new();
     for servo_id in servo_ids {
         match read_feedback_with_retries(bus, *servo_id) {
@@ -1700,10 +1614,10 @@ fn read_feedback_map_best_effort(
     feedback
 }
 
-fn read_feedback_with_retries(
-    bus: &mut RealStsBus,
-    servo_id: u8,
-) -> anyhow::Result<ServoTelemetry> {
+fn read_feedback_with_retries<B>(bus: &mut B, servo_id: u8) -> anyhow::Result<ServoTelemetry>
+where
+    B: ServoBus,
+{
     let mut last_error = None;
     for attempt in 0..FEEDBACK_READ_RETRIES {
         match bus.read_feedback(servo_id) {
@@ -1721,7 +1635,10 @@ fn read_feedback_with_retries(
         .with_context(|| format!("failed to read feedback from servo {}", servo_id))
 }
 
-fn sync_full_pose(bus: &mut RealStsBus, pose: &BTreeMap<u8, u16>) -> anyhow::Result<()> {
+pub(crate) fn sync_full_pose<B>(bus: &mut B, pose: &BTreeMap<u8, u16>) -> anyhow::Result<()>
+where
+    B: ServoBus,
+{
     let commands = pose
         .iter()
         .map(|(&servo_id, &position_ticks)| JointCommand {
@@ -1769,7 +1686,7 @@ fn servo_has_started_motion(
             >= MOTION_START_TICKS
 }
 
-fn interpolate_ticks(start_ticks: u16, end_ticks: u16, ratio: f32) -> u16 {
+pub(crate) fn interpolate_ticks(start_ticks: u16, end_ticks: u16, ratio: f32) -> u16 {
     let ratio = ratio.clamp(0.0, 1.0);
     let interpolated = start_ticks as f32 + (end_ticks as f32 - start_ticks as f32) * ratio;
     interpolated.round().clamp(0.0, 4095.0) as u16
@@ -1837,4 +1754,120 @@ fn init_trace_logging(path: &Path) -> anyhow::Result<WorkerGuard> {
         .map_err(|err| anyhow!("failed to initialize tracing subscriber: {err}"))?;
 
     Ok(guard)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use super::{move_pose_until_close, sync_pose_targets_to_current_for_ids, try_move_pose};
+    use crate::JointCommand;
+    use arachno_feetech_sts::MockStsBus;
+    use arachno_hal::ServoBus;
+    use arachno_msg::ServoTelemetry;
+
+    #[derive(Debug)]
+    struct StuckServoBus {
+        servo_ids: Vec<u8>,
+        feedback: BTreeMap<u8, ServoTelemetry>,
+        commands: Vec<JointCommand>,
+    }
+
+    impl StuckServoBus {
+        fn new(servo_ids: Vec<u8>, feedback: BTreeMap<u8, ServoTelemetry>) -> Self {
+            Self {
+                servo_ids,
+                feedback,
+                commands: Vec::new(),
+            }
+        }
+    }
+
+    impl ServoBus for StuckServoBus {
+        fn servo_ids(&self) -> &[u8] {
+            &self.servo_ids
+        }
+
+        fn enable_torque(&mut self, _enabled: bool) -> arachno_hal::HalResult<()> {
+            Ok(())
+        }
+
+        fn sync_write_positions(
+            &mut self,
+            commands: &[JointCommand],
+        ) -> arachno_hal::HalResult<()> {
+            self.commands = commands.to_vec();
+            Ok(())
+        }
+
+        fn read_feedback(&mut self, servo_id: u8) -> arachno_hal::HalResult<ServoTelemetry> {
+            self.feedback.get(&servo_id).cloned().ok_or_else(|| {
+                arachno_hal::HalError::DeviceUnavailable(format!(
+                    "servo {} is not configured",
+                    servo_id
+                ))
+            })
+        }
+    }
+
+    #[test]
+    fn sync_pose_targets_to_current_for_ids_updates_requested_targets() {
+        let mut bus = MockStsBus::new(vec![11, 12, 13]);
+        bus.sync_write_positions(&[
+            JointCommand {
+                servo_id: 11,
+                position_ticks: 1500,
+                speed_ticks: 0,
+                acceleration: 0,
+            },
+            JointCommand {
+                servo_id: 12,
+                position_ticks: 2600,
+                speed_ticks: 0,
+                acceleration: 0,
+            },
+        ])
+        .expect("mock pose write should succeed");
+
+        let mut pose = BTreeMap::from([(11, 900), (12, 900), (13, 777)]);
+        sync_pose_targets_to_current_for_ids(&mut bus, &mut pose, &[11, 12])
+            .expect("syncing pose targets should succeed");
+
+        assert_eq!(pose[&11], 1500);
+        assert_eq!(pose[&12], 2600);
+        assert_eq!(pose[&13], 777);
+    }
+
+    #[test]
+    fn try_move_pose_returns_ok_when_target_does_not_settle() {
+        let feedback = BTreeMap::from([(
+            11,
+            ServoTelemetry {
+                servo_id: 11,
+                present_position_ticks: 1000,
+                present_speed_ticks: 0,
+                present_load_pct: 0.0,
+                present_voltage_v: 7.4,
+                present_current_ma: Some(0),
+                present_temperature_c: Some(30),
+                status_bits: Some(0),
+                faults: Vec::new(),
+                moving: false,
+            },
+        )]);
+        let mut bus = StuckServoBus::new(vec![11], feedback);
+        let target_pose = BTreeMap::from([(11, 2000)]);
+
+        let err = move_pose_until_close(&mut bus, &target_pose, &[11], 1, 2, "strict move")
+            .expect_err("strict move should time out");
+        assert!(
+            err.to_string()
+                .contains("strict move did not settle within the timeout")
+        );
+
+        try_move_pose(&mut bus, &target_pose, &[11], 1, 2, "best effort move")
+            .expect("try move should not fail on timeout");
+        assert_eq!(bus.commands.len(), 1);
+        assert_eq!(bus.commands[0].position_ticks, 2000);
+    }
 }
