@@ -163,8 +163,25 @@ pub struct BusConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FeetechBusConfig {
     pub port: String,
+    #[serde(default)]
+    pub additional_ports: Vec<String>,
     pub baud_rate: u32,
     pub telemetry_stride: usize,
+}
+
+impl FeetechBusConfig {
+    pub fn configured_ports(&self) -> Vec<&str> {
+        let mut ports = Vec::with_capacity(1 + self.additional_ports.len());
+        for port in std::iter::once(self.port.as_str())
+            .chain(self.additional_ports.iter().map(String::as_str))
+        {
+            if port.is_empty() || ports.contains(&port) {
+                continue;
+            }
+            ports.push(port);
+        }
+        ports
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -424,6 +441,7 @@ impl Default for FeetechBusConfig {
     fn default() -> Self {
         Self {
             port: String::new(),
+            additional_ports: Vec::new(),
             baud_rate: 1_000_000,
             telemetry_stride: 6,
         }
@@ -1589,6 +1607,7 @@ policy_path = "artifacts/policies/latest.onnx"
             r#"
 [bus.feetech]
 port = "/dev/ttyACM-test"
+additional_ports = ["/dev/ttyACM-arm"]
 baud_rate = 1000000
 telemetry_stride = 4
 
@@ -1659,6 +1678,11 @@ tibia_deg = 0.0
         let config = RobotConfig::load_from_path(&main_config).expect("config should load");
 
         assert_eq!(config.bus.feetech.port, "/dev/ttyACM-test");
+        assert_eq!(config.bus.feetech.additional_ports, vec!["/dev/ttyACM-arm"]);
+        assert_eq!(
+            config.bus.feetech.configured_ports(),
+            vec!["/dev/ttyACM-test", "/dev/ttyACM-arm"]
+        );
         assert_eq!(config.bus.feetech.telemetry_stride, 4);
         assert_eq!(config.servo_eeprom.entries.len(), 2);
         assert_eq!(config.servo_eeprom.entries[0].address, 8);
@@ -1682,6 +1706,26 @@ tibia_deg = 0.0
         assert_eq!(stand_high_pose.tibia_deg, -46.0);
 
         fs::remove_dir_all(&temp_dir).expect("failed to clean temp config dir");
+    }
+
+    #[test]
+    fn feetech_bus_config_reports_unique_non_empty_ports_in_order() {
+        let config = FeetechBusConfig {
+            port: "/dev/ttyACM-legs".to_owned(),
+            additional_ports: vec![
+                String::new(),
+                "/dev/ttyACM-arm".to_owned(),
+                "/dev/ttyACM-legs".to_owned(),
+                "/dev/ttyACM-gripper".to_owned(),
+            ],
+            baud_rate: 1_000_000,
+            telemetry_stride: 6,
+        };
+
+        assert_eq!(
+            config.configured_ports(),
+            vec!["/dev/ttyACM-legs", "/dev/ttyACM-arm", "/dev/ttyACM-gripper"]
+        );
     }
 
     // -----------------------------------------------------------------------

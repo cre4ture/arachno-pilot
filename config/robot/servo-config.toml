@@ -4,7 +4,9 @@
 # Kinematic lengths are expressed in centimeters via *_length_cm.
 
 [bus.feetech]
-port = "/dev/serial/by-id/usb-1a86_USB_Single_Serial_5B79033507-if00"
+# The current control loop still opens the legs Feetech bus only.
+port = "/dev/serial/by-id/usb-1a86_USB_Single_Serial_5B61036419-if00"
+additional_ports = ["/dev/serial/by-id/usb-1a86_USB_Single_Serial_5B61036984-if00"]
 baud_rate = 1000000
 telemetry_stride = 6
 

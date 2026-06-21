@@ -236,7 +236,7 @@ fn main() -> anyhow::Result<()> {
 fn print_plan(config: &RobotConfig) {
     println!("calibration plan for {}", config.robot.name);
     println!("deployment profile: {}", config.deployment.profile);
-    println!("servo bus: {}", config.bus.feetech.port);
+    println!("legs servo bus: {}", config.bus.feetech.port);
     println!(
         "eeprom profile entries: {}",
         config.servo_eeprom.entries.len()
@@ -261,7 +261,7 @@ fn apply_eeprom(config: &RobotConfig) -> anyhow::Result<()> {
         config.bus.feetech.baud_rate,
         servo_ids.clone(),
     )
-    .with_context(|| format!("failed to open servo bus {}", config.bus.feetech.port))?;
+    .with_context(|| format!("failed to open legs servo bus {}", config.bus.feetech.port))?;
 
     println!(
         "applying EEPROM profile with {} entries to {} servos via {}",
@@ -352,7 +352,7 @@ fn verify_eeprom(config: &RobotConfig) -> anyhow::Result<()> {
         config.bus.feetech.baud_rate,
         servo_ids.clone(),
     )
-    .with_context(|| format!("failed to open servo bus {}", config.bus.feetech.port))?;
+    .with_context(|| format!("failed to open legs servo bus {}", config.bus.feetech.port))?;
 
     println!(
         "verifying EEPROM profile with {} entries on {} servos via {}",
@@ -564,7 +564,7 @@ fn sense_ranges(config: &RobotConfig, args: &Args) -> anyhow::Result<()> {
 
     info!(robot = %config.robot.name, "range sensing");
     info!(deployment_profile = %config.deployment.profile, "loaded deployment profile");
-    info!(servo_bus = %config.bus.feetech.port, "servo bus");
+    info!(legs_servo_bus = %config.bus.feetech.port, "legs servo bus");
     info!(output = %output_path.display(), "range report path");
     info!(trace_output = %trace_path.display(), "trace log path");
 
@@ -576,7 +576,7 @@ fn sense_ranges(config: &RobotConfig, args: &Args) -> anyhow::Result<()> {
         config.bus.feetech.baud_rate,
         servo_ids.clone(),
     )
-    .with_context(|| format!("failed to open servo bus {}", config.bus.feetech.port))?;
+    .with_context(|| format!("failed to open legs servo bus {}", config.bus.feetech.port))?;
 
     validate_servo_eeprom_profile(&mut bus, &servo_ids, &config.servo_eeprom.entries)
         .context("failed EEPROM validation before range sensing")?;
@@ -721,7 +721,7 @@ fn sense_workspace(config: &RobotConfig, args: &Args) -> anyhow::Result<()> {
     let _trace_guard = init_trace_logging(&trace_path)?;
     info!(robot = %config.robot.name, "workspace calibration");
     info!(deployment_profile = %config.deployment.profile, "loaded deployment profile");
-    info!(servo_bus = %config.bus.feetech.port, "servo bus");
+    info!(legs_servo_bus = %config.bus.feetech.port, "legs servo bus");
     info!(output = %output_path.display(), "workspace output path");
     info!(trace_output = %trace_path.display(), "trace log path");
     info!(
@@ -741,7 +741,7 @@ fn sense_workspace(config: &RobotConfig, args: &Args) -> anyhow::Result<()> {
         config.bus.feetech.baud_rate,
         servo_ids.clone(),
     )
-    .with_context(|| format!("failed to open servo bus {}", config.bus.feetech.port))?;
+    .with_context(|| format!("failed to open legs servo bus {}", config.bus.feetech.port))?;
 
     enable_torque_on_current_position(&mut bus)
         .context("failed to enable torque before workspace calibration")?;

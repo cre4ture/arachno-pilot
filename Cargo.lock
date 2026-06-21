@@ -196,6 +196,7 @@ dependencies = [
  "anyhow",
  "arachno-camera",
  "arachno-core",
+ "arachno-feetech-sts",
  "arachno-hal",
  "clap",
  "libc",

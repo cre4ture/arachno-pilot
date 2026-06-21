@@ -8,6 +8,7 @@ license.workspace = true
 anyhow.workspace = true
 arachno-camera = { path = "../../crates/arachno-camera" }
 arachno-core = { path = "../../crates/arachno-core" }
+arachno-feetech-sts = { path = "../../crates/arachno-feetech-sts" }
 arachno-hal = { path = "../../crates/arachno-hal" }
 clap.workspace = true
 libc.workspace = true

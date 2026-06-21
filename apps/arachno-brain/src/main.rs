@@ -1388,7 +1388,7 @@ fn validate_servo_eeprom_profile(config: &RobotConfig) -> anyhow::Result<()> {
     )
     .with_context(|| {
         format!(
-            "failed to open servo bus {} for EEPROM validation",
+            "failed to open legs servo bus {} for EEPROM validation",
             config.bus.feetech.port
         )
     })?;
@@ -1506,7 +1506,11 @@ async fn main() -> anyhow::Result<()> {
     info!(url = %format!("http://{}", args.listen), "arachno-brain API listening");
     info!(deployment_profile = %config.deployment.profile, "deployment profile");
     info!(compute_target = %config.deployment.compute, "compute target");
-    info!(servo_port = %config.bus.feetech.port, "servo bus");
+    info!(
+        legs_servo_port = %config.bus.feetech.port,
+        configured_servo_ports = ?config.bus.feetech.configured_ports(),
+        "legs servo bus"
+    );
     info!(mode = %args.mode.as_state_label(), "brain mode");
     if args.mode == BrainMode::Manual {
         info!("manual control enabled via /api/manual/* and dashboard sliders");
@@ -1624,16 +1628,16 @@ fn spawn_control_worker(
                             port = %config.bus.feetech.port,
                             baud_rate = config.bus.feetech.baud_rate,
                             servo_count = servo_ids.len(),
-                            "servo bus opened"
+                            "legs servo bus opened"
                         );
                         bus = Some(real_bus);
                         torque_enabled = false;
                         if mode.requires_torque() {
-                            motion.disarm("servo bus opened; waiting to arm motion");
+                            motion.disarm("legs servo bus opened; waiting to arm motion");
                         }
                     }
                     Err(err) => {
-                        motion.disarm(format!("waiting for servo bus: {err}"));
+                        motion.disarm(format!("waiting for legs servo bus: {err}"));
                         write_state(
                             &shared,
                             build_state_snapshot(
@@ -1645,7 +1649,7 @@ fn spawn_control_worker(
                                 &manual,
                                 &tilted_stand,
                                 &calibration_snapshot,
-                                Some(format!("failed to open servo bus: {err}")),
+                                Some(format!("failed to open legs servo bus: {err}")),
                             ),
                         );
                         sleep_remaining(tick_started, loop_period);
@@ -1704,9 +1708,9 @@ fn spawn_control_worker(
             );
 
             if poll_outcome.should_reopen_bus {
-                warn!("servo bus needs reopen after communication failure");
+                warn!("legs servo bus needs reopen after communication failure");
                 motion.trip_fault(
-                    "servo bus link dropped; motion paused",
+                    "legs servo bus link dropped; motion paused",
                     current_pose(&servo_ids, &servo_states),
                 );
                 bus = None;
@@ -1722,7 +1726,7 @@ fn spawn_control_worker(
                         &manual,
                         &tilted_stand,
                         &calibration_snapshot,
-                        Some("servo bus needs to be reopened".to_owned()),
+                        Some("legs servo bus needs to be reopened".to_owned()),
                     ),
                 );
                 sleep_remaining(tick_started, loop_period);
