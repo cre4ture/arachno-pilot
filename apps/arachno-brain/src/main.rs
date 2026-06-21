@@ -53,11 +53,14 @@ const MANUAL_COXA_LIMIT_DEG: f32 = 180.0;
 const MANUAL_FEMUR_LIMIT_DEG: f32 = 180.0;
 const MANUAL_TIBIA_LIMIT_DEG: f32 = 180.0;
 const MANUAL_TORQUE_LIMIT_MAX: u16 = 1000;
+const TILTED_STAND_PITCH_LIMIT_DEG: f32 = 20.0;
+const TILTED_STAND_ROLL_LIMIT_DEG: f32 = 20.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum BrainMode {
     Telemetry,
     Manual,
+    TiltedStand,
     LayDown,
     SitDown,
     StandUp,
@@ -167,6 +170,7 @@ impl BrainMode {
         match self {
             Self::Telemetry => "telemetry",
             Self::Manual => "manual",
+            Self::TiltedStand => "tilted_stand",
             Self::LayDown => "lay_down",
             Self::SitDown => "sit_down",
             Self::StandUp => "stand_up",
@@ -278,6 +282,10 @@ struct Args {
     mode: BrainMode,
     #[arg(long)]
     walk_seconds: Option<f32>,
+    #[arg(long, default_value_t = 0.0)]
+    tilted_stand_pitch_deg: f32,
+    #[arg(long, default_value_t = 0.0)]
+    tilted_stand_roll_deg: f32,
 }
 
 #[derive(Clone)]
@@ -285,6 +293,7 @@ struct AppState {
     config: RobotConfig,
     shared: Arc<RwLock<TelemetryState>>,
     manual: Arc<RwLock<ManualControlState>>,
+    tilted_stand: Arc<RwLock<TiltedStandState>>,
     calibration: Arc<RwLock<SemanticCalibrationState>>,
     pending_mode: Arc<RwLock<Option<BrainMode>>>,
     dashboard_enabled: bool,
@@ -308,6 +317,7 @@ struct TelemetryState {
     last_poll_error: Option<String>,
     imu: Option<TelemetryImuState>,
     manual: TelemetryManualState,
+    tilted_stand: TelemetryTiltedStandState,
     calibration: TelemetryCalibrationState,
     leg_previews: Vec<TelemetryLegPreviewState>,
     servos: Vec<TelemetryServoState>,
@@ -353,6 +363,17 @@ struct TelemetryManualState {
     groups: Vec<ManualGroupInfo>,
     group_values: Vec<ManualGroupValue>,
     joints: Vec<ManualJointInfo>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct TelemetryTiltedStandState {
+    enabled: bool,
+    ready: bool,
+    pitch_deg: f32,
+    roll_deg: f32,
+    pitch_limit_deg: f32,
+    roll_limit_deg: f32,
+    summary: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -451,6 +472,14 @@ struct ManualControlState {
 }
 
 #[derive(Debug, Clone)]
+struct TiltedStandState {
+    enabled: bool,
+    pitch_deg: f32,
+    roll_deg: f32,
+    summary: String,
+}
+
+#[derive(Debug, Clone)]
 enum ManualHardwareAction {
     SetTorqueLimit {
         group_key: String,
@@ -541,6 +570,12 @@ struct ManualJumpRequest {
     delta_deg: f32,
 }
 
+#[derive(Debug, Deserialize)]
+struct TiltedStandApplyRequest {
+    pitch_deg: f32,
+    roll_deg: f32,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum CalibrationReferenceKey {
@@ -571,6 +606,7 @@ struct ManualCommandResponse {
 #[serde(rename_all = "snake_case")]
 enum MotionCommand {
     Manual,
+    TiltedStand,
     StandUp,
     StandUpHigh,
     LayDown,
@@ -595,6 +631,7 @@ impl MotionCommand {
     fn as_brain_mode(self) -> BrainMode {
         match self {
             Self::Manual => BrainMode::Manual,
+            Self::TiltedStand => BrainMode::TiltedStand,
             Self::StandUp => BrainMode::StandUp,
             Self::StandUpHigh => BrainMode::StandUpHigh,
             Self::LayDown => BrainMode::LayDown,
@@ -636,6 +673,7 @@ impl TelemetryState {
         config: &RobotConfig,
         mode: BrainMode,
         manual: &ManualControlState,
+        tilted_stand: &TiltedStandState,
         calibration: &SemanticCalibrationState,
     ) -> Self {
         let labels = servo_labels(config);
@@ -666,6 +704,7 @@ impl TelemetryState {
             last_poll_error: Some("control worker not started yet".to_owned()),
             imu: telemetry_imu_from_config(config),
             manual: build_manual_telemetry(config, manual, calibration, None),
+            tilted_stand: build_tilted_stand_telemetry(tilted_stand, false),
             calibration: build_calibration_telemetry(config, calibration),
             leg_previews: config
                 .legs
@@ -713,6 +752,37 @@ impl ManualControlState {
 fn sync_manual_mode_state(manual: &Arc<RwLock<ManualControlState>>, mode: BrainMode) {
     if let Ok(mut control) = manual.write() {
         *control = ManualControlState::for_mode(mode);
+    }
+}
+
+impl TiltedStandState {
+    fn for_mode(mode: BrainMode, pitch_deg: f32, roll_deg: f32) -> Self {
+        let enabled = mode == BrainMode::TiltedStand;
+        let pitch_deg = clamp_tilted_stand_pitch_deg(pitch_deg);
+        let roll_deg = clamp_tilted_stand_roll_deg(roll_deg);
+        let summary = if enabled {
+            "waiting for the current robot stance before tilted stand parameters take effect"
+        } else {
+            "tilted stand is disabled; switch the motion mode to tilted-stand to enable pitch and roll sliders"
+        };
+
+        Self {
+            enabled,
+            pitch_deg,
+            roll_deg,
+            summary: summary.to_owned(),
+        }
+    }
+}
+
+fn sync_tilted_stand_mode_state(
+    tilted_stand: &Arc<RwLock<TiltedStandState>>,
+    mode: BrainMode,
+    pitch_deg: f32,
+    roll_deg: f32,
+) {
+    if let Ok(mut control) = tilted_stand.write() {
+        *control = TiltedStandState::for_mode(mode, pitch_deg, roll_deg);
     }
 }
 
@@ -904,6 +974,9 @@ impl MotionRuntime {
             match mode {
                 BrainMode::Telemetry => "observation only; no motion commands are being sent",
                 BrainMode::Manual => "waiting for all servo feedback before arming manual control",
+                BrainMode::TiltedStand => {
+                    "waiting for all servo feedback before holding tilted stand"
+                }
                 BrainMode::LayDown => "waiting for all servo feedback before laying down",
                 BrainMode::SitDown => "waiting for all servo feedback before sitting down",
                 BrainMode::StandUp => "waiting for all servo feedback before standing up",
@@ -940,6 +1013,7 @@ impl MotionRuntime {
         self.body_attitude_strikes = 0;
         self.summary = match self.mode {
             BrainMode::Manual => "manual control armed at the measured robot pose".to_owned(),
+            BrainMode::TiltedStand => "tilted stand armed at the measured robot pose".to_owned(),
             BrainMode::LayDown => "starting lay-down transition".to_owned(),
             BrainMode::SitDown => "starting sit-down transition".to_owned(),
             BrainMode::StandUp => "starting stand-up transition".to_owned(),
@@ -998,7 +1072,8 @@ impl MotionRuntime {
                 let _ = imu_enabled;
                 "manual control active; monitoring bus voltage and temperature".to_owned()
             }
-            BrainMode::LayDown
+            BrainMode::TiltedStand
+            | BrainMode::LayDown
             | BrainMode::SitDown
             | BrainMode::StandUp
             | BrainMode::StandUpHigh
@@ -1083,6 +1158,7 @@ impl MotionRuntime {
         config: &RobotConfig,
         calibration: &SemanticCalibrationState,
         manual: Option<&Arc<RwLock<ManualControlState>>>,
+        tilted_stand: Option<&Arc<RwLock<TiltedStandState>>>,
     ) -> Option<Vec<JointCommand>> {
         if self.mode == BrainMode::Telemetry {
             return None;
@@ -1121,6 +1197,34 @@ impl MotionRuntime {
                     } else {
                         self.summary =
                             "manual control channel is unavailable; holding the current pose"
+                                .to_owned();
+                        base_pose.clone()
+                    }
+                }
+                BrainMode::TiltedStand => {
+                    if let Some(shared) = tilted_stand {
+                        match shared.read() {
+                            Ok(control) => {
+                                let (pose, summary) = tilted_stand_pose(
+                                    config,
+                                    calibration,
+                                    &base_pose,
+                                    control.pitch_deg,
+                                    control.roll_deg,
+                                );
+                                self.summary = summary;
+                                pose
+                            }
+                            Err(_) => {
+                                self.summary =
+                                    "tilted stand state is unavailable; holding the current pose"
+                                        .to_owned();
+                                base_pose.clone()
+                            }
+                        }
+                    } else {
+                        self.summary =
+                            "tilted stand channel is unavailable; holding the current pose"
                                 .to_owned();
                         base_pose.clone()
                     }
@@ -1183,6 +1287,9 @@ impl MotionRuntime {
     ) -> BTreeMap<u8, u16> {
         match self.mode {
             BrainMode::Manual => {
+                named_pose_with_calibration(config, calibration, SemanticPoseKind::StandReference)
+            }
+            BrainMode::TiltedStand => {
                 named_pose_with_calibration(config, calibration, SemanticPoseKind::StandReference)
             }
             BrainMode::LayDown | BrainMode::StandUp | BrainMode::StandUpHigh => {
@@ -1321,6 +1428,11 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let manual = Arc::new(RwLock::new(ManualControlState::for_mode(args.mode)));
+    let tilted_stand = Arc::new(RwLock::new(TiltedStandState::for_mode(
+        args.mode,
+        args.tilted_stand_pitch_deg,
+        args.tilted_stand_roll_deg,
+    )));
     let calibration_path = config
         .semantic_calibration_store
         .as_ref()
@@ -1333,6 +1445,10 @@ async fn main() -> anyhow::Result<()> {
         .read()
         .map_err(|_| anyhow::anyhow!("failed to initialize manual control state"))?
         .clone();
+    let initial_tilted_stand = tilted_stand
+        .read()
+        .map_err(|_| anyhow::anyhow!("failed to initialize tilted stand control state"))?
+        .clone();
     let initial_calibration = calibration
         .read()
         .map_err(|_| anyhow::anyhow!("failed to initialize semantic calibration state"))?
@@ -1341,17 +1457,21 @@ async fn main() -> anyhow::Result<()> {
         &config,
         args.mode,
         &initial_manual,
+        &initial_tilted_stand,
         &initial_calibration,
     )));
     let pending_mode: Arc<RwLock<Option<BrainMode>>> = Arc::new(RwLock::new(None));
     spawn_control_worker(
         shared.clone(),
         manual.clone(),
+        tilted_stand.clone(),
         calibration.clone(),
         pending_mode.clone(),
         config.clone(),
         args.mode,
         args.walk_seconds,
+        clamp_tilted_stand_pitch_deg(args.tilted_stand_pitch_deg),
+        clamp_tilted_stand_roll_deg(args.tilted_stand_roll_deg),
     );
 
     let app = Router::new()
@@ -1365,6 +1485,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/manual/torque-limit", post(api_manual_torque_limit))
         .route("/api/manual/sync-current", post(api_manual_sync_current))
         .route("/api/manual/jump", post(api_manual_jump))
+        .route("/api/tilted-stand/apply", post(api_tilted_stand_apply))
+        .route("/api/tilted-stand/reset", post(api_tilted_stand_reset))
         .route("/api/calibration/capture", post(api_calibration_capture))
         .route("/api/calibration/clear", post(api_calibration_clear))
         .route("/api/calibration/reload", post(api_calibration_reload))
@@ -1374,6 +1496,7 @@ async fn main() -> anyhow::Result<()> {
             config: config.clone(),
             shared,
             manual,
+            tilted_stand,
             calibration,
             pending_mode,
             dashboard_enabled: args.dashboard,
@@ -1387,6 +1510,13 @@ async fn main() -> anyhow::Result<()> {
     info!(mode = %args.mode.as_state_label(), "brain mode");
     if args.mode == BrainMode::Manual {
         info!("manual control enabled via /api/manual/* and dashboard sliders");
+    }
+    if args.mode == BrainMode::TiltedStand {
+        info!(
+            pitch_deg = clamp_tilted_stand_pitch_deg(args.tilted_stand_pitch_deg),
+            roll_deg = clamp_tilted_stand_roll_deg(args.tilted_stand_roll_deg),
+            "tilted stand enabled via /api/tilted-stand/* and dashboard sliders"
+        );
     }
     if let Some(limit) = args.walk_seconds {
         info!(walk_seconds = limit, "walk duration limit configured");
@@ -1421,11 +1551,14 @@ fn motion_loop_period(mode: BrainMode, config: &RobotConfig) -> Duration {
 fn spawn_control_worker(
     shared: Arc<RwLock<TelemetryState>>,
     manual: Arc<RwLock<ManualControlState>>,
+    tilted_stand: Arc<RwLock<TiltedStandState>>,
     calibration: Arc<RwLock<SemanticCalibrationState>>,
     pending_mode: Arc<RwLock<Option<BrainMode>>>,
     config: RobotConfig,
     mode: BrainMode,
     walk_seconds: Option<f32>,
+    tilted_stand_pitch_deg: f32,
+    tilted_stand_roll_deg: f32,
 ) {
     thread::spawn(move || {
         let labels = servo_labels(&config);
@@ -1452,6 +1585,12 @@ fn spawn_control_worker(
                 motion = MotionRuntime::new(new_mode, walk_seconds);
                 loop_period = motion_loop_period(new_mode, &config);
                 sync_manual_mode_state(&manual, new_mode);
+                sync_tilted_stand_mode_state(
+                    &tilted_stand,
+                    new_mode,
+                    tilted_stand_pitch_deg,
+                    tilted_stand_roll_deg,
+                );
                 if !new_mode.requires_torque() && torque_enabled {
                     if let Some(b) = bus.as_mut()
                         && let Err(e) = b.enable_torque(false)
@@ -1504,6 +1643,7 @@ fn spawn_control_worker(
                                 imu_state.clone(),
                                 &motion,
                                 &manual,
+                                &tilted_stand,
                                 &calibration_snapshot,
                                 Some(format!("failed to open servo bus: {err}")),
                             ),
@@ -1532,6 +1672,7 @@ fn spawn_control_worker(
                             imu_state.clone(),
                             &motion,
                             &manual,
+                            &tilted_stand,
                             &calibration_snapshot,
                             Some(format!("failed to enable torque: {err}")),
                         ),
@@ -1579,6 +1720,7 @@ fn spawn_control_worker(
                         imu_state.clone(),
                         &motion,
                         &manual,
+                        &tilted_stand,
                         &calibration_snapshot,
                         Some("servo bus needs to be reopened".to_owned()),
                     ),
@@ -1630,6 +1772,7 @@ fn spawn_control_worker(
                         imu_state.clone(),
                         &motion,
                         &manual,
+                        &tilted_stand,
                         &calibration_snapshot,
                         Some(format!("manual utility failed: {err}")),
                     ),
@@ -1638,8 +1781,12 @@ fn spawn_control_worker(
                 continue;
             }
 
-            if let Some(commands) = motion.commands(&config, &calibration_snapshot, Some(&manual))
-                && let Err(err) = real_bus.sync_write_positions(&commands)
+            if let Some(commands) = motion.commands(
+                &config,
+                &calibration_snapshot,
+                Some(&manual),
+                Some(&tilted_stand),
+            ) && let Err(err) = real_bus.sync_write_positions(&commands)
             {
                 warn!(error = %err, command_count = commands.len(), "failed to send motion commands");
                 motion.trip_fault(
@@ -1657,6 +1804,7 @@ fn spawn_control_worker(
                         imu_state.clone(),
                         &motion,
                         &manual,
+                        &tilted_stand,
                         &calibration_snapshot,
                         Some(format!("sync write failed: {err}")),
                     ),
@@ -1674,6 +1822,7 @@ fn spawn_control_worker(
                     imu_state.clone(),
                     &motion,
                     &manual,
+                    &tilted_stand,
                     &calibration_snapshot,
                     None,
                 ),
@@ -1775,6 +1924,7 @@ fn build_state_snapshot(
     imu: Option<TelemetryImuState>,
     motion: &MotionRuntime,
     manual: &Arc<RwLock<ManualControlState>>,
+    tilted_stand: &Arc<RwLock<TiltedStandState>>,
     calibration_snapshot: &SemanticCalibrationState,
     transport_error: Option<String>,
 ) -> TelemetryState {
@@ -1834,6 +1984,10 @@ fn build_state_snapshot(
         last_poll_error,
         imu,
         manual: manual_snapshot(config, manual, calibration_snapshot, pose.as_ref()),
+        tilted_stand: tilted_stand_snapshot(
+            tilted_stand,
+            motion.mode == BrainMode::TiltedStand && motion.armed_at.is_some(),
+        ),
         calibration: build_calibration_telemetry(config, calibration_snapshot),
         leg_previews,
         servos,
@@ -1896,6 +2050,35 @@ fn build_manual_telemetry(
     }
 }
 
+fn build_tilted_stand_telemetry(
+    control: &TiltedStandState,
+    ready: bool,
+) -> TelemetryTiltedStandState {
+    let summary = if control.enabled && ready {
+        if control
+            .summary
+            .contains("waiting for the current robot stance")
+        {
+            "tilted stand is ready; holding the captured stance until pitch or roll changes"
+                .to_owned()
+        } else {
+            control.summary.clone()
+        }
+    } else {
+        control.summary.clone()
+    };
+
+    TelemetryTiltedStandState {
+        enabled: control.enabled,
+        ready,
+        pitch_deg: control.pitch_deg,
+        roll_deg: control.roll_deg,
+        pitch_limit_deg: TILTED_STAND_PITCH_LIMIT_DEG,
+        roll_limit_deg: TILTED_STAND_ROLL_LIMIT_DEG,
+        summary,
+    }
+}
+
 fn manual_snapshot(
     config: &RobotConfig,
     manual: &Arc<RwLock<ManualControlState>>,
@@ -1912,6 +2095,24 @@ fn manual_snapshot(
             groups: manual_group_infos(config),
             group_values: Vec::new(),
             joints: manual_joint_infos(),
+        },
+    }
+}
+
+fn tilted_stand_snapshot(
+    tilted_stand: &Arc<RwLock<TiltedStandState>>,
+    ready: bool,
+) -> TelemetryTiltedStandState {
+    match tilted_stand.read() {
+        Ok(control) => build_tilted_stand_telemetry(&control, ready),
+        Err(_) => TelemetryTiltedStandState {
+            enabled: false,
+            ready: false,
+            pitch_deg: 0.0,
+            roll_deg: 0.0,
+            pitch_limit_deg: TILTED_STAND_PITCH_LIMIT_DEG,
+            roll_limit_deg: TILTED_STAND_ROLL_LIMIT_DEG,
+            summary: "tilted stand state is unavailable".to_owned(),
         },
     }
 }
@@ -2366,6 +2567,27 @@ fn ensure_manual_enabled(state: &AppState) -> Result<(), (StatusCode, String)> {
     }
 }
 
+fn ensure_tilted_stand_enabled(state: &AppState) -> Result<(), (StatusCode, String)> {
+    let enabled = state
+        .tilted_stand
+        .read()
+        .map_err(|_| {
+            manual_api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "tilted stand lock poisoned",
+            )
+        })?
+        .enabled;
+    if enabled {
+        Ok(())
+    } else {
+        Err(manual_api_error(
+            StatusCode::CONFLICT,
+            "tilted stand is disabled; switch the motion mode to tilted-stand first",
+        ))
+    }
+}
+
 fn ensure_calibration_enabled(state: &AppState) -> Result<(), (StatusCode, String)> {
     let enabled = state
         .calibration
@@ -2692,6 +2914,69 @@ struct DerivedTripodProfile {
     tibia_lift_deg: f32,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct TiltedStandLegGeometry {
+    semantic: LegPoseAngles,
+    foot_x_cm: f32,
+    foot_y_cm: f32,
+    reach_cm: f32,
+    height_cm: f32,
+}
+
+fn semantic_pose_from_base_pose(
+    config: &RobotConfig,
+    calibration: &SemanticCalibrationState,
+    base_pose: &BTreeMap<u8, u16>,
+    leg: &arachno_core::LegConfig,
+    fallback_kind: SemanticPoseKind,
+) -> LegPoseAngles {
+    let fallback = configured_pose_angles(config, calibration, leg, fallback_kind);
+    LegPoseAngles {
+        coxa_deg: base_pose
+            .get(&leg.coxa_servo_id)
+            .and_then(|ticks| {
+                servo_semantic_angle_deg(config, calibration, leg.coxa_servo_id, *ticks)
+            })
+            .unwrap_or(fallback.coxa_deg),
+        femur_deg: base_pose
+            .get(&leg.femur_servo_id)
+            .and_then(|ticks| {
+                servo_semantic_angle_deg(config, calibration, leg.femur_servo_id, *ticks)
+            })
+            .unwrap_or(fallback.femur_deg),
+        tibia_deg: base_pose
+            .get(&leg.tibia_servo_id)
+            .and_then(|ticks| {
+                servo_semantic_angle_deg(config, calibration, leg.tibia_servo_id, *ticks)
+            })
+            .unwrap_or(fallback.tibia_deg),
+    }
+}
+
+fn tilted_stand_leg_geometry(
+    config: &RobotConfig,
+    calibration: &SemanticCalibrationState,
+    base_pose: &BTreeMap<u8, u16>,
+    leg: &arachno_core::LegConfig,
+) -> TiltedStandLegGeometry {
+    let semantic = semantic_pose_from_base_pose(
+        config,
+        calibration,
+        base_pose,
+        leg,
+        SemanticPoseKind::StandReference,
+    );
+    let top_view = leg.top_view_pose(semantic.coxa_deg, semantic.femur_deg, semantic.tibia_deg);
+    let side_view = leg.side_view_pose(semantic.femur_deg, semantic.tibia_deg);
+    TiltedStandLegGeometry {
+        semantic,
+        foot_x_cm: top_view.tibia_end.x,
+        foot_y_cm: top_view.tibia_end.y,
+        reach_cm: (side_view.tibia_end.x - side_view.coxa_end.x).abs(),
+        height_cm: side_view.tibia_end.y - side_view.coxa_end.y,
+    }
+}
+
 fn derive_tripod_profile(
     config: &RobotConfig,
     leg: &arachno_core::LegConfig,
@@ -2953,6 +3238,85 @@ fn pose_to_commands(pose: &BTreeMap<u8, u16>) -> Vec<JointCommand> {
         .collect()
 }
 
+fn tilted_stand_pose(
+    config: &RobotConfig,
+    calibration: &SemanticCalibrationState,
+    base_pose: &BTreeMap<u8, u16>,
+    pitch_deg: f32,
+    roll_deg: f32,
+) -> (BTreeMap<u8, u16>, String) {
+    let pitch_deg = clamp_tilted_stand_pitch_deg(pitch_deg);
+    let roll_deg = clamp_tilted_stand_roll_deg(roll_deg);
+    let pitch_tan = pitch_deg.to_radians().tan();
+    let roll_tan = roll_deg.to_radians().tan();
+    let geometries = config
+        .legs
+        .iter()
+        .map(|leg| {
+            (
+                leg,
+                tilted_stand_leg_geometry(config, calibration, base_pose, leg),
+            )
+        })
+        .collect::<Vec<_>>();
+    let foot_count = geometries.len().max(1) as f32;
+    let centroid_x = geometries
+        .iter()
+        .map(|(_, geometry)| geometry.foot_x_cm)
+        .sum::<f32>()
+        / foot_count;
+    let centroid_y = geometries
+        .iter()
+        .map(|(_, geometry)| geometry.foot_y_cm)
+        .sum::<f32>()
+        / foot_count;
+
+    let mut pose = base_pose.clone();
+    let mut constrained_legs = Vec::new();
+
+    for (leg, geometry) in geometries {
+        let forward_cm = -(geometry.foot_y_cm - centroid_y);
+        let right_cm = geometry.foot_x_cm - centroid_x;
+        let body_height_offset_cm = forward_cm * pitch_tan + right_cm * roll_tan;
+        let target_height_cm = geometry.height_cm - body_height_offset_cm;
+
+        let Some(target_semantic) = leg
+            .foot_to_angles_2d(
+                geometry.semantic.coxa_deg,
+                geometry.reach_cm,
+                target_height_cm,
+            )
+            .ok()
+        else {
+            constrained_legs.push(leg.name.as_str());
+            continue;
+        };
+
+        for (servo_id, degrees) in [
+            (leg.coxa_servo_id, target_semantic.coxa_deg),
+            (leg.femur_servo_id, target_semantic.femur_deg),
+            (leg.tibia_servo_id, target_semantic.tibia_deg),
+        ] {
+            if let Some(ticks) =
+                servo_ticks_for_semantic_angle_deg(config, calibration, servo_id, degrees)
+            {
+                pose.insert(servo_id, ticks);
+            }
+        }
+    }
+
+    let summary = if constrained_legs.is_empty() {
+        format!("holding tilted stand at pitch {pitch_deg:+.1}° and roll {roll_deg:+.1}°")
+    } else {
+        format!(
+            "holding tilted stand at pitch {pitch_deg:+.1}° and roll {roll_deg:+.1}°; {} leg(s) stayed at the captured stance due to IK limits",
+            constrained_legs.len()
+        )
+    };
+
+    (pose, summary)
+}
+
 fn walk_pose_from_base(
     config: &RobotConfig,
     calibration: &SemanticCalibrationState,
@@ -2964,28 +3328,13 @@ fn walk_pose_from_base(
     let mut commanded = BTreeMap::new();
 
     for leg in &config.legs {
-        let stand_reference =
-            configured_pose_angles(config, calibration, leg, SemanticPoseKind::StandReference);
-        let base_semantic = LegPoseAngles {
-            coxa_deg: base_pose
-                .get(&leg.coxa_servo_id)
-                .and_then(|ticks| {
-                    servo_semantic_angle_deg(config, calibration, leg.coxa_servo_id, *ticks)
-                })
-                .unwrap_or(stand_reference.coxa_deg),
-            femur_deg: base_pose
-                .get(&leg.femur_servo_id)
-                .and_then(|ticks| {
-                    servo_semantic_angle_deg(config, calibration, leg.femur_servo_id, *ticks)
-                })
-                .unwrap_or(stand_reference.femur_deg),
-            tibia_deg: base_pose
-                .get(&leg.tibia_servo_id)
-                .and_then(|ticks| {
-                    servo_semantic_angle_deg(config, calibration, leg.tibia_servo_id, *ticks)
-                })
-                .unwrap_or(stand_reference.tibia_deg),
-        };
+        let base_semantic = semantic_pose_from_base_pose(
+            config,
+            calibration,
+            base_pose,
+            leg,
+            SemanticPoseKind::StandReference,
+        );
 
         let leg_phase = if leg.is_tripod_a() {
             phase
@@ -3342,6 +3691,14 @@ fn lerp_f32(start: f32, end: f32, t: f32) -> f32 {
     start + (end - start) * t
 }
 
+fn clamp_tilted_stand_pitch_deg(pitch_deg: f32) -> f32 {
+    pitch_deg.clamp(-TILTED_STAND_PITCH_LIMIT_DEG, TILTED_STAND_PITCH_LIMIT_DEG)
+}
+
+fn clamp_tilted_stand_roll_deg(roll_deg: f32) -> f32 {
+    roll_deg.clamp(-TILTED_STAND_ROLL_LIMIT_DEG, TILTED_STAND_ROLL_LIMIT_DEG)
+}
+
 fn is_reopen_error(message: &str) -> bool {
     message.contains("failed to open")
         || message.contains("No such file")
@@ -3678,6 +4035,48 @@ async fn api_manual_sync_current(
         group_label
     );
     manual.summary = summary.clone();
+
+    Ok(Json(ManualCommandResponse { summary }))
+}
+
+async fn api_tilted_stand_apply(
+    State(state): State<AppState>,
+    Json(request): Json<TiltedStandApplyRequest>,
+) -> Result<Json<ManualCommandResponse>, (StatusCode, String)> {
+    ensure_tilted_stand_enabled(&state)?;
+    let pitch_deg = clamp_tilted_stand_pitch_deg(request.pitch_deg);
+    let roll_deg = clamp_tilted_stand_roll_deg(request.roll_deg);
+    let summary =
+        format!("tilted stand target updated: pitch {pitch_deg:+.1}°, roll {roll_deg:+.1}°");
+
+    let mut tilted_stand = state.tilted_stand.write().map_err(|_| {
+        manual_api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "tilted stand lock poisoned",
+        )
+    })?;
+    tilted_stand.pitch_deg = pitch_deg;
+    tilted_stand.roll_deg = roll_deg;
+    tilted_stand.summary = summary.clone();
+
+    Ok(Json(ManualCommandResponse { summary }))
+}
+
+async fn api_tilted_stand_reset(
+    State(state): State<AppState>,
+) -> Result<Json<ManualCommandResponse>, (StatusCode, String)> {
+    ensure_tilted_stand_enabled(&state)?;
+    let summary = "tilted stand target reset to level (pitch +0.0°, roll +0.0°)".to_owned();
+
+    let mut tilted_stand = state.tilted_stand.write().map_err(|_| {
+        manual_api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "tilted stand lock poisoned",
+        )
+    })?;
+    tilted_stand.pitch_deg = 0.0;
+    tilted_stand.roll_deg = 0.0;
+    tilted_stand.summary = summary.clone();
 
     Ok(Json(ManualCommandResponse { summary }))
 }
@@ -4066,15 +4465,18 @@ fn speed_ticks_to_rpm(speed_ticks: i16) -> f32 {
 mod tests {
     use std::{
         collections::BTreeMap,
+        path::PathBuf,
         sync::{Arc, RwLock},
     };
 
     use super::{
         BODY_ATTITUDE_STRIKES_TO_TRIP, BrainMode, LegPoseAngles, ManualControlState, MotionCommand,
-        MotionRuntime, TelemetryImuState, body_attitude_fault_reason, derive_leg_lift_deltas,
-        stand_pose_labels, sync_manual_mode_state,
+        MotionRuntime, SemanticCalibrationState, TelemetryImuState, body_attitude_fault_reason,
+        clamp_tilted_stand_pitch_deg, clamp_tilted_stand_roll_deg, derive_leg_lift_deltas,
+        named_pose_with_calibration, stand_pose_labels, sync_manual_mode_state,
+        tilted_stand_leg_geometry, tilted_stand_pose,
     };
-    use arachno_core::{LegConfig, SafetyConfig, SemanticPoseKind};
+    use arachno_core::{LegConfig, RobotConfig, SafetyConfig, SemanticPoseKind};
 
     fn make_tripod_test_leg() -> LegConfig {
         LegConfig {
@@ -4118,6 +4520,12 @@ mod tests {
             accel_norm_mps2: Some(9.81),
             gyro_norm_deg_s: None,
         }
+    }
+
+    fn load_test_robot_config() -> RobotConfig {
+        let config_path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../config/robot/default.toml");
+        RobotConfig::load_from_path(&config_path).expect("robot config should load for tests")
     }
 
     #[test]
@@ -4207,6 +4615,10 @@ mod tests {
         assert_eq!(
             MotionCommand::SidewalkRightHigh.as_brain_mode(),
             BrainMode::SidewalkRightHigh
+        );
+        assert_eq!(
+            MotionCommand::TiltedStand.as_brain_mode(),
+            BrainMode::TiltedStand
         );
     }
 
@@ -4304,5 +4716,75 @@ mod tests {
             motion.safety_status(true),
             "manual control active; monitoring bus voltage and temperature"
         );
+    }
+
+    #[test]
+    fn tilted_stand_limits_clamp_requested_angles() {
+        assert_eq!(clamp_tilted_stand_pitch_deg(24.0), 20.0);
+        assert_eq!(clamp_tilted_stand_pitch_deg(-24.0), -20.0);
+        assert_eq!(clamp_tilted_stand_roll_deg(21.0), 20.0);
+        assert_eq!(clamp_tilted_stand_roll_deg(-21.0), -20.0);
+    }
+
+    #[test]
+    fn tilted_stand_pitch_lifts_front_relative_to_rear() {
+        let config = load_test_robot_config();
+        let calibration = SemanticCalibrationState::default();
+        let base_pose =
+            named_pose_with_calibration(&config, &calibration, SemanticPoseKind::StandReference);
+        let (tilted_pose, _summary) =
+            tilted_stand_pose(&config, &calibration, &base_pose, 8.0, 0.0);
+
+        let mut front_delta = 0.0;
+        let mut rear_delta = 0.0;
+        let mut front_count = 0.0;
+        let mut rear_count = 0.0;
+
+        for leg in &config.legs {
+            let base = tilted_stand_leg_geometry(&config, &calibration, &base_pose, leg);
+            let tilted = tilted_stand_leg_geometry(&config, &calibration, &tilted_pose, leg);
+            let delta = tilted.height_cm - base.height_cm;
+            if leg.name.starts_with("front_") {
+                front_delta += delta;
+                front_count += 1.0;
+            } else if leg.name.starts_with("rear_") {
+                rear_delta += delta;
+                rear_count += 1.0;
+            }
+        }
+
+        assert!(front_count > 0.0 && rear_count > 0.0);
+        assert!(front_delta / front_count < rear_delta / rear_count);
+    }
+
+    #[test]
+    fn tilted_stand_roll_lifts_right_relative_to_left() {
+        let config = load_test_robot_config();
+        let calibration = SemanticCalibrationState::default();
+        let base_pose =
+            named_pose_with_calibration(&config, &calibration, SemanticPoseKind::StandReference);
+        let (tilted_pose, _summary) =
+            tilted_stand_pose(&config, &calibration, &base_pose, 0.0, 8.0);
+
+        let mut left_delta = 0.0;
+        let mut right_delta = 0.0;
+        let mut left_count = 0.0;
+        let mut right_count = 0.0;
+
+        for leg in &config.legs {
+            let base = tilted_stand_leg_geometry(&config, &calibration, &base_pose, leg);
+            let tilted = tilted_stand_leg_geometry(&config, &calibration, &tilted_pose, leg);
+            let delta = tilted.height_cm - base.height_cm;
+            if leg.name.ends_with("_left") {
+                left_delta += delta;
+                left_count += 1.0;
+            } else if leg.name.ends_with("_right") {
+                right_delta += delta;
+                right_count += 1.0;
+            }
+        }
+
+        assert!(left_count > 0.0 && right_count > 0.0);
+        assert!(right_delta / right_count < left_delta / left_count);
     }
 }

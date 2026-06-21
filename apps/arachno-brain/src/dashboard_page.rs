@@ -856,6 +856,7 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
       <div class="panel-body">
         <div class="motion-cmd-grid">
           <button class="motion-btn" id="btn-manual" type="button" data-cmd="manual">Manual</button>
+          <button class="motion-btn" id="btn-tilted_stand" type="button" data-cmd="tilted_stand">Tilted Stand</button>
           <button class="motion-btn" id="btn-stand_up" type="button" data-cmd="stand_up">Stand Up</button>
           <button class="motion-btn" id="btn-stand_up_high" type="button" data-cmd="stand_up_high">Stand Up High</button>
           <button class="motion-btn" id="btn-stand_high" type="button" data-cmd="stand_high">Stand High</button>
@@ -937,6 +938,78 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
             The map follows the robot's physical layout. Left legs are arms 1-3 from front to back, right legs are arms 4-6. Each cluster combines a top-view live leg preview with the detailed coxa, femur, and tibia telemetry cards.
           </div>
         </div>
+      </div>
+    </section>
+
+    <section class="panel" style="margin-top: 18px;">
+      <div class="panel-header">
+        <h2>Tilted Stand</h2>
+        <div class="muted" id="tilted-stand-summary">tilted stand disabled</div>
+      </div>
+      <div class="panel-body">
+        <div class="manual-grid">
+          <div class="manual-card">
+            <div class="stat-label">Tilted Stand Mode</div>
+            <div class="stat-value" id="tilted-stand-mode-state">disabled</div>
+            <div class="stat-note" id="tilted-stand-mode-note">Switch the motion mode to <code>Tilted Stand</code> to enable pitch and roll body-tilt control.</div>
+          </div>
+          <div class="manual-card">
+            <div class="stat-label">Reference Stance</div>
+            <div class="stat-value">Captured On Entry</div>
+            <div class="stat-note">The mode uses the robot's measured stance when it arms as level zero. Leave and re-enter tilted stand to recapture a new base stance.</div>
+          </div>
+        </div>
+
+        <div class="manual-sliders">
+          <label class="slider-field">
+            <div class="slider-top">
+              <strong id="tilted-stand-pitch-label">Pitch</strong>
+            </div>
+            <div class="slider-main-row">
+              <div class="slider-value-box">
+                <input id="tilted-stand-pitch-input" type="number" min="-20" max="20" step="0.1" value="0.0" />
+                <span>°</span>
+              </div>
+              <div class="slider-track">
+                <input id="tilted-stand-pitch-slider" type="range" min="-20" max="20" step="0.5" value="0" />
+                <div class="slider-legend">
+                  <span id="tilted-stand-pitch-negative">nose down</span>
+                  <span id="tilted-stand-pitch-positive">nose up</span>
+                </div>
+              </div>
+            </div>
+          </label>
+
+          <label class="slider-field">
+            <div class="slider-top">
+              <strong id="tilted-stand-roll-label">Roll</strong>
+            </div>
+            <div class="slider-main-row">
+              <div class="slider-value-box">
+                <input id="tilted-stand-roll-input" type="number" min="-20" max="20" step="0.1" value="0.0" />
+                <span>°</span>
+              </div>
+              <div class="slider-track">
+                <input id="tilted-stand-roll-slider" type="range" min="-20" max="20" step="0.5" value="0" />
+                <div class="slider-legend">
+                  <span id="tilted-stand-roll-negative">left up</span>
+                  <span id="tilted-stand-roll-positive">right up</span>
+                </div>
+              </div>
+            </div>
+          </label>
+        </div>
+
+        <label class="manual-live-toggle">
+          <input id="tilted-stand-live-apply" type="checkbox" checked />
+          <span>Apply tilt changes immediately while dragging</span>
+        </label>
+
+        <div class="manual-actions">
+          <button id="tilted-stand-apply" type="button">Apply Tilt</button>
+          <button id="tilted-stand-reset" type="button">Reset To Level</button>
+        </div>
+        <div class="stat-note" id="tilted-stand-limits-note" style="margin-top: 8px;">Pitch and roll are clamped to the mode's configured limits.</div>
       </div>
     </section>
 
@@ -1111,17 +1184,25 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
     const manualTorqueLimitUrl = "/api/manual/torque-limit";
     const manualSyncCurrentUrl = "/api/manual/sync-current";
     const manualJumpUrl = "/api/manual/jump";
+    const tiltedStandApplyUrl = "/api/tilted-stand/apply";
+    const tiltedStandResetUrl = "/api/tilted-stand/reset";
     const calibrationCaptureUrl = "/api/calibration/capture";
     const calibrationClearUrl = "/api/calibration/clear";
     const calibrationReloadUrl = "/api/calibration/reload";
     const manualLiveApplyIntervalMs = 200;
+    const tiltedStandLiveApplyIntervalMs = 200;
     let streamStarted = false;
     let manualGroupsReady = false;
     let manualLiveApplyTimer = null;
     let manualLiveApplyPending = false;
     let lastManualLiveApplyAt = 0;
     let manualSlidersInitialized = { value: false };
+    let tiltedStandLiveApplyTimer = null;
+    let tiltedStandLiveApplyPending = false;
+    let lastTiltedStandLiveApplyAt = 0;
+    let tiltedStandSlidersInitialized = { value: false };
     const manualPanelState = { enabled: false, ready: false };
+    const tiltedStandPanelState = { enabled: false, ready: false };
     const LEG_ORDER = [
       "front_left",
       "middle_left",
@@ -1152,6 +1233,7 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
       3: "tibia",
     };
     const MANUAL_JOINT_KEYS = ["coxa", "femur", "tibia"];
+    const TILTED_STAND_AXES = ["pitch", "roll"];
 
     function fmt(value, digits = 1) {
       return Number.isFinite(value) ? value.toFixed(digits) : "n/a";
@@ -1218,6 +1300,31 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
       return document.getElementById("manual-live-apply").checked;
     }
 
+    function tiltedStandValue(axis) {
+      return Number(document.getElementById(`tilted-stand-${axis}-slider`).value);
+    }
+
+    function tiltedStandRange(axis) {
+      const slider = document.getElementById(`tilted-stand-${axis}-slider`);
+      return {
+        min: Number(slider.min),
+        max: Number(slider.max),
+      };
+    }
+
+    function clampTiltedStandAxisValue(axis, value) {
+      const { min, max } = tiltedStandRange(axis);
+      return Math.min(max, Math.max(min, value));
+    }
+
+    function updateTiltedStandReadout(axis) {
+      document.getElementById(`tilted-stand-${axis}-input`).value = tiltedStandValue(axis).toFixed(1);
+    }
+
+    function tiltedStandLiveApplyEnabled() {
+      return document.getElementById("tilted-stand-live-apply").checked;
+    }
+
     function scheduleLiveManualApply() {
       if (!manualLiveApplyEnabled()) return;
       manualLiveApplyPending = true;
@@ -1237,6 +1344,29 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
         }
         if (manualLiveApplyPending) {
           scheduleLiveManualApply();
+        }
+      }, delay);
+    }
+
+    function scheduleLiveTiltedStandApply() {
+      if (!tiltedStandLiveApplyEnabled()) return;
+      tiltedStandLiveApplyPending = true;
+      if (tiltedStandLiveApplyTimer) return;
+
+      const now = Date.now();
+      const delay = Math.max(0, tiltedStandLiveApplyIntervalMs - (now - lastTiltedStandLiveApplyAt));
+      tiltedStandLiveApplyTimer = setTimeout(async () => {
+        tiltedStandLiveApplyTimer = null;
+        if (!tiltedStandLiveApplyPending) return;
+        tiltedStandLiveApplyPending = false;
+        lastTiltedStandLiveApplyAt = Date.now();
+        try {
+          await applyTiltedStand();
+        } catch (error) {
+          document.getElementById("tilted-stand-summary").textContent = String(error);
+        }
+        if (tiltedStandLiveApplyPending) {
+          scheduleLiveTiltedStandApply();
         }
       }, delay);
     }
@@ -1658,6 +1788,27 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
       }
     }
 
+    function setTiltedStandSlidersFromState(tiltedStand, force = false) {
+      if (!tiltedStand) return;
+      if (!force && tiltedStandSlidersInitialized.value) return;
+      document.getElementById("tilted-stand-pitch-slider").value = String((tiltedStand.pitch_deg ?? 0).toFixed(1));
+      document.getElementById("tilted-stand-roll-slider").value = String((tiltedStand.roll_deg ?? 0).toFixed(1));
+      for (const axis of TILTED_STAND_AXES) {
+        updateTiltedStandReadout(axis);
+      }
+      tiltedStandSlidersInitialized.value = true;
+    }
+
+    function setTiltedStandControlsEnabled(enabled) {
+      document.getElementById("tilted-stand-apply").disabled = !enabled;
+      document.getElementById("tilted-stand-reset").disabled = !enabled;
+      document.getElementById("tilted-stand-live-apply").disabled = !enabled;
+      for (const axis of TILTED_STAND_AXES) {
+        document.getElementById(`tilted-stand-${axis}-slider`).disabled = !enabled;
+        document.getElementById(`tilted-stand-${axis}-input`).disabled = !enabled;
+      }
+    }
+
     async function postJson(url, payload) {
       const response = await fetch(url, {
         method: "POST",
@@ -1686,6 +1837,7 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
     function updateMotionButtons(motionMode) {
       const modeToCmd = {
         manual: "manual",
+        tilted_stand: "tilted_stand",
         stand_up: "stand_up",
         stand_up_high: "stand_up_high",
         stand_high: "stand_high",
@@ -1725,6 +1877,22 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
       await refresh();
     }
 
+    async function applyTiltedStand() {
+      const result = await postJson(tiltedStandApplyUrl, {
+        pitch_deg: tiltedStandValue("pitch"),
+        roll_deg: tiltedStandValue("roll"),
+      });
+      document.getElementById("tilted-stand-summary").textContent = result.summary;
+      await refresh();
+    }
+
+    async function resetTiltedStand() {
+      const result = await postJson(tiltedStandResetUrl, {});
+      document.getElementById("tilted-stand-summary").textContent = result.summary;
+      await refresh();
+      setTiltedStandSlidersFromState(window.__tiltedStandState ?? { pitch_deg: 0, roll_deg: 0 }, true);
+    }
+
     async function applyManualTorqueLimit() {
       const result = await postJson(manualTorqueLimitUrl, {
         group_key: document.getElementById("manual-group").value,
@@ -1755,6 +1923,19 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
       const clamped = clampManualAxisValue(axis, value);
       slider.value = String(clamped);
       updateSliderReadout(axis);
+    }
+
+    function setTiltedStandAxisFromInput(axis) {
+      const input = document.getElementById(`tilted-stand-${axis}-input`);
+      const slider = document.getElementById(`tilted-stand-${axis}-slider`);
+      const value = Number(input.value);
+      if (!Number.isFinite(value)) {
+        updateTiltedStandReadout(axis);
+        return;
+      }
+      const clamped = clampTiltedStandAxisValue(axis, value);
+      slider.value = String(clamped);
+      updateTiltedStandReadout(axis);
     }
 
     async function applyManualAxisJump(axis) {
@@ -1914,6 +2095,36 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
       }));
     }
 
+    function bindTiltedStandControls() {
+      if (window.__tiltedStandControlsBound) return;
+      window.__tiltedStandControlsBound = true;
+      for (const axis of TILTED_STAND_AXES) {
+        const slider = document.getElementById(`tilted-stand-${axis}-slider`);
+        slider.addEventListener("input", () => {
+          updateTiltedStandReadout(axis);
+          scheduleLiveTiltedStandApply();
+        });
+        slider.addEventListener("change", () => {
+          updateTiltedStandReadout(axis);
+        });
+        const input = document.getElementById(`tilted-stand-${axis}-input`);
+        input.addEventListener("input", () => {
+          setTiltedStandAxisFromInput(axis);
+          scheduleLiveTiltedStandApply();
+        });
+        input.addEventListener("change", () => {
+          setTiltedStandAxisFromInput(axis);
+        });
+        updateTiltedStandReadout(axis);
+      }
+      document.getElementById("tilted-stand-apply").addEventListener("click", () => applyTiltedStand().catch((error) => {
+        document.getElementById("tilted-stand-summary").textContent = String(error);
+      }));
+      document.getElementById("tilted-stand-reset").addEventListener("click", () => resetTiltedStand().catch((error) => {
+        document.getElementById("tilted-stand-summary").textContent = String(error);
+      }));
+    }
+
     function updateManualPanel(manual) {
       window.__manualGroups = manual?.groups ?? [];
       window.__manualGroupValues = manual?.group_values ?? [];
@@ -1941,6 +2152,39 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
         : "Switch the motion mode to Manual to enable dashboard-based servo control.";
 
       setManualControlsEnabled(Boolean(enabled && manualGroupsReady));
+    }
+
+    function updateTiltedStandPanel(tiltedStand) {
+      window.__tiltedStandState = tiltedStand ?? null;
+      bindTiltedStandControls();
+      const enabled = Boolean(tiltedStand?.enabled);
+      const ready = Boolean(tiltedStand?.ready);
+      const becameEnabled = enabled && !tiltedStandPanelState.enabled;
+      const becameReady = enabled && ready && !(tiltedStandPanelState.enabled && tiltedStandPanelState.ready);
+      setTiltedStandSlidersFromState(
+        tiltedStand ?? { pitch_deg: 0, roll_deg: 0 },
+        !tiltedStandSlidersInitialized.value || becameEnabled || becameReady
+      );
+      tiltedStandPanelState.enabled = enabled;
+      tiltedStandPanelState.ready = ready;
+
+      document.getElementById("tilted-stand-summary").textContent = tiltedStand?.summary ?? "tilted stand unavailable";
+      document.getElementById("tilted-stand-mode-state").textContent = enabled
+        ? (ready ? "ready" : "waiting")
+        : "disabled";
+      document.getElementById("tilted-stand-mode-note").textContent = enabled
+        ? "Pitch and roll are applied around the stance captured when the mode armed."
+        : "Switch the motion mode to Tilted Stand to enable pitch and roll body-tilt control.";
+      document.getElementById("tilted-stand-limits-note").textContent =
+        `Pitch limit ±${Number(tiltedStand?.pitch_limit_deg ?? 20).toFixed(1)}°, roll limit ±${Number(tiltedStand?.roll_limit_deg ?? 20).toFixed(1)}°.`;
+      for (const axis of TILTED_STAND_AXES) {
+        const limit = Number(tiltedStand?.[`${axis}_limit_deg`] ?? 20);
+        document.getElementById(`tilted-stand-${axis}-slider`).min = String(-limit);
+        document.getElementById(`tilted-stand-${axis}-slider`).max = String(limit);
+        document.getElementById(`tilted-stand-${axis}-input`).min = String(-limit);
+        document.getElementById(`tilted-stand-${axis}-input`).max = String(limit);
+      }
+      setTiltedStandControlsEnabled(enabled);
     }
 
     function updateCalibrationPanel(calibration) {
@@ -2259,6 +2503,7 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
         updateMotionButtons(state.motion_mode);
         updateImuPanel(state.imu);
         updateManualPanel(state.manual);
+        updateTiltedStandPanel(state.tilted_stand);
         updateCalibrationPanel(state.calibration);
 
         const faulted = state.servos.filter((servo) => servo.telemetry && servo.telemetry.faults.length > 0).length;
