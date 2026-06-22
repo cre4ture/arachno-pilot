@@ -101,8 +101,41 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
 
     .layout {
       display: grid;
-      grid-template-columns: minmax(20rem, 1.2fr) minmax(20rem, 0.8fr);
+      grid-template-columns: minmax(0, 1fr) clamp(38rem, 46vw, 52rem);
       gap: 18px;
+      align-items: start;
+    }
+
+    .main-column {
+      min-width: 0;
+      display: grid;
+      gap: 18px;
+    }
+
+    .side-rail {
+      position: sticky;
+      top: 24px;
+      align-self: start;
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 18px;
+      max-height: calc(100vh - 48px);
+      overflow-y: auto;
+      overflow-x: hidden;
+      padding-right: 4px;
+    }
+
+    .rail-span-2 {
+      grid-column: 1 / -1;
+    }
+
+    .side-rail::-webkit-scrollbar {
+      width: 10px;
+    }
+
+    .side-rail::-webkit-scrollbar-thumb {
+      background: rgba(255, 255, 255, 0.14);
+      border-radius: 999px;
     }
 
     .panel {
@@ -134,6 +167,22 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
       padding: 18px 20px 20px;
     }
 
+    .rail-panel .panel-header {
+      padding: 16px 18px 0;
+    }
+
+    .rail-panel .panel-header h2 {
+      font-size: 1rem;
+    }
+
+    .rail-panel .panel-body {
+      padding: 16px 18px 18px;
+    }
+
+    .rail-panel {
+      min-width: 0;
+    }
+
     .stream-shell {
       background: linear-gradient(180deg, rgba(255,255,255,0.04), rgba(0,0,0,0.22));
       border-radius: 18px;
@@ -150,6 +199,16 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
       height: auto;
       display: block;
       background: #040608;
+    }
+
+    .rail-stream .stream-shell {
+      min-height: 0;
+      aspect-ratio: 16 / 10;
+    }
+
+    .rail-stream .stream-shell img {
+      height: 100%;
+      object-fit: cover;
     }
 
     .stream-placeholder {
@@ -193,6 +252,157 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
       margin-top: 8px;
       line-height: 1.4;
     }
+
+    .rail-stats {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .rail-stat {
+      min-width: 0;
+      padding: 12px;
+      background: var(--panel-strong);
+      border-radius: 14px;
+      border: 1px solid rgba(255,255,255,0.06);
+    }
+
+    .rail-stat-label {
+      color: var(--muted);
+      font-size: 0.72rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-bottom: 6px;
+    }
+
+    .rail-stat-value {
+      font-size: 1rem;
+      font-weight: 700;
+      line-height: 1.25;
+      word-break: break-word;
+    }
+
+    .rail-stat-note {
+      color: var(--muted);
+      font-size: 0.8rem;
+      line-height: 1.35;
+      margin-top: 6px;
+    }
+
+    .rail-leg-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 4.75rem minmax(0, 1fr);
+      grid-template-areas:
+        "front-left body front-right"
+        "middle-left body middle-right"
+        "rear-left body rear-right";
+      gap: 10px 12px;
+      align-items: stretch;
+    }
+
+    .rail-leg-body {
+      grid-area: body;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 12px 8px;
+      border-radius: 20px;
+      border: 1px solid rgba(255,255,255,0.08);
+      background:
+        linear-gradient(180deg, rgba(255,255,255,0.04), rgba(0,0,0,0.18)),
+        rgba(9, 13, 18, 0.7);
+    }
+
+    .rail-leg-axis {
+      color: rgba(255,255,255,0.44);
+      font-size: 0.68rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+
+    .rail-leg-core {
+      position: relative;
+      flex: 1;
+      width: 100%;
+      min-height: 100%;
+      border-radius: 999px;
+      clip-path: polygon(20% 0%, 80% 0%, 100% 18%, 100% 82%, 80% 100%, 20% 100%, 0% 82%, 0% 18%);
+      background:
+        radial-gradient(circle at top, rgba(255,255,255,0.09), transparent 52%),
+        linear-gradient(180deg, rgba(255, 146, 84, 0.18), rgba(255, 146, 84, 0.04));
+      border: 1px solid rgba(255,255,255,0.1);
+      box-shadow:
+        inset 0 1px 0 rgba(255,255,255,0.1),
+        0 10px 22px rgba(0,0,0,0.18);
+    }
+
+    .rail-leg-side {
+      position: absolute;
+      top: 50%;
+      color: rgba(255,255,255,0.36);
+      font-size: 0.66rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+
+    .rail-leg-side.left {
+      left: -0.2rem;
+      transform: translate(-50%, -50%) rotate(-90deg);
+    }
+
+    .rail-leg-side.right {
+      right: -0.2rem;
+      transform: translate(50%, -50%) rotate(90deg);
+    }
+
+    .rail-leg-card {
+      min-width: 0;
+      padding: 12px;
+      background: var(--panel-strong);
+      border-radius: 16px;
+      border: 1px solid rgba(255,255,255,0.06);
+    }
+
+    .rail-leg-card.live {
+      border-color: rgba(101, 214, 164, 0.2);
+    }
+
+    .rail-leg-top {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      align-items: baseline;
+      margin-bottom: 8px;
+    }
+
+    .rail-leg-name {
+      font-size: 0.82rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: rgba(255,255,255,0.84);
+    }
+
+    .rail-leg-count {
+      color: var(--muted);
+      font-size: 0.78rem;
+      white-space: nowrap;
+    }
+
+    .rail-leg-previews {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 6px;
+    }
+
+    .rail-leg-card.front-left { grid-area: front-left; }
+    .rail-leg-card.middle-left { grid-area: middle-left; }
+    .rail-leg-card.rear-left { grid-area: rear-left; }
+    .rail-leg-card.front-right { grid-area: front-right; }
+    .rail-leg-card.middle-right { grid-area: middle-right; }
+    .rail-leg-card.rear-right { grid-area: rear-right; }
 
     .motion-cmd-grid {
       display: grid;
@@ -649,6 +859,20 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
       display: block;
     }
 
+    .leg-preview-shell.compact {
+      padding: 8px 8px 6px;
+      border-radius: 12px;
+    }
+
+    .leg-preview-shell.compact .leg-preview-top {
+      margin-bottom: 5px;
+      font-size: 0.68rem;
+    }
+
+    .leg-preview-shell.compact .leg-preview-svg {
+      height: 3.8rem;
+    }
+
     .leg-chain {
       display: flex;
       gap: 10px;
@@ -778,8 +1002,35 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
 
     @media (max-width: 980px) {
       .layout { grid-template-columns: 1fr; }
+      .side-rail {
+        position: static;
+        grid-template-columns: 1fr;
+        max-height: none;
+        overflow: visible;
+        padding-right: 0;
+        order: -1;
+      }
       .stats { grid-template-columns: 1fr; }
       .page { padding: 18px; }
+    }
+
+    @media (max-width: 720px) {
+      .rail-stats {
+        grid-template-columns: 1fr;
+      }
+
+      .rail-leg-grid {
+        grid-template-columns: 1fr;
+        grid-template-areas: none;
+      }
+
+      .rail-leg-body {
+        display: none;
+      }
+
+      .rail-leg-card {
+        grid-area: auto !important;
+      }
     }
 
     @keyframes pulse {
@@ -800,62 +1051,49 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
     </section>
 
     <section class="layout">
-      <div class="panel">
-        <div class="panel-header">
-          <h2>Camera</h2>
-          <div class="muted" id="camera-meta">starting...</div>
-        </div>
-        <div class="panel-body">
-          <div id="stream-shell" class="stream-shell">
-            <div class="stream-placeholder" id="stream-placeholder">Preparing camera stream...</div>
-            <img id="camera-stream" alt="Camera stream" hidden />
+      <div class="main-column">
+        <div class="panel">
+          <div class="panel-header">
+            <h2>System State</h2>
+            <div class="muted" id="updated-at">never</div>
           </div>
-        </div>
-      </div>
-
-      <div class="panel">
-        <div class="panel-header">
-          <h2>System State</h2>
-          <div class="muted" id="updated-at">never</div>
-        </div>
-        <div class="panel-body">
-          <div class="stats">
-            <div class="stat">
-              <div class="stat-label">Deployment</div>
-              <div class="stat-value" id="deployment-profile">-</div>
-              <div class="stat-note" id="compute-target">-</div>
-            </div>
-            <div class="stat">
-              <div class="stat-label">Servo Replies</div>
-              <div class="stat-value" id="servo-count">0 / 0</div>
-              <div class="stat-note">Configured servos currently responding to feedback polls.</div>
-            </div>
-            <div class="stat">
-              <div class="stat-label">Serial Bridge</div>
-              <div class="stat-value" id="serial-port">-</div>
-              <div class="stat-note" id="serial-note">Waiting for bus state.</div>
-            </div>
-            <div class="stat">
-              <div class="stat-label">Camera Backend</div>
-              <div class="stat-value" id="camera-backend">-</div>
-              <div class="stat-note" id="camera-note">-</div>
-            </div>
-            <div class="stat">
-              <div class="stat-label">Control Mode</div>
-              <div class="stat-value" id="motion-mode">-</div>
-              <div class="stat-note" id="motion-summary">-</div>
-            </div>
-            <div class="stat">
-              <div class="stat-label">Safety</div>
-              <div class="stat-value" id="safety-status">-</div>
-              <div class="stat-note" id="motion-fault">-</div>
+          <div class="panel-body">
+            <div class="stats">
+              <div class="stat">
+                <div class="stat-label">Deployment</div>
+                <div class="stat-value" id="deployment-profile">-</div>
+                <div class="stat-note" id="compute-target">-</div>
+              </div>
+              <div class="stat">
+                <div class="stat-label">Servo Replies</div>
+                <div class="stat-value" id="servo-count">0 / 0</div>
+                <div class="stat-note">Configured servos currently responding to feedback polls.</div>
+              </div>
+              <div class="stat">
+                <div class="stat-label">Serial Bridge</div>
+                <div class="stat-value" id="serial-port">-</div>
+                <div class="stat-note" id="serial-note">Waiting for bus state.</div>
+              </div>
+              <div class="stat">
+                <div class="stat-label">Camera Backend</div>
+                <div class="stat-value" id="camera-backend">-</div>
+                <div class="stat-note" id="camera-note">-</div>
+              </div>
+              <div class="stat">
+                <div class="stat-label">Control Mode</div>
+                <div class="stat-value" id="motion-mode">-</div>
+                <div class="stat-note" id="motion-summary">-</div>
+              </div>
+              <div class="stat">
+                <div class="stat-label">Safety</div>
+                <div class="stat-value" id="safety-status">-</div>
+                <div class="stat-note" id="motion-fault">-</div>
+              </div>
             </div>
           </div>
         </div>
-      </div>
-    </section>
 
-    <section class="panel" style="margin-top: 18px;">
+    <section class="panel">
       <div class="panel-header">
         <h2>Motion Commands</h2>
         <div class="muted" id="motion-cmd-summary">ready</div>
@@ -888,7 +1126,7 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
       </div>
     </section>
 
-    <section class="panel" style="margin-top: 18px;">
+    <section class="panel">
       <div class="panel-header">
         <h2>IMU</h2>
         <div class="muted" id="imu-summary">waiting for IMU state</div>
@@ -919,7 +1157,7 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
       </div>
     </section>
 
-    <section class="panel" style="margin-top: 18px;">
+    <section class="panel">
       <div class="panel-header">
         <h2>Servo Layout</h2>
         <div class="muted" id="fault-summary">No servo data yet</div>
@@ -948,7 +1186,7 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
       </div>
     </section>
 
-    <section class="panel" style="margin-top: 18px;">
+    <section class="panel">
       <div class="panel-header">
         <h2>Arm</h2>
         <div class="muted" id="arm-summary">arm unavailable</div>
@@ -1001,7 +1239,7 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
       </div>
     </section>
 
-    <section class="panel" style="margin-top: 18px;">
+    <section class="panel">
       <div class="panel-header">
         <h2>Tilted Stand</h2>
         <div class="muted" id="tilted-stand-summary">tilted stand disabled</div>
@@ -1073,7 +1311,7 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
       </div>
     </section>
 
-    <section class="panel" style="margin-top: 18px;">
+    <section class="panel">
       <div class="panel-header">
         <h2>Manual Control</h2>
         <div class="muted" id="manual-summary">manual control disabled</div>
@@ -1232,6 +1470,67 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
         <div class="stat-note" id="calibration-entry-note" style="margin-top: 8px;">No joint selected yet.</div>
       </div>
     </section>
+      </div>
+
+      <aside class="side-rail" aria-label="Persistent telemetry rail">
+        <section class="panel rail-panel rail-stream">
+          <div class="panel-header">
+            <h2>Camera</h2>
+            <div class="muted" id="camera-meta">starting...</div>
+          </div>
+          <div class="panel-body">
+            <div id="stream-shell" class="stream-shell">
+              <div class="stream-placeholder" id="stream-placeholder">Preparing camera stream...</div>
+              <img id="camera-stream" alt="Camera stream" hidden />
+            </div>
+            <div class="stat-note" id="camera-rail-note" style="margin-top: 10px;">Waiting for camera details.</div>
+          </div>
+        </section>
+
+        <section class="panel rail-panel">
+          <div class="panel-header">
+            <h2>IMU Snapshot</h2>
+            <div class="muted" id="rail-imu-summary">waiting for IMU state</div>
+          </div>
+          <div class="panel-body">
+            <div class="rail-stats">
+              <div class="rail-stat">
+                <div class="rail-stat-label">Attitude</div>
+                <div class="rail-stat-value" id="rail-imu-attitude">-</div>
+                <div class="rail-stat-note" id="rail-imu-attitude-note">-</div>
+              </div>
+              <div class="rail-stat">
+                <div class="rail-stat-label">Motion</div>
+                <div class="rail-stat-value" id="rail-imu-motion">-</div>
+                <div class="rail-stat-note" id="rail-imu-motion-note">-</div>
+              </div>
+              <div class="rail-stat">
+                <div class="rail-stat-label">Bridge</div>
+                <div class="rail-stat-value" id="rail-imu-mode">-</div>
+                <div class="rail-stat-note" id="rail-imu-device">-</div>
+              </div>
+              <div class="rail-stat">
+                <div class="rail-stat-label">Sensor</div>
+                <div class="rail-stat-value" id="rail-imu-sensor-kind">-</div>
+                <div class="rail-stat-note" id="rail-imu-sensor-note">-</div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel rail-panel rail-span-2">
+          <div class="panel-header">
+            <h2>Leg Glance</h2>
+            <div class="muted" id="rail-leg-summary">waiting for leg telemetry</div>
+          </div>
+          <div class="panel-body">
+            <div id="rail-leg-previews" class="rail-leg-grid">
+              <div class="stat-note">Waiting for live leg previews.</div>
+            </div>
+          </div>
+        </section>
+      </aside>
+    </section>
   </div>
 
   <script>
@@ -1283,12 +1582,12 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
       "rear_right",
     ];
     const LEG_META = {
-      front_left: { label: "Front left", placement: "front-left left", side: "left" },
-      middle_left: { label: "Middle left", placement: "middle-left left", side: "left" },
-      rear_left: { label: "Rear left", placement: "rear-left left", side: "left" },
-      front_right: { label: "Front right", placement: "front-right right", side: "right" },
-      middle_right: { label: "Middle right", placement: "middle-right right", side: "right" },
-      rear_right: { label: "Rear right", placement: "rear-right right", side: "right" },
+      front_left: { label: "Front left", placement: "front-left left", railClass: "front-left", side: "left" },
+      middle_left: { label: "Middle left", placement: "middle-left left", railClass: "middle-left", side: "left" },
+      rear_left: { label: "Rear left", placement: "rear-left left", railClass: "rear-left", side: "left" },
+      front_right: { label: "Front right", placement: "front-right right", railClass: "front-right", side: "right" },
+      middle_right: { label: "Middle right", placement: "middle-right right", railClass: "middle-right", side: "right" },
+      rear_right: { label: "Rear right", placement: "rear-right right", railClass: "rear-right", side: "right" },
     };
     const ARM_TO_LEG = {
       1: "front_left",
@@ -2557,18 +2856,19 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
       setCalibrationControlsEnabled(Boolean(calibration?.enabled));
     }
 
-    function updateImuPanel(imu) {
+    function describeImuState(imu) {
       if (!imu) {
-        document.getElementById("imu-summary").textContent = "IMU disabled";
-        document.getElementById("imu-mode").textContent = "disabled";
-        document.getElementById("imu-device").textContent = "No IMU section is configured for this profile.";
-        document.getElementById("imu-sensor-kind").textContent = "-";
-        document.getElementById("imu-sensor-note").textContent = "-";
-        document.getElementById("imu-attitude").textContent = "-";
-        document.getElementById("imu-accel-note").textContent = "-";
-        document.getElementById("imu-motion").textContent = "-";
-        document.getElementById("imu-health-note").textContent = "-";
-        return;
+        return {
+          summary: "IMU disabled",
+          mode: "disabled",
+          device: "No IMU section is configured for this profile.",
+          sensorKind: "-",
+          sensorNote: "-",
+          attitude: "-",
+          accelNote: "-",
+          motion: "-",
+          health: "-",
+        };
       }
 
       const sensorKind = imu.sensor_kind ?? (imu.enabled ? "probing..." : "disabled");
@@ -2588,21 +2888,49 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
         ? `${fmt(imu.gyro_norm_deg_s, 1)} °/s`
         : "waiting for sample";
       const faults = imu.telemetry?.faults?.length ? imu.telemetry.faults.join(", ") : "ok";
-      const healthBits = [
+      const health = [
         imu.telemetry?.temperature_c != null ? `temp ${fmt(imu.telemetry.temperature_c, 1)} °C` : null,
         `faults ${faults}`,
         imu.last_error ? compactError(imu.last_error) : null,
-      ].filter(Boolean).join(" | ");
+      ].filter(Boolean).join(" | ") || "No telemetry yet.";
 
-      document.getElementById("imu-summary").textContent = imu.last_error ?? `${sensorKind} streaming`;
-      document.getElementById("imu-mode").textContent = imu.enabled ? imu.mode : "disabled";
-      document.getElementById("imu-device").textContent = imu.device ?? imu.description ?? "No device path";
-      document.getElementById("imu-sensor-kind").textContent = sensorKind;
-      document.getElementById("imu-sensor-note").textContent = sensorNote;
-      document.getElementById("imu-attitude").textContent = attitude;
-      document.getElementById("imu-accel-note").textContent = accelNote;
-      document.getElementById("imu-motion").textContent = motion;
-      document.getElementById("imu-health-note").textContent = healthBits || "No telemetry yet.";
+      return {
+        summary: imu.last_error ?? `${sensorKind} streaming`,
+        mode: imu.enabled ? imu.mode : "disabled",
+        device: imu.device ?? imu.description ?? "No device path",
+        sensorKind,
+        sensorNote,
+        attitude,
+        accelNote,
+        motion,
+        health,
+      };
+    }
+
+    function updateRailImuPanel(view) {
+      document.getElementById("rail-imu-summary").textContent = view.summary;
+      document.getElementById("rail-imu-attitude").textContent = view.attitude;
+      document.getElementById("rail-imu-attitude-note").textContent = view.accelNote;
+      document.getElementById("rail-imu-motion").textContent = view.motion;
+      document.getElementById("rail-imu-motion-note").textContent = view.health;
+      document.getElementById("rail-imu-mode").textContent = view.mode;
+      document.getElementById("rail-imu-device").textContent = view.device;
+      document.getElementById("rail-imu-sensor-kind").textContent = view.sensorKind;
+      document.getElementById("rail-imu-sensor-note").textContent = view.sensorNote;
+    }
+
+    function updateImuPanel(imu) {
+      const view = describeImuState(imu);
+      document.getElementById("imu-summary").textContent = view.summary;
+      document.getElementById("imu-mode").textContent = view.mode;
+      document.getElementById("imu-device").textContent = view.device;
+      document.getElementById("imu-sensor-kind").textContent = view.sensorKind;
+      document.getElementById("imu-sensor-note").textContent = view.sensorNote;
+      document.getElementById("imu-attitude").textContent = view.attitude;
+      document.getElementById("imu-accel-note").textContent = view.accelNote;
+      document.getElementById("imu-motion").textContent = view.motion;
+      document.getElementById("imu-health-note").textContent = view.health;
+      updateRailImuPanel(view);
     }
 
     function renderServoNode(servo, labelOverride = null) {
@@ -2743,86 +3071,113 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
       };
     }
 
-    function previewPlaceholder(title, count, label) {
+    function previewPlaceholder({
+      title,
+      countText,
+      shellClass,
+      width = 220,
+      height = 116,
+    }) {
+      const rectX = 16;
+      const rectY = 16;
+      const rectWidth = width - rectX * 2;
+      const rectHeight = height - rectY * 2;
+      const labelX = width / 2;
+      const labelY = height / 2 - 2;
+      const noteY = height / 2 + 14;
+      const titleFontSize = width < 180 ? 10 : 12;
+      const noteFontSize = width < 180 ? 9 : 11;
       return `
-        <div class="leg-preview-shell ${label}">
+        <div class="leg-preview-shell ${shellClass}">
           <div class="leg-preview-top">
             <strong>${title}</strong>
-            <span>${count}/3</span>
+            <span>${countText}</span>
           </div>
-          <svg class="leg-preview-svg" viewBox="0 0 220 116" aria-label="${title} pose unavailable">
-            <rect x="28" y="22" width="164" height="72" rx="16" fill="rgba(255,255,255,0.03)" stroke="rgba(255,255,255,0.08)" />
-            <text x="110" y="58" text-anchor="middle" fill="rgba(238,243,247,0.78)" font-size="12">preview unavailable</text>
-            <text x="110" y="76" text-anchor="middle" fill="rgba(148,164,182,0.92)" font-size="11">need fresh semantic telemetry</text>
+          <svg class="leg-preview-svg" viewBox="0 0 ${width} ${height}" aria-label="${title} pose unavailable">
+            <rect x="${rectX}" y="${rectY}" width="${rectWidth}" height="${rectHeight}" rx="16" fill="rgba(255,255,255,0.03)" stroke="rgba(255,255,255,0.08)" />
+            <text x="${labelX}" y="${labelY}" text-anchor="middle" fill="rgba(238,243,247,0.78)" font-size="${titleFontSize}">preview unavailable</text>
+            <text x="${labelX}" y="${noteY}" text-anchor="middle" fill="rgba(148,164,182,0.92)" font-size="${noteFontSize}">need fresh semantic telemetry</text>
           </svg>
         </div>
       `;
     }
 
-    function renderLegBirdPreview(legKey, servos) {
+    function renderLegBirdPreview(legKey, servos, options = {}) {
       const meta = LEG_META[legKey];
       const onlineCount = servos.filter((servo) => servo.online).length;
+      const width = options.width ?? 220;
+      const height = options.height ?? 116;
+      const title = options.title ?? "Top view";
+      const countText = options.countText ?? `${onlineCount}/3 online`;
+      const shellClass = options.shellClass ?? "center";
       const rawPose = currentLegPreview(legKey)?.top_view;
       if (!rawPose) {
-        return previewPlaceholder("Top view", onlineCount, "center");
+        return previewPlaceholder({ title, countText, shellClass, width, height });
       }
-      const pose = fitPreviewPose(rawPose);
+      const pose = fitPreviewPose(rawPose, width, height);
+      const scale = Math.min(width / 220, height / 116);
       const stroke = onlineCount === 3 ? '#ff9254' : (onlineCount > 0 ? '#ffc26b' : '#5a6775');
-      const fill = onlineCount === 3 ? 'rgba(255,146,84,0.12)' : 'rgba(255,255,255,0.04)';
+      const fill = onlineCount === 3 ? "rgba(255,146,84,0.12)" : "rgba(255,255,255,0.04)";
       const inwardDx = Math.sign(pose.anchor.x - pose.coxaEnd.x) || (meta.side === "left" ? 1 : -1);
-      const bodyGuideStart = { x: pose.anchor.x + inwardDx * 20, y: pose.anchor.y };
-      const bodyGuideEnd = { x: pose.anchor.x + inwardDx * 4, y: pose.anchor.y };
+      const bodyGuideStart = { x: pose.anchor.x + inwardDx * 20 * scale, y: pose.anchor.y };
+      const bodyGuideEnd = { x: pose.anchor.x + inwardDx * 4 * scale, y: pose.anchor.y };
 
       return `
-        <div class="leg-preview-shell center">
+        <div class="leg-preview-shell ${shellClass}">
           <div class="leg-preview-top">
-            <strong>Top view</strong>
-            <span>${onlineCount}/3 online</span>
+            <strong>${title}</strong>
+            <span>${countText}</span>
           </div>
-          <svg class="leg-preview-svg" viewBox="0 0 220 116" aria-label="${meta.label} top-view live pose">
+          <svg class="leg-preview-svg" viewBox="0 0 ${width} ${height}" aria-label="${meta.label} top-view live pose">
             <path d='M ${bodyGuideStart.x.toFixed(1)} ${bodyGuideStart.y.toFixed(1)} L ${bodyGuideEnd.x.toFixed(1)} ${bodyGuideEnd.y.toFixed(1)}'
-              fill='none' stroke='rgba(255,255,255,0.14)' stroke-width='10' stroke-linecap='round' />
-            <circle cx='${pose.anchor.x}' cy='${pose.anchor.y}' r='9' fill='${fill}' stroke='rgba(255,255,255,0.10)' />
-            <path d='M ${pose.anchor.x} ${pose.anchor.y} L ${pose.coxaEnd.x.toFixed(1)} ${pose.coxaEnd.y.toFixed(1)} L ${pose.femurEnd.x.toFixed(1)} ${pose.femurEnd.y.toFixed(1)} L ${pose.tibiaEnd.x.toFixed(1)} ${pose.tibiaEnd.y.toFixed(1)}'
-              fill='none' stroke='${stroke}' stroke-width='9' stroke-linecap='round' stroke-linejoin='round' />
-            <circle cx='${pose.anchor.x}' cy='${pose.anchor.y}' r='6.5' fill='#eef3f7' />
-            <circle cx='${pose.coxaEnd.x.toFixed(1)}' cy='${pose.coxaEnd.y.toFixed(1)}' r='5.5' fill='#d9e2ec' />
-            <circle cx='${pose.femurEnd.x.toFixed(1)}' cy='${pose.femurEnd.y.toFixed(1)}' r='5.2' fill='#c8d3de' />
-            <circle cx='${pose.tibiaEnd.x.toFixed(1)}' cy='${pose.tibiaEnd.y.toFixed(1)}' r='5.2' fill='${stroke}' />
-            <circle cx='${pose.tibiaEnd.x.toFixed(1)}' cy='${pose.tibiaEnd.y.toFixed(1)}' r='9' fill='none' stroke='${stroke}' stroke-width='1.6' opacity='0.5' />
+              fill='none' stroke='rgba(255,255,255,0.14)' stroke-width='${(10 * scale).toFixed(2)}' stroke-linecap='round' />
+            <circle cx='${pose.anchor.x.toFixed(1)}' cy='${pose.anchor.y.toFixed(1)}' r='${(9 * scale).toFixed(2)}' fill='${fill}' stroke='rgba(255,255,255,0.10)' />
+            <path d='M ${pose.anchor.x.toFixed(1)} ${pose.anchor.y.toFixed(1)} L ${pose.coxaEnd.x.toFixed(1)} ${pose.coxaEnd.y.toFixed(1)} L ${pose.femurEnd.x.toFixed(1)} ${pose.femurEnd.y.toFixed(1)} L ${pose.tibiaEnd.x.toFixed(1)} ${pose.tibiaEnd.y.toFixed(1)}'
+              fill='none' stroke='${stroke}' stroke-width='${(9 * scale).toFixed(2)}' stroke-linecap='round' stroke-linejoin='round' />
+            <circle cx='${pose.anchor.x.toFixed(1)}' cy='${pose.anchor.y.toFixed(1)}' r='${(6.5 * scale).toFixed(2)}' fill='#eef3f7' />
+            <circle cx='${pose.coxaEnd.x.toFixed(1)}' cy='${pose.coxaEnd.y.toFixed(1)}' r='${(5.5 * scale).toFixed(2)}' fill='#d9e2ec' />
+            <circle cx='${pose.femurEnd.x.toFixed(1)}' cy='${pose.femurEnd.y.toFixed(1)}' r='${(5.2 * scale).toFixed(2)}' fill='#c8d3de' />
+            <circle cx='${pose.tibiaEnd.x.toFixed(1)}' cy='${pose.tibiaEnd.y.toFixed(1)}' r='${(5.2 * scale).toFixed(2)}' fill='${stroke}' />
+            <circle cx='${pose.tibiaEnd.x.toFixed(1)}' cy='${pose.tibiaEnd.y.toFixed(1)}' r='${(9 * scale).toFixed(2)}' fill='none' stroke='${stroke}' stroke-width='${(1.6 * scale).toFixed(2)}' opacity='0.5' />
           </svg>
         </div>
       `;
     }
 
-    function renderLegSidePreview(legKey, servos) {
+    function renderLegSidePreview(legKey, servos, options = {}) {
       const meta = LEG_META[legKey];
       const onlineCount = servos.filter((servo) => servo.online).length;
+      const width = options.width ?? 220;
+      const height = options.height ?? 116;
+      const title = options.title ?? "Side view";
+      const countText = options.countText ?? `${onlineCount}/3`;
+      const shellClass = options.shellClass ?? "outer";
       const rawPose = currentLegPreview(legKey)?.side_view;
       if (!rawPose) {
-        return previewPlaceholder("Side view", onlineCount, "outer");
+        return previewPlaceholder({ title, countText, shellClass, width, height });
       }
-      const pose = fitPreviewPose(rawPose);
+      const pose = fitPreviewPose(rawPose, width, height);
+      const scale = Math.min(width / 220, height / 116);
       const stroke = onlineCount === 3 ? '#7dc8ff' : (onlineCount > 0 ? '#b8dfff' : '#5a6775');
       const inwardDx = Math.sign(pose.anchor.x - pose.coxaEnd.x) || (meta.side === "left" ? 1 : -1);
-      const bodyGuideStart = { x: pose.anchor.x + inwardDx * 20, y: pose.anchor.y };
-      const bodyGuideEnd = { x: pose.anchor.x + inwardDx * 4, y: pose.anchor.y };
+      const bodyGuideStart = { x: pose.anchor.x + inwardDx * 20 * scale, y: pose.anchor.y };
+      const bodyGuideEnd = { x: pose.anchor.x + inwardDx * 4 * scale, y: pose.anchor.y };
 
       return `
-        <div class="leg-preview-shell outer">
+        <div class="leg-preview-shell ${shellClass}">
           <div class="leg-preview-top">
-            <strong>Side view</strong>
-            <span>${onlineCount}/3</span>
+            <strong>${title}</strong>
+            <span>${countText}</span>
           </div>
-          <svg class="leg-preview-svg" viewBox="0 0 220 116" aria-label="${meta.label} side-view live pose">
+          <svg class="leg-preview-svg" viewBox="0 0 ${width} ${height}" aria-label="${meta.label} side-view live pose">
             <path d='M ${bodyGuideStart.x.toFixed(1)} ${bodyGuideStart.y.toFixed(1)} L ${bodyGuideEnd.x.toFixed(1)} ${bodyGuideEnd.y.toFixed(1)}'
-              fill='none' stroke='rgba(255,255,255,0.14)' stroke-width='10' stroke-linecap='round' />
-            <path d='M ${pose.anchor.x} ${pose.anchor.y} L ${pose.coxaEnd.x} ${pose.coxaEnd.y} L ${pose.femurEnd.x.toFixed(1)} ${pose.femurEnd.y.toFixed(1)} L ${pose.tibiaEnd.x.toFixed(1)} ${pose.tibiaEnd.y.toFixed(1)}'
-              fill='none' stroke='${stroke}' stroke-width='9' stroke-linecap='round' stroke-linejoin='round' />
-            <circle cx='${pose.anchor.x}' cy='${pose.anchor.y}' r='6.5' fill='#eef3f7' />
-            <circle cx='${pose.coxaEnd.x}' cy='${pose.coxaEnd.y}' r='5.5' fill='#d9e2ec' />
-            <circle cx='${pose.femurEnd.x.toFixed(1)}' cy='${pose.femurEnd.y.toFixed(1)}' r='5.2' fill='#c8d3de' />
-            <circle cx='${pose.tibiaEnd.x.toFixed(1)}' cy='${pose.tibiaEnd.y.toFixed(1)}' r='5.2' fill='${stroke}' />
+              fill='none' stroke='rgba(255,255,255,0.14)' stroke-width='${(10 * scale).toFixed(2)}' stroke-linecap='round' />
+            <path d='M ${pose.anchor.x.toFixed(1)} ${pose.anchor.y.toFixed(1)} L ${pose.coxaEnd.x.toFixed(1)} ${pose.coxaEnd.y.toFixed(1)} L ${pose.femurEnd.x.toFixed(1)} ${pose.femurEnd.y.toFixed(1)} L ${pose.tibiaEnd.x.toFixed(1)} ${pose.tibiaEnd.y.toFixed(1)}'
+              fill='none' stroke='${stroke}' stroke-width='${(9 * scale).toFixed(2)}' stroke-linecap='round' stroke-linejoin='round' />
+            <circle cx='${pose.anchor.x.toFixed(1)}' cy='${pose.anchor.y.toFixed(1)}' r='${(6.5 * scale).toFixed(2)}' fill='#eef3f7' />
+            <circle cx='${pose.coxaEnd.x.toFixed(1)}' cy='${pose.coxaEnd.y.toFixed(1)}' r='${(5.5 * scale).toFixed(2)}' fill='#d9e2ec' />
+            <circle cx='${pose.femurEnd.x.toFixed(1)}' cy='${pose.femurEnd.y.toFixed(1)}' r='${(5.2 * scale).toFixed(2)}' fill='#c8d3de' />
+            <circle cx='${pose.tibiaEnd.x.toFixed(1)}' cy='${pose.tibiaEnd.y.toFixed(1)}' r='${(5.2 * scale).toFixed(2)}' fill='${stroke}' />
           </svg>
         </div>
       `;
@@ -2834,8 +3189,54 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
       const outerPreview = renderLegSidePreview(legKey, servos);
       return `
         <div class="leg-preview-row">
-          ${meta.side === 'left' ? `${outerPreview}${centerPreview}` : `${centerPreview}${outerPreview}`}
+          ${meta.side === "left" ? `${outerPreview}${centerPreview}` : `${centerPreview}${outerPreview}`}
         </div>
+      `;
+    }
+
+    function renderCompactLegPreviewCard(legKey, servos) {
+      const meta = LEG_META[legKey];
+      const onlineCount = servos.filter((servo) => servo.online).length;
+      const topPreview = renderLegBirdPreview(legKey, servos, {
+        width: 160,
+        height: 88,
+        title: "Top",
+        countText: onlineCount === 3 ? "live" : `${onlineCount}/3`,
+        shellClass: "compact center",
+      });
+      const sidePreview = renderLegSidePreview(legKey, servos, {
+        width: 160,
+        height: 88,
+        title: "Side",
+        countText: onlineCount === 3 ? "live" : `${onlineCount}/3`,
+        shellClass: "compact outer",
+      });
+
+      return `
+        <article class="rail-leg-card ${meta.railClass} ${onlineCount === 3 ? "live" : ""}">
+          <div class="rail-leg-top">
+            <div class="rail-leg-name">${meta.label}</div>
+            <div class="rail-leg-count">${onlineCount}/3</div>
+          </div>
+          <div class="rail-leg-previews">
+            ${meta.side === "left" ? `${sidePreview}${topPreview}` : `${topPreview}${sidePreview}`}
+          </div>
+        </article>
+      `;
+    }
+
+    function renderCompactLegRail(servos) {
+      const grouped = groupServosByLeg(servos);
+      return `
+        <div class="rail-leg-body" aria-hidden="true">
+          <div class="rail-leg-axis">Front</div>
+          <div class="rail-leg-core">
+            <div class="rail-leg-side left">Left</div>
+            <div class="rail-leg-side right">Right</div>
+          </div>
+          <div class="rail-leg-axis">Rear</div>
+        </div>
+        ${LEG_ORDER.map((legKey) => renderCompactLegPreviewCard(legKey, grouped[legKey])).join("")}
       `;
     }
 
@@ -2864,7 +3265,8 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
         document.getElementById("serial-note").textContent = state.last_poll_error ?? "All configured servos replied on the last poll.";
         document.getElementById("camera-backend").textContent = state.camera_backend;
         document.getElementById("camera-note").textContent = state.camera_device ?? state.camera_pipeline;
-        document.getElementById("camera-meta").textContent = state.camera_pipeline;
+        document.getElementById("camera-meta").textContent = state.camera_backend;
+        document.getElementById("camera-rail-note").textContent = state.camera_device ?? state.camera_pipeline;
         document.getElementById("motion-mode").textContent = state.motion_mode ?? "-";
         document.getElementById("motion-summary").textContent = state.motion_summary ?? "-";
         document.getElementById("safety-status").textContent = state.motion_fault ? "tripped" : (state.safety_status ?? "ok");
@@ -2884,10 +3286,12 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
         document.getElementById("fault-summary").textContent = armServos.length
           ? `${liveLegs}/${LEG_ORDER.length} legs fully live · arm ${state.arm.online_servo_count}/${armServos.length} live · ${faulted} servo(s) reporting status flags`
           : `${liveLegs}/${LEG_ORDER.length} legs fully live · ${faulted} servo(s) reporting status flags`;
+        document.getElementById("rail-leg-summary").textContent = `${liveLegs}/${LEG_ORDER.length} legs fully live`;
         document.getElementById("robot-note").textContent =
           armServos.length
             ? `${state.motion_mode}: ${state.motion_summary} legs ${state.online_servo_count}/${state.servos.length}, arm ${state.arm.online_servo_count}/${armServos.length} joints responding.`
             : `${state.motion_mode}: ${state.motion_summary} ${state.online_servo_count}/${state.servos.length} joints responding.`;
+        document.getElementById("rail-leg-previews").innerHTML = renderCompactLegRail(state.servos);
         document.getElementById("servo-map-legs").innerHTML = renderServoMap(state.servos);
 
         updateBadge(
@@ -2914,3 +3318,75 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
 </body>
 </html>
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::DASHBOARD_HTML;
+
+    #[test]
+    fn dashboard_html_includes_sticky_side_rail_elements() {
+        for needle in [
+            "class=\"side-rail\"",
+            "id=\"camera-rail-note\"",
+            "id=\"rail-leg-previews\"",
+            "id=\"rail-imu-summary\"",
+        ] {
+            assert!(
+                DASHBOARD_HTML.contains(needle),
+                "dashboard html should contain {needle}"
+            );
+        }
+    }
+
+    #[test]
+    fn dashboard_html_includes_compact_preview_and_imu_helpers() {
+        for needle in [
+            "renderCompactLegRail",
+            "renderCompactLegPreviewCard",
+            "describeImuState",
+            "updateRailImuPanel",
+        ] {
+            assert!(
+                DASHBOARD_HTML.contains(needle),
+                "dashboard html should contain helper {needle}"
+            );
+        }
+    }
+
+    #[test]
+    fn dashboard_html_includes_wide_two_column_rail_and_body_aligned_leg_glance() {
+        for needle in [
+            "grid-template-columns: minmax(0, 1fr) clamp(38rem, 46vw, 52rem);",
+            "grid-template-columns: repeat(2, minmax(0, 1fr));",
+            "class=\"panel rail-panel rail-span-2\"",
+            "class=\"rail-leg-body\"",
+            "railClass: \"front-left\"",
+            "railClass: \"rear-right\"",
+        ] {
+            assert!(
+                DASHBOARD_HTML.contains(needle),
+                "dashboard html should contain {needle}"
+            );
+        }
+    }
+
+    #[test]
+    fn dashboard_layout_wraps_side_rail_inside_the_grid_section() {
+        let main_column_close = DASHBOARD_HTML
+            .find("</section>\n      </div>\n\n      <aside class=\"side-rail\"")
+            .expect("main column should close immediately before the side rail");
+        let rail_start = DASHBOARD_HTML[main_column_close..]
+            .find("<aside class=\"side-rail\"")
+            .map(|offset| main_column_close + offset)
+            .expect("side rail should exist");
+        let layout_end = DASHBOARD_HTML[rail_start..]
+            .find("</aside>\n    </section>")
+            .map(|offset| rail_start + offset)
+            .expect("layout section should close immediately after the side rail");
+
+        assert!(
+            layout_end > rail_start,
+            "layout section should keep the side rail inside the grid"
+        );
+    }
+}
