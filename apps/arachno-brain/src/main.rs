@@ -4228,60 +4228,103 @@ async fn api_calibration_reload(
 }
 
 async fn camera_stream(State(state): State<AppState>) -> Response {
-    if state.config.camera.backend != CameraBackend::V4l2 {
-        return (
-            StatusCode::NOT_IMPLEMENTED,
-            "camera streaming is currently implemented for the host-usb v4l2 backend",
-        )
-            .into_response();
-    }
+    match state.config.camera.backend {
+        CameraBackend::V4l2 => {
+            let Some(device) = state.config.camera.device.as_deref() else {
+                return (StatusCode::BAD_REQUEST, "camera device missing from config")
+                    .into_response();
+            };
 
-    let Some(device) = state.config.camera.device.as_deref() else {
-        return (StatusCode::BAD_REQUEST, "camera device missing from config").into_response();
-    };
+            let mut command = Command::new("ffmpeg");
+            command
+                .args(ffmpeg_camera_args(&state.config))
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null());
 
-    let mut command = Command::new("ffmpeg");
-    command
-        .args(ffmpeg_camera_args(&state.config))
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
+            let mut child = match command.spawn() {
+                Ok(child) => child,
+                Err(err) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("failed to start ffmpeg for {}: {err}", device),
+                    )
+                        .into_response();
+                }
+            };
 
-    let mut child = match command.spawn() {
-        Ok(child) => child,
-        Err(err) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("failed to start ffmpeg for {}: {err}", device),
-            )
-                .into_response();
+            let Some(stdout) = child.stdout.take() else {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "ffmpeg did not provide a stdout stream",
+                )
+                    .into_response();
+            };
+
+            let stream = ReaderStream::new(stdout);
+            let body = Body::from_stream(stream);
+
+            Response::builder()
+                .status(StatusCode::OK)
+                .header(
+                    header::CONTENT_TYPE,
+                    "multipart/x-mixed-replace; boundary=ffmpeg",
+                )
+                .body(body)
+                .unwrap_or_else(|_| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "failed to build response",
+                    )
+                        .into_response()
+                })
         }
-    };
 
-    let Some(stdout) = child.stdout.take() else {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "ffmpeg did not provide a stdout stream",
-        )
-            .into_response();
-    };
+        CameraBackend::Argus => {
+            let mut command = Command::new("gst-launch-1.0");
+            command
+                .args(gst_argus_args(&state.config))
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null());
 
-    let stream = ReaderStream::new(stdout);
-    let body = Body::from_stream(stream);
+            let mut child = match command.spawn() {
+                Ok(child) => child,
+                Err(err) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("failed to start gst-launch-1.0: {err}"),
+                    )
+                        .into_response();
+                }
+            };
 
-    Response::builder()
-        .status(StatusCode::OK)
-        .header(
-            header::CONTENT_TYPE,
-            "multipart/x-mixed-replace; boundary=ffmpeg",
-        )
-        .body(body)
-        .unwrap_or_else(|_| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "failed to build response",
-            )
-                .into_response()
-        })
+            let Some(stdout) = child.stdout.take() else {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "gst-launch-1.0 did not provide a stdout stream",
+                )
+                    .into_response();
+            };
+
+            let stream = ReaderStream::new(stdout);
+            let body = Body::from_stream(stream);
+
+            Response::builder()
+                .status(StatusCode::OK)
+                .header(
+                    header::CONTENT_TYPE,
+                    "multipart/x-mixed-replace; boundary=jetson",
+                )
+                .body(body)
+                .unwrap_or_else(|_| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "failed to build response",
+                    )
+                        .into_response()
+                })
+        }
+
+    }
 }
 
 fn ffmpeg_camera_args(config: &RobotConfig) -> Vec<String> {
@@ -4322,6 +4365,33 @@ fn ffmpeg_camera_args(config: &RobotConfig) -> Vec<String> {
     args.push("mpjpeg".to_owned());
     args.push("pipe:1".to_owned());
     args
+}
+
+fn gst_argus_args(config: &RobotConfig) -> Vec<String> {
+    let sensor_id = config.camera.sensor_id.unwrap_or(0);
+    let w = config.camera.width;
+    let h = config.camera.height;
+    let fps = config.camera.fps;
+
+    vec![
+        "-q".to_owned(),
+        "nvarguscamerasrc".to_owned(),
+        format!("sensor-id={sensor_id}"),
+        "!".to_owned(),
+        format!("video/x-raw(memory:NVMM),width=(int){w},height=(int){h},framerate=(fraction){fps}/1,format=(string)NV12"),
+        "!".to_owned(),
+        "nvvidconv".to_owned(),
+        "!".to_owned(),
+        "video/x-raw,format=(string)I420".to_owned(),
+        "!".to_owned(),
+        "jpegenc".to_owned(),
+        "!".to_owned(),
+        "multipartmux".to_owned(),
+        "boundary=jetson".to_owned(),
+        "!".to_owned(),
+        "fdsink".to_owned(),
+        "fd=1".to_owned(),
+    ]
 }
 
 fn servo_labels(config: &RobotConfig) -> BTreeMap<u8, String> {
