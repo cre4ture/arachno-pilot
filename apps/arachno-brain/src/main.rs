@@ -14,8 +14,8 @@ mod dashboard_page;
 use anyhow::Context;
 use arachno_camera::RobotCamera;
 use arachno_core::{
-    CameraBackend, LegPoseAngles, LegSideViewPose, LegTopViewPose, RobotConfig, SemanticPoseKind,
-    now_ms, resolve_config_path, smoothstep,
+    ArmServoConfig, CameraBackend, LegPoseAngles, LegSideViewPose, LegTopViewPose, RobotArmConfig,
+    RobotConfig, SemanticPoseKind, now_ms, resolve_config_path, smoothstep,
 };
 use arachno_feetech_sts::{
     RealStsBus, set_verified_torque_limit_on_current_position_for_ids,
@@ -293,6 +293,7 @@ struct AppState {
     config: RobotConfig,
     shared: Arc<RwLock<TelemetryState>>,
     manual: Arc<RwLock<ManualControlState>>,
+    arm_control: Arc<RwLock<ArmControlState>>,
     tilted_stand: Arc<RwLock<TiltedStandState>>,
     calibration: Arc<RwLock<SemanticCalibrationState>>,
     pending_mode: Arc<RwLock<Option<BrainMode>>>,
@@ -317,6 +318,7 @@ struct TelemetryState {
     last_poll_error: Option<String>,
     imu: Option<TelemetryImuState>,
     manual: TelemetryManualState,
+    arm: Option<TelemetryArmState>,
     tilted_stand: TelemetryTiltedStandState,
     calibration: TelemetryCalibrationState,
     leg_previews: Vec<TelemetryLegPreviewState>,
@@ -363,6 +365,42 @@ struct TelemetryManualState {
     groups: Vec<ManualGroupInfo>,
     group_values: Vec<ManualGroupValue>,
     joints: Vec<ManualJointInfo>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct TelemetryArmState {
+    enabled: bool,
+    ready: bool,
+    base_pose_captured: bool,
+    name: String,
+    mount: String,
+    bus_port: String,
+    summary: String,
+    online_servo_count: usize,
+    last_poll_error: Option<String>,
+    joints: Vec<ArmJointInfo>,
+    joint_values: Vec<ArmJointValue>,
+    servos: Vec<TelemetryServoState>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ArmJointInfo {
+    key: String,
+    servo_id: u8,
+    label: String,
+    axis: String,
+    segment: String,
+    negative_label: String,
+    positive_label: String,
+    min_deg: f32,
+    max_deg: f32,
+    note: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ArmJointValue {
+    key: String,
+    angle_deg: f32,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -472,6 +510,14 @@ struct ManualControlState {
 }
 
 #[derive(Debug, Clone)]
+struct ArmControlState {
+    enabled: bool,
+    base_pose: Option<BTreeMap<u8, u16>>,
+    target_pose: Option<BTreeMap<u8, u16>>,
+    summary: String,
+}
+
+#[derive(Debug, Clone)]
 struct TiltedStandState {
     enabled: bool,
     pitch_deg: f32,
@@ -544,6 +590,23 @@ struct ManualApplyRequest {
     coxa_deg: f32,
     femur_deg: f32,
     tibia_deg: f32,
+}
+
+#[derive(Debug, Deserialize)]
+struct ArmApplyRequest {
+    joints: Vec<ArmJointCommandInput>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ArmJointCommandInput {
+    joint_key: String,
+    angle_deg: f32,
+}
+
+#[derive(Debug, Deserialize)]
+struct ArmJumpRequest {
+    joint_key: String,
+    delta_deg: f32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -673,6 +736,7 @@ impl TelemetryState {
         config: &RobotConfig,
         mode: BrainMode,
         manual: &ManualControlState,
+        arm_control: &ArmControlState,
         tilted_stand: &TiltedStandState,
         calibration: &SemanticCalibrationState,
     ) -> Self {
@@ -704,6 +768,10 @@ impl TelemetryState {
             last_poll_error: Some("control worker not started yet".to_owned()),
             imu: telemetry_imu_from_config(config),
             manual: build_manual_telemetry(config, manual, calibration, None),
+            arm: config
+                .arm
+                .as_ref()
+                .map(|arm| build_arm_telemetry(arm, arm_control, None, None)),
             tilted_stand: build_tilted_stand_telemetry(tilted_stand, false),
             calibration: build_calibration_telemetry(config, calibration),
             leg_previews: config
@@ -749,9 +817,47 @@ impl ManualControlState {
     }
 }
 
+impl ArmControlState {
+    fn for_mode(mode: BrainMode, configured: bool) -> Self {
+        let (enabled, summary) = if !configured {
+            (
+                false,
+                "arm control is unavailable because this profile does not configure an arm",
+            )
+        } else if mode == BrainMode::Manual {
+            (
+                true,
+                "waiting for the current arm pose before arm control becomes ready",
+            )
+        } else {
+            (
+                false,
+                "arm control is disabled; switch the motion mode to manual to enable arm sliders",
+            )
+        };
+
+        Self {
+            enabled,
+            base_pose: None,
+            target_pose: None,
+            summary: summary.to_owned(),
+        }
+    }
+}
+
 fn sync_manual_mode_state(manual: &Arc<RwLock<ManualControlState>>, mode: BrainMode) {
     if let Ok(mut control) = manual.write() {
         *control = ManualControlState::for_mode(mode);
+    }
+}
+
+fn sync_arm_mode_state(
+    arm_control: &Arc<RwLock<ArmControlState>>,
+    mode: BrainMode,
+    configured: bool,
+) {
+    if let Ok(mut control) = arm_control.write() {
+        *control = ArmControlState::for_mode(mode, configured);
     }
 }
 
@@ -1428,6 +1534,10 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let manual = Arc::new(RwLock::new(ManualControlState::for_mode(args.mode)));
+    let arm_control = Arc::new(RwLock::new(ArmControlState::for_mode(
+        args.mode,
+        config.arm.is_some(),
+    )));
     let tilted_stand = Arc::new(RwLock::new(TiltedStandState::for_mode(
         args.mode,
         args.tilted_stand_pitch_deg,
@@ -1445,6 +1555,10 @@ async fn main() -> anyhow::Result<()> {
         .read()
         .map_err(|_| anyhow::anyhow!("failed to initialize manual control state"))?
         .clone();
+    let initial_arm_control = arm_control
+        .read()
+        .map_err(|_| anyhow::anyhow!("failed to initialize arm control state"))?
+        .clone();
     let initial_tilted_stand = tilted_stand
         .read()
         .map_err(|_| anyhow::anyhow!("failed to initialize tilted stand control state"))?
@@ -1457,6 +1571,7 @@ async fn main() -> anyhow::Result<()> {
         &config,
         args.mode,
         &initial_manual,
+        &initial_arm_control,
         &initial_tilted_stand,
         &initial_calibration,
     )));
@@ -1464,6 +1579,7 @@ async fn main() -> anyhow::Result<()> {
     spawn_control_worker(
         shared.clone(),
         manual.clone(),
+        arm_control.clone(),
         tilted_stand.clone(),
         calibration.clone(),
         pending_mode.clone(),
@@ -1485,6 +1601,11 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/manual/torque-limit", post(api_manual_torque_limit))
         .route("/api/manual/sync-current", post(api_manual_sync_current))
         .route("/api/manual/jump", post(api_manual_jump))
+        .route("/api/arm/capture", post(api_arm_capture))
+        .route("/api/arm/apply", post(api_arm_apply))
+        .route("/api/arm/reset", post(api_arm_reset))
+        .route("/api/arm/sync-current", post(api_arm_sync_current))
+        .route("/api/arm/jump", post(api_arm_jump))
         .route("/api/tilted-stand/apply", post(api_tilted_stand_apply))
         .route("/api/tilted-stand/reset", post(api_tilted_stand_reset))
         .route("/api/calibration/capture", post(api_calibration_capture))
@@ -1496,6 +1617,7 @@ async fn main() -> anyhow::Result<()> {
             config: config.clone(),
             shared,
             manual,
+            arm_control,
             tilted_stand,
             calibration,
             pending_mode,
@@ -1511,6 +1633,14 @@ async fn main() -> anyhow::Result<()> {
         configured_servo_ports = ?config.bus.feetech.configured_ports(),
         "legs servo bus"
     );
+    if let Some(arm) = &config.arm {
+        info!(
+            arm_servo_port = %arm.bus.feetech.port,
+            servo_ids = ?arm.servo_ids(),
+            arm_name = %arm.name,
+            "arm servo bus"
+        );
+    }
     info!(mode = %args.mode.as_state_label(), "brain mode");
     if args.mode == BrainMode::Manual {
         info!("manual control enabled via /api/manual/* and dashboard sliders");
@@ -1555,6 +1685,7 @@ fn motion_loop_period(mode: BrainMode, config: &RobotConfig) -> Duration {
 fn spawn_control_worker(
     shared: Arc<RwLock<TelemetryState>>,
     manual: Arc<RwLock<ManualControlState>>,
+    arm_control: Arc<RwLock<ArmControlState>>,
     tilted_stand: Arc<RwLock<TiltedStandState>>,
     calibration: Arc<RwLock<SemanticCalibrationState>>,
     pending_mode: Arc<RwLock<Option<BrainMode>>>,
@@ -1567,14 +1698,32 @@ fn spawn_control_worker(
     thread::spawn(move || {
         let labels = servo_labels(&config);
         let servo_ids = config.all_servo_ids();
+        let arm_labels = config
+            .arm
+            .as_ref()
+            .map(arm_servo_labels)
+            .unwrap_or_default();
+        let arm_servo_ids = config
+            .arm
+            .as_ref()
+            .map(RobotArmConfig::servo_ids)
+            .unwrap_or_default();
         let mut bus = None::<RealStsBus>;
         let mut torque_enabled = false;
+        let mut arm_bus = None::<RealStsBus>;
+        let mut arm_torque_enabled = false;
         let mut imu_bridge = None::<UsbImuBridge>;
         let mut imu_state = telemetry_imu_from_config(&config);
         let mut mode = mode;
         let mut motion = MotionRuntime::new(mode, walk_seconds);
         let mut servo_states = initial_servo_states(&servo_ids, &labels);
+        let mut arm_servo_states = initial_servo_states(&arm_servo_ids, &arm_labels);
         let mut telemetry_cursor = 0usize;
+        let mut arm_telemetry_cursor = 0usize;
+        let mut arm_transport_error = config
+            .arm
+            .as_ref()
+            .map(|_| "waiting for arm servo bus".to_owned());
         let mut loop_period = motion_loop_period(mode, &config);
 
         loop {
@@ -1589,6 +1738,7 @@ fn spawn_control_worker(
                 motion = MotionRuntime::new(new_mode, walk_seconds);
                 loop_period = motion_loop_period(new_mode, &config);
                 sync_manual_mode_state(&manual, new_mode);
+                sync_arm_mode_state(&arm_control, new_mode, config.arm.is_some());
                 sync_tilted_stand_mode_state(
                     &tilted_stand,
                     new_mode,
@@ -1602,6 +1752,14 @@ fn spawn_control_worker(
                         warn!(error = %e, "failed to disable torque on mode switch to telemetry");
                     }
                     torque_enabled = false;
+                }
+                if new_mode != BrainMode::Manual && arm_torque_enabled {
+                    if let Some(b) = arm_bus.as_mut()
+                        && let Err(e) = b.enable_torque(false)
+                    {
+                        warn!(error = %e, "failed to disable arm torque on mode switch");
+                    }
+                    arm_torque_enabled = false;
                 }
                 info!(
                     old = old_label,
@@ -1644,12 +1802,15 @@ fn spawn_control_worker(
                                 &config,
                                 &servo_ids,
                                 &servo_states,
+                                Some(&arm_servo_states),
                                 imu_state.clone(),
                                 &motion,
                                 &manual,
+                                &arm_control,
                                 &tilted_stand,
                                 &calibration_snapshot,
                                 Some(format!("failed to open legs servo bus: {err}")),
+                                arm_transport_error.clone(),
                             ),
                         );
                         sleep_remaining(tick_started, loop_period);
@@ -1673,12 +1834,15 @@ fn spawn_control_worker(
                             &config,
                             &servo_ids,
                             &servo_states,
+                            Some(&arm_servo_states),
                             imu_state.clone(),
                             &motion,
                             &manual,
+                            &arm_control,
                             &tilted_stand,
                             &calibration_snapshot,
                             Some(format!("failed to enable torque: {err}")),
+                            arm_transport_error.clone(),
                         ),
                     );
                     bus = None;
@@ -1721,12 +1885,15 @@ fn spawn_control_worker(
                         &config,
                         &servo_ids,
                         &servo_states,
+                        Some(&arm_servo_states),
                         imu_state.clone(),
                         &motion,
                         &manual,
+                        &arm_control,
                         &tilted_stand,
                         &calibration_snapshot,
                         Some("legs servo bus needs to be reopened".to_owned()),
+                        arm_transport_error.clone(),
                     ),
                 );
                 sleep_remaining(tick_started, loop_period);
@@ -1753,6 +1920,131 @@ fn spawn_control_worker(
                 motion.trip_fault(reason, current_pose(&servo_ids, &servo_states));
             }
 
+            if let Some(arm) = &config.arm
+                && !arm_servo_ids.is_empty()
+            {
+                if arm_bus.is_none() {
+                    match RealStsBus::open(
+                        arm.bus.feetech.port.clone(),
+                        arm.bus.feetech.baud_rate,
+                        arm_servo_ids.clone(),
+                    ) {
+                        Ok(real_bus) => {
+                            info!(
+                                port = %arm.bus.feetech.port,
+                                baud_rate = arm.bus.feetech.baud_rate,
+                                servo_count = arm_servo_ids.len(),
+                                "arm servo bus opened"
+                            );
+                            arm_transport_error = None;
+                            arm_bus = Some(real_bus);
+                            arm_torque_enabled = false;
+                        }
+                        Err(err) => {
+                            arm_transport_error =
+                                Some(format!("failed to open arm servo bus: {err}"));
+                        }
+                    }
+                }
+
+                let mut reopen_arm_bus = false;
+                if let Some(real_arm_bus) = arm_bus.as_mut() {
+                    if mode == BrainMode::Manual && !arm_torque_enabled {
+                        if let Err(err) = real_arm_bus.enable_torque(true) {
+                            warn!(error = %err, "failed to enable arm servo torque");
+                            arm_transport_error =
+                                Some(format!("failed to enable arm torque: {err}"));
+                            if let Ok(mut control) = arm_control.write() {
+                                control.summary =
+                                    format!("failed to enable arm servo torque: {err}");
+                            }
+                            reopen_arm_bus = true;
+                            arm_torque_enabled = false;
+                        } else {
+                            arm_torque_enabled = true;
+                        }
+                    }
+
+                    if mode != BrainMode::Manual && arm_torque_enabled {
+                        if let Err(err) = real_arm_bus.enable_torque(false) {
+                            warn!(error = %err, "failed to disable arm servo torque");
+                        }
+                        arm_torque_enabled = false;
+                    }
+
+                    if let Some(real_arm_bus) = arm_bus.as_mut() {
+                        let arm_poll_outcome = poll_servo_window(
+                            real_arm_bus,
+                            &arm_servo_ids,
+                            &arm_labels,
+                            &mut arm_servo_states,
+                            &mut arm_telemetry_cursor,
+                            arm_servo_ids.len(),
+                        );
+
+                        if arm_poll_outcome.should_reopen_bus {
+                            warn!("arm servo bus needs reopen after communication failure");
+                            arm_transport_error =
+                                Some("arm servo bus needs to be reopened".to_owned());
+                            if let Ok(mut control) = arm_control.write() {
+                                control.summary =
+                                    "arm servo bus link dropped; waiting to reopen".to_owned();
+                            }
+                            reopen_arm_bus = true;
+                            arm_torque_enabled = false;
+                        } else if let Some(arm_pose) =
+                            current_pose(&arm_servo_ids, &arm_servo_states)
+                        {
+                            arm_transport_error = None;
+                            if mode == BrainMode::Manual && motion.fault.is_none() {
+                                ensure_arm_reference_pose(&arm_control, mode, &arm_pose);
+
+                                let maybe_target_pose = arm_control
+                                    .read()
+                                    .ok()
+                                    .and_then(|control| control.target_pose.clone());
+                                if let Some(target_pose) = maybe_target_pose
+                                    && let Err(err) = real_arm_bus
+                                        .sync_write_positions(&pose_to_commands(&target_pose))
+                                {
+                                    warn!(
+                                        error = %err,
+                                        command_count = target_pose.len(),
+                                        "failed to send arm motion commands"
+                                    );
+                                    arm_transport_error =
+                                        Some(format!("arm sync write failed: {err}"));
+                                    if let Ok(mut control) = arm_control.write() {
+                                        control.summary =
+                                            format!("failed to send arm motion commands: {err}");
+                                    }
+                                    reopen_arm_bus = true;
+                                    arm_torque_enabled = false;
+                                }
+                            } else if mode == BrainMode::Manual
+                                && let Ok(mut control) = arm_control.write()
+                            {
+                                control.summary =
+                                    "arm control paused because a motion safety fault is latched"
+                                        .to_owned();
+                            }
+                        } else if mode == BrainMode::Manual
+                            && let Ok(mut control) = arm_control.write()
+                            && control.enabled
+                            && control.target_pose.is_none()
+                        {
+                            control.summary = format!(
+                                "waiting for all {} arm servo feedback replies before arm control becomes ready",
+                                arm_servo_ids.len()
+                            );
+                        }
+                    }
+                }
+                if reopen_arm_bus {
+                    arm_bus = None;
+                }
+            }
+
             if mode == BrainMode::Manual
                 && motion.fault.is_none()
                 && let Err(err) = process_pending_manual_action(real_bus, &config, &manual)
@@ -1773,12 +2065,15 @@ fn spawn_control_worker(
                         &config,
                         &servo_ids,
                         &servo_states,
+                        Some(&arm_servo_states),
                         imu_state.clone(),
                         &motion,
                         &manual,
+                        &arm_control,
                         &tilted_stand,
                         &calibration_snapshot,
                         Some(format!("manual utility failed: {err}")),
+                        arm_transport_error.clone(),
                     ),
                 );
                 sleep_remaining(tick_started, loop_period);
@@ -1805,12 +2100,15 @@ fn spawn_control_worker(
                         &config,
                         &servo_ids,
                         &servo_states,
+                        Some(&arm_servo_states),
                         imu_state.clone(),
                         &motion,
                         &manual,
+                        &arm_control,
                         &tilted_stand,
                         &calibration_snapshot,
                         Some(format!("sync write failed: {err}")),
+                        arm_transport_error.clone(),
                     ),
                 );
                 sleep_remaining(tick_started, loop_period);
@@ -1823,12 +2121,15 @@ fn spawn_control_worker(
                     &config,
                     &servo_ids,
                     &servo_states,
+                    Some(&arm_servo_states),
                     imu_state.clone(),
                     &motion,
                     &manual,
+                    &arm_control,
                     &tilted_stand,
                     &calibration_snapshot,
                     None,
+                    arm_transport_error.clone(),
                 ),
             );
             sleep_remaining(tick_started, loop_period);
@@ -1925,12 +2226,15 @@ fn build_state_snapshot(
     config: &RobotConfig,
     servo_ids: &[u8],
     servo_states: &BTreeMap<u8, TelemetryServoState>,
+    arm_servo_states: Option<&BTreeMap<u8, TelemetryServoState>>,
     imu: Option<TelemetryImuState>,
     motion: &MotionRuntime,
     manual: &Arc<RwLock<ManualControlState>>,
+    arm_control: &Arc<RwLock<ArmControlState>>,
     tilted_stand: &Arc<RwLock<TiltedStandState>>,
     calibration_snapshot: &SemanticCalibrationState,
     transport_error: Option<String>,
+    arm_transport_error: Option<String>,
 ) -> TelemetryState {
     let pose = current_pose(servo_ids, servo_states);
     let leg_previews = build_leg_previews(config, servo_states, calibration_snapshot);
@@ -1988,6 +2292,7 @@ fn build_state_snapshot(
         last_poll_error,
         imu,
         manual: manual_snapshot(config, manual, calibration_snapshot, pose.as_ref()),
+        arm: arm_snapshot(config, arm_control, arm_servo_states, arm_transport_error),
         tilted_stand: tilted_stand_snapshot(
             tilted_stand,
             motion.mode == BrainMode::TiltedStand && motion.armed_at.is_some(),
@@ -2054,6 +2359,60 @@ fn build_manual_telemetry(
     }
 }
 
+fn build_arm_telemetry(
+    arm: &RobotArmConfig,
+    control: &ArmControlState,
+    servo_states: Option<&BTreeMap<u8, TelemetryServoState>>,
+    transport_error: Option<String>,
+) -> TelemetryArmState {
+    let labels = arm_servo_labels(arm);
+    let ordered_servos = sorted_arm_servos(arm);
+    let servos = ordered_servos
+        .iter()
+        .map(|servo| {
+            servo_states
+                .and_then(|states| states.get(&servo.servo_id).cloned())
+                .unwrap_or_else(|| {
+                    let label = labels
+                        .get(&servo.servo_id)
+                        .cloned()
+                        .unwrap_or_else(|| format!("servo-{}", servo.servo_id));
+                    TelemetryServoState::offline(servo.servo_id, label, "waiting for first poll")
+                })
+        })
+        .collect::<Vec<_>>();
+    let online_servo_count = servos.iter().filter(|servo| servo.online).count();
+    let ready = control.base_pose.is_some()
+        && control.target_pose.is_some()
+        && online_servo_count == servos.len();
+    let last_poll_error = transport_error.or_else(|| {
+        if online_servo_count == servos.len() {
+            None
+        } else {
+            Some(format!(
+                "{} of {} configured arm servos replied on the latest sweep",
+                online_servo_count,
+                servos.len()
+            ))
+        }
+    });
+
+    TelemetryArmState {
+        enabled: control.enabled,
+        ready,
+        base_pose_captured: control.base_pose.is_some(),
+        name: arm.name.clone(),
+        mount: arm.mount.clone(),
+        bus_port: arm.bus.feetech.port.clone(),
+        summary: control.summary.clone(),
+        online_servo_count,
+        last_poll_error,
+        joints: arm_joint_infos(arm),
+        joint_values: arm_joint_values(arm, control),
+        servos,
+    }
+}
+
 fn build_tilted_stand_telemetry(
     control: &TiltedStandState,
     ready: bool,
@@ -2100,6 +2459,34 @@ fn manual_snapshot(
             group_values: Vec::new(),
             joints: manual_joint_infos(),
         },
+    }
+}
+
+fn arm_snapshot(
+    config: &RobotConfig,
+    arm_control: &Arc<RwLock<ArmControlState>>,
+    servo_states: Option<&BTreeMap<u8, TelemetryServoState>>,
+    transport_error: Option<String>,
+) -> Option<TelemetryArmState> {
+    let arm = config.arm.as_ref()?;
+    match arm_control.read() {
+        Ok(control) => Some(build_arm_telemetry(
+            arm,
+            &control,
+            servo_states,
+            transport_error,
+        )),
+        Err(_) => Some(build_arm_telemetry(
+            arm,
+            &ArmControlState {
+                enabled: false,
+                base_pose: None,
+                target_pose: None,
+                summary: "arm control state is unavailable".to_owned(),
+            },
+            servo_states,
+            transport_error,
+        )),
     }
 }
 
@@ -2440,6 +2827,57 @@ fn manual_joint_infos() -> Vec<ManualJointInfo> {
     ]
 }
 
+fn arm_joint_infos(arm: &RobotArmConfig) -> Vec<ArmJointInfo> {
+    sorted_arm_servos(arm)
+        .into_iter()
+        .map(|servo| ArmJointInfo {
+            key: servo.joint_key.clone(),
+            servo_id: servo.servo_id,
+            label: servo.display_name.clone(),
+            axis: servo.axis.clone(),
+            segment: servo.segment.clone(),
+            negative_label: servo
+                .negative_label
+                .clone()
+                .unwrap_or_else(|| "negative".to_owned()),
+            positive_label: servo
+                .positive_label
+                .clone()
+                .unwrap_or_else(|| "positive".to_owned()),
+            min_deg: -servo.max_relative_deg,
+            max_deg: servo.max_relative_deg,
+            note: servo.note.clone(),
+        })
+        .collect()
+}
+
+fn arm_joint_values(arm: &RobotArmConfig, control: &ArmControlState) -> Vec<ArmJointValue> {
+    let base_pose = control.base_pose.as_ref();
+    let target_pose = control.target_pose.as_ref().or(base_pose);
+
+    sorted_arm_servos(arm)
+        .into_iter()
+        .map(|servo| {
+            let angle_deg = match (
+                base_pose.and_then(|pose| pose.get(&servo.servo_id)),
+                target_pose.and_then(|pose| pose.get(&servo.servo_id)),
+            ) {
+                (Some(base_ticks), Some(target_ticks)) => arm_relative_degrees_between_ticks(
+                    *base_ticks,
+                    *target_ticks,
+                    i16::from(servo.positive_sign),
+                )
+                .clamp(-servo.max_relative_deg, servo.max_relative_deg),
+                _ => 0.0,
+            };
+            ArmJointValue {
+                key: servo.joint_key.clone(),
+                angle_deg,
+            }
+        })
+        .collect()
+}
+
 fn calibration_joint_infos() -> Vec<CalibrationJointInfo> {
     vec![
         CalibrationJointInfo {
@@ -2488,6 +2926,32 @@ fn humanize_leg_name(name: &str) -> String {
         .join(" ")
 }
 
+fn sorted_arm_servos(arm: &RobotArmConfig) -> Vec<&ArmServoConfig> {
+    let mut servos = arm.servos.iter().collect::<Vec<_>>();
+    servos.sort_by_key(|servo| {
+        (
+            arm.joint_order
+                .iter()
+                .position(|joint_key| joint_key == &servo.joint_key)
+                .unwrap_or(usize::MAX),
+            usize::from(servo.order),
+            servo.servo_id,
+        )
+    });
+    servos
+}
+
+fn arm_servo_labels(arm: &RobotArmConfig) -> BTreeMap<u8, String> {
+    arm.servos
+        .iter()
+        .map(|servo| (servo.servo_id, servo.display_name.clone()))
+        .collect()
+}
+
+fn resolve_arm_servo<'a>(arm: &'a RobotArmConfig, joint_key: &str) -> Option<&'a ArmServoConfig> {
+    arm.servos.iter().find(|servo| servo.joint_key == joint_key)
+}
+
 fn ensure_manual_reference_pose(
     manual: &Arc<RwLock<ManualControlState>>,
     mode: BrainMode,
@@ -2505,6 +2969,28 @@ fn ensure_manual_reference_pose(
         control.target_pose = Some(pose.clone());
         control.summary =
             "manual control is ready; sliders now reflect the current robot pose as absolute semantic joint angles"
+                .to_owned();
+    }
+}
+
+fn ensure_arm_reference_pose(
+    arm_control: &Arc<RwLock<ArmControlState>>,
+    mode: BrainMode,
+    pose: &BTreeMap<u8, u16>,
+) {
+    if mode != BrainMode::Manual {
+        return;
+    }
+
+    if let Ok(mut control) = arm_control.write() {
+        if !control.enabled || (control.base_pose.is_some() && control.target_pose.is_some()) {
+            return;
+        }
+
+        control.base_pose = Some(pose.clone());
+        control.target_pose = Some(pose.clone());
+        control.summary =
+            "arm control is ready; sliders are relative to the arm pose captured when manual mode armed"
                 .to_owned();
     }
 }
@@ -2550,6 +3036,29 @@ fn current_pose_from_shared_snapshot(
     })
 }
 
+fn current_arm_pose_from_shared_snapshot(
+    state: &AppState,
+) -> Result<BTreeMap<u8, u16>, (StatusCode, String)> {
+    let snapshot = state.shared.read().map_err(|_| {
+        manual_api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "telemetry state lock poisoned",
+        )
+    })?;
+    let arm = snapshot.arm.as_ref().ok_or_else(|| {
+        manual_api_error(
+            StatusCode::CONFLICT,
+            "arm control is unavailable because no arm is configured for this profile",
+        )
+    })?;
+    current_pose_from_snapshot_servos(&arm.servos).ok_or_else(|| {
+        manual_api_error(
+            StatusCode::CONFLICT,
+            "fresh feedback from all configured arm servos is required before arm actions can run",
+        )
+    })
+}
+
 fn ensure_manual_enabled(state: &AppState) -> Result<(), (StatusCode, String)> {
     let enabled = state
         .manual
@@ -2567,6 +3076,33 @@ fn ensure_manual_enabled(state: &AppState) -> Result<(), (StatusCode, String)> {
         Err(manual_api_error(
             StatusCode::CONFLICT,
             "manual control is disabled; switch the motion mode to manual first",
+        ))
+    }
+}
+
+fn ensure_arm_enabled<'a>(state: &'a AppState) -> Result<&'a RobotArmConfig, (StatusCode, String)> {
+    let arm = state.config.arm.as_ref().ok_or_else(|| {
+        manual_api_error(
+            StatusCode::CONFLICT,
+            "arm control is unavailable because no arm is configured for this profile",
+        )
+    })?;
+    let enabled = state
+        .arm_control
+        .read()
+        .map_err(|_| {
+            manual_api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "arm control lock poisoned",
+            )
+        })?
+        .enabled;
+    if enabled {
+        Ok(arm)
+    } else {
+        Err(manual_api_error(
+            StatusCode::CONFLICT,
+            "arm control is disabled; switch the motion mode to manual first",
         ))
     }
 }
@@ -3078,6 +3614,15 @@ fn legacy_semantic_delta_deg(delta_ticks: i16) -> f32 {
 
 fn semantic_ticks_to_degrees(delta_ticks: i32, sign: i16) -> f32 {
     delta_ticks as f32 * 360.0 / 4096.0 / sign as f32
+}
+
+fn relative_ticks_for_degrees(base_ticks: u16, degrees: f32, sign: i16) -> u16 {
+    let delta_ticks = (degrees * 4096.0 / 360.0 * sign as f32).round() as i16;
+    offset_ticks(base_ticks, delta_ticks)
+}
+
+fn arm_relative_degrees_between_ticks(base_ticks: u16, target_ticks: u16, sign: i16) -> f32 {
+    semantic_ticks_to_degrees(i32::from(target_ticks) - i32::from(base_ticks), sign)
 }
 
 fn leg_cycle_shape_deg(phase: f32, coxa_swing_deg: f32) -> (f32, f32) {
@@ -4043,6 +4588,182 @@ async fn api_manual_sync_current(
     Ok(Json(ManualCommandResponse { summary }))
 }
 
+async fn api_arm_capture(
+    State(state): State<AppState>,
+) -> Result<Json<ManualCommandResponse>, (StatusCode, String)> {
+    ensure_arm_enabled(&state)?;
+    let pose = current_arm_pose_from_shared_snapshot(&state)?;
+    let summary = "captured the current arm pose as the arm zero/home".to_owned();
+
+    let mut arm_control = state.arm_control.write().map_err(|_| {
+        manual_api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "arm control lock poisoned",
+        )
+    })?;
+    arm_control.base_pose = Some(pose.clone());
+    arm_control.target_pose = Some(pose);
+    arm_control.summary = summary.clone();
+
+    Ok(Json(ManualCommandResponse { summary }))
+}
+
+async fn api_arm_apply(
+    State(state): State<AppState>,
+    Json(request): Json<ArmApplyRequest>,
+) -> Result<Json<ManualCommandResponse>, (StatusCode, String)> {
+    let arm = ensure_arm_enabled(&state)?;
+    let fallback_pose = current_arm_pose_from_shared_snapshot(&state)?;
+
+    let mut arm_control = state.arm_control.write().map_err(|_| {
+        manual_api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "arm control lock poisoned",
+        )
+    })?;
+    let base_pose = arm_control
+        .base_pose
+        .clone()
+        .unwrap_or_else(|| fallback_pose.clone());
+    let mut target_pose = arm_control
+        .target_pose
+        .clone()
+        .unwrap_or_else(|| base_pose.clone());
+
+    for joint in &request.joints {
+        let servo = resolve_arm_servo(arm, &joint.joint_key)
+            .ok_or_else(|| manual_api_error(StatusCode::BAD_REQUEST, "unknown arm joint"))?;
+        let base_ticks = base_pose.get(&servo.servo_id).copied().ok_or_else(|| {
+            manual_api_error(
+                StatusCode::CONFLICT,
+                "captured arm home pose is missing one or more configured joints",
+            )
+        })?;
+        let clamped_deg = joint
+            .angle_deg
+            .clamp(-servo.max_relative_deg, servo.max_relative_deg);
+        target_pose.insert(
+            servo.servo_id,
+            relative_ticks_for_degrees(base_ticks, clamped_deg, i16::from(servo.positive_sign)),
+        );
+    }
+
+    arm_control.base_pose = Some(base_pose);
+    arm_control.target_pose = Some(target_pose);
+    let summary = format!(
+        "arm target updated for {} joint{} relative to the captured arm home pose",
+        request.joints.len(),
+        if request.joints.len() == 1 { "" } else { "s" }
+    );
+    arm_control.summary = summary.clone();
+
+    Ok(Json(ManualCommandResponse { summary }))
+}
+
+async fn api_arm_reset(
+    State(state): State<AppState>,
+) -> Result<Json<ManualCommandResponse>, (StatusCode, String)> {
+    ensure_arm_enabled(&state)?;
+    let fallback_pose = current_arm_pose_from_shared_snapshot(&state)?;
+
+    let mut arm_control = state.arm_control.write().map_err(|_| {
+        manual_api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "arm control lock poisoned",
+        )
+    })?;
+    let base_pose = arm_control
+        .base_pose
+        .clone()
+        .unwrap_or_else(|| fallback_pose.clone());
+    arm_control.base_pose = Some(base_pose.clone());
+    arm_control.target_pose = Some(base_pose);
+    let summary = "arm target reset to the captured arm zero/home pose".to_owned();
+    arm_control.summary = summary.clone();
+
+    Ok(Json(ManualCommandResponse { summary }))
+}
+
+async fn api_arm_sync_current(
+    State(state): State<AppState>,
+) -> Result<Json<ManualCommandResponse>, (StatusCode, String)> {
+    ensure_arm_enabled(&state)?;
+    let pose = current_arm_pose_from_shared_snapshot(&state)?;
+    let summary = "arm target synced to the live pose".to_owned();
+
+    let mut arm_control = state.arm_control.write().map_err(|_| {
+        manual_api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "arm control lock poisoned",
+        )
+    })?;
+    if arm_control.base_pose.is_none() {
+        arm_control.base_pose = Some(pose.clone());
+    }
+    arm_control.target_pose = Some(pose);
+    arm_control.summary = summary.clone();
+
+    Ok(Json(ManualCommandResponse { summary }))
+}
+
+async fn api_arm_jump(
+    State(state): State<AppState>,
+    Json(request): Json<ArmJumpRequest>,
+) -> Result<Json<ManualCommandResponse>, (StatusCode, String)> {
+    let arm = ensure_arm_enabled(&state)?;
+    let servo = resolve_arm_servo(arm, &request.joint_key)
+        .ok_or_else(|| manual_api_error(StatusCode::BAD_REQUEST, "unknown arm joint"))?;
+    let current_pose = current_arm_pose_from_shared_snapshot(&state)?;
+
+    let mut arm_control = state.arm_control.write().map_err(|_| {
+        manual_api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "arm control lock poisoned",
+        )
+    })?;
+    let base_pose = arm_control
+        .base_pose
+        .clone()
+        .unwrap_or_else(|| current_pose.clone());
+    let mut target_pose = arm_control
+        .target_pose
+        .clone()
+        .unwrap_or_else(|| base_pose.clone());
+    let base_ticks = base_pose.get(&servo.servo_id).copied().ok_or_else(|| {
+        manual_api_error(
+            StatusCode::CONFLICT,
+            "captured arm home pose is missing the selected joint",
+        )
+    })?;
+    let current_ticks = current_pose.get(&servo.servo_id).copied().ok_or_else(|| {
+        manual_api_error(
+            StatusCode::CONFLICT,
+            "selected arm joint has no fresh live feedback to jump from",
+        )
+    })?;
+    let current_deg = arm_relative_degrees_between_ticks(
+        base_ticks,
+        current_ticks,
+        i16::from(servo.positive_sign),
+    );
+    let next_deg =
+        (current_deg + request.delta_deg).clamp(-servo.max_relative_deg, servo.max_relative_deg);
+    target_pose.insert(
+        servo.servo_id,
+        relative_ticks_for_degrees(base_ticks, next_deg, i16::from(servo.positive_sign)),
+    );
+
+    arm_control.base_pose = Some(base_pose);
+    arm_control.target_pose = Some(target_pose);
+    let summary = format!(
+        "arm relative jump for {}: {:+.1}° from the live pose",
+        servo.display_name, request.delta_deg
+    );
+    arm_control.summary = summary.clone();
+
+    Ok(Json(ManualCommandResponse { summary }))
+}
+
 async fn api_tilted_stand_apply(
     State(state): State<AppState>,
     Json(request): Json<TiltedStandApplyRequest>,
@@ -4474,11 +5195,13 @@ mod tests {
     };
 
     use super::{
-        BODY_ATTITUDE_STRIKES_TO_TRIP, BrainMode, LegPoseAngles, ManualControlState, MotionCommand,
-        MotionRuntime, SemanticCalibrationState, TelemetryImuState, body_attitude_fault_reason,
-        clamp_tilted_stand_pitch_deg, clamp_tilted_stand_roll_deg, derive_leg_lift_deltas,
-        named_pose_with_calibration, stand_pose_labels, sync_manual_mode_state,
-        tilted_stand_leg_geometry, tilted_stand_pose,
+        ArmControlState, BODY_ATTITUDE_STRIKES_TO_TRIP, BrainMode, LegPoseAngles,
+        ManualControlState, MotionCommand, MotionRuntime, SemanticCalibrationState,
+        TelemetryImuState, arm_joint_infos, arm_relative_degrees_between_ticks,
+        body_attitude_fault_reason, clamp_tilted_stand_pitch_deg, clamp_tilted_stand_roll_deg,
+        derive_leg_lift_deltas, named_pose_with_calibration, relative_ticks_for_degrees,
+        stand_pose_labels, sync_arm_mode_state, sync_manual_mode_state, tilted_stand_leg_geometry,
+        tilted_stand_pose,
     };
     use arachno_core::{LegConfig, RobotConfig, SafetyConfig, SemanticPoseKind};
 
@@ -4532,6 +5255,13 @@ mod tests {
         RobotConfig::load_from_path(&config_path).expect("robot config should load for tests")
     }
 
+    fn load_jetson_test_robot_config() -> RobotConfig {
+        let config_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../config/robot/jetson-onboard.toml");
+        RobotConfig::load_from_path(&config_path)
+            .expect("jetson robot config with arm should load for tests")
+    }
+
     #[test]
     fn manual_motion_command_maps_to_manual_mode() {
         assert_eq!(MotionCommand::Manual.as_brain_mode(), BrainMode::Manual);
@@ -4557,6 +5287,72 @@ mod tests {
             control
                 .summary
                 .contains("waiting for the current robot pose")
+        );
+    }
+
+    #[test]
+    fn syncing_arm_mode_state_reinitializes_arm_control() {
+        let arm_control = Arc::new(RwLock::new(ArmControlState {
+            enabled: false,
+            base_pose: Some(BTreeMap::from([(70, 2048u16)])),
+            target_pose: Some(BTreeMap::from([(70, 2200u16)])),
+            summary: "stale".to_owned(),
+        }));
+
+        sync_arm_mode_state(&arm_control, BrainMode::Manual, true);
+
+        let control = arm_control.read().expect("arm control should lock");
+        assert!(control.enabled);
+        assert!(control.base_pose.is_none());
+        assert!(control.target_pose.is_none());
+        assert!(control.summary.contains("current arm pose"));
+    }
+
+    #[test]
+    fn arm_joint_infos_follow_configured_joint_order() {
+        let config = load_jetson_test_robot_config();
+        let arm = config
+            .arm
+            .as_ref()
+            .expect("jetson profile should load arm config");
+
+        let joints = arm_joint_infos(arm);
+        let keys = joints
+            .iter()
+            .map(|joint| joint.key.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            keys,
+            vec![
+                "base_yaw",
+                "shoulder_pitch",
+                "elbow_pitch",
+                "wrist_pitch",
+                "wrist_roll",
+                "claw_open_close",
+            ]
+        );
+        assert_eq!(joints[0].negative_label, "left");
+        assert_eq!(joints[0].positive_label, "right");
+        assert_eq!(joints[5].max_deg, 90.0);
+    }
+
+    #[test]
+    fn arm_relative_tick_conversion_respects_positive_sign() {
+        let base_ticks = 2048u16;
+
+        let positive = relative_ticks_for_degrees(base_ticks, 45.0, 1);
+        let negative = relative_ticks_for_degrees(base_ticks, 45.0, -1);
+
+        assert!(positive > base_ticks);
+        assert!(negative < base_ticks);
+        assert_eq!(
+            arm_relative_degrees_between_ticks(base_ticks, positive, 1).round(),
+            45.0
+        );
+        assert_eq!(
+            arm_relative_degrees_between_ticks(base_ticks, negative, -1).round(),
+            45.0
         );
     }
 

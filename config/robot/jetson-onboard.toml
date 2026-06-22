@@ -10,6 +10,9 @@ perception_hz = 20
 [servo_store]
 path = "servo-config.toml"
 
+[arm_store]
+path = "arm-servo-config.toml"
+
 [pose_store]
 path = "servo-poses.toml"
 

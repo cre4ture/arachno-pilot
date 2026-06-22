@@ -1,0 +1,89 @@
+# Top-mounted robot arm on the auxiliary Feetech bus.
+# Servo IDs were scanned on 2026-06-22 from:
+#   /dev/serial/by-id/usb-1a86_USB_Single_Serial_5B61036984-if00
+# Observed responders on that bus:
+#   7, 70, 71, 72, 73, 74
+
+[bus.feetech]
+port = "/dev/serial/by-id/usb-1a86_USB_Single_Serial_5B61036984-if00"
+baud_rate = 1000000
+telemetry_stride = 6
+
+[arm]
+name = "top-mounted-arm"
+mount = "top_of_robot"
+joint_order = [
+  "base_yaw",
+  "shoulder_pitch",
+  "elbow_pitch",
+  "wrist_pitch",
+  "wrist_roll",
+  "claw_open_close",
+]
+
+[[servos]]
+servo_id = 70
+joint_key = "base_yaw"
+display_name = "Base Horizontal Rotation"
+axis = "yaw"
+segment = "base"
+order = 1
+negative_label = "left"
+positive_label = "right"
+note = "Rotates the whole arm horizontally, similar to a coxa mounted on top of the robot."
+
+[[servos]]
+servo_id = 71
+joint_key = "shoulder_pitch"
+display_name = "Upper Arm Lift"
+axis = "pitch"
+segment = "upper_arm"
+order = 2
+negative_label = "down"
+positive_label = "up"
+note = "Directly attached after the base joint and controls the upper arm segment."
+
+[[servos]]
+servo_id = 72
+joint_key = "elbow_pitch"
+display_name = "Forearm"
+axis = "pitch"
+segment = "forearm"
+order = 3
+negative_label = "down"
+positive_label = "up"
+note = "Controls the forearm segment."
+
+[[servos]]
+servo_id = 73
+joint_key = "wrist_pitch"
+display_name = "Hand Up Down"
+axis = "pitch"
+segment = "wrist"
+order = 4
+negative_label = "down"
+positive_label = "up"
+note = "Tilts the hand up and down."
+
+[[servos]]
+servo_id = 74
+joint_key = "wrist_roll"
+display_name = "Hand Rotation"
+axis = "roll"
+segment = "wrist"
+order = 5
+negative_label = "ccw"
+positive_label = "cw"
+note = "Rotates the hand around its own axis."
+
+[[servos]]
+servo_id = 7
+joint_key = "claw_open_close"
+display_name = "Claw"
+axis = "grip"
+segment = "end_effector"
+order = 6
+max_relative_deg = 90.0
+negative_label = "close"
+positive_label = "open"
+note = "Opens and closes the claw."

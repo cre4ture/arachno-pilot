@@ -22,6 +22,8 @@ pub struct RobotConfig {
     #[serde(default)]
     pub servo_store: Option<ServoStoreConfig>,
     #[serde(default)]
+    pub arm_store: Option<ArmStoreConfig>,
+    #[serde(default)]
     pub pose_store: Option<PoseStoreConfig>,
     #[serde(default)]
     pub workspace_store: Option<WorkspaceStoreConfig>,
@@ -35,6 +37,8 @@ pub struct RobotConfig {
     pub servo_eeprom: ServoEepromConfig,
     #[serde(default)]
     pub bus: BusConfig,
+    #[serde(default)]
+    pub arm: Option<RobotArmConfig>,
     pub camera: CameraConfig,
     #[serde(default)]
     pub imu: Option<ImuConfig>,
@@ -62,6 +66,11 @@ pub struct RobotMeta {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServoStoreConfig {
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArmStoreConfig {
     pub path: String,
 }
 
@@ -167,6 +176,51 @@ pub struct FeetechBusConfig {
     pub additional_ports: Vec<String>,
     pub baud_rate: u32,
     pub telemetry_stride: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RobotArmConfig {
+    pub name: String,
+    pub mount: String,
+    #[serde(default)]
+    pub joint_order: Vec<String>,
+    pub bus: BusConfig,
+    #[serde(default)]
+    pub servos: Vec<ArmServoConfig>,
+}
+
+impl RobotArmConfig {
+    pub fn servo_ids(&self) -> Vec<u8> {
+        self.servos.iter().map(|servo| servo.servo_id).collect()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArmServoConfig {
+    pub servo_id: u8,
+    pub joint_key: String,
+    pub display_name: String,
+    pub axis: String,
+    pub segment: String,
+    pub order: u8,
+    #[serde(default = "default_arm_positive_sign")]
+    pub positive_sign: i8,
+    #[serde(default)]
+    pub negative_label: Option<String>,
+    #[serde(default)]
+    pub positive_label: Option<String>,
+    #[serde(default = "default_arm_max_relative_deg")]
+    pub max_relative_deg: f32,
+    #[serde(default)]
+    pub note: String,
+}
+
+fn default_arm_positive_sign() -> i8 {
+    1
+}
+
+fn default_arm_max_relative_deg() -> f32 {
+    180.0
 }
 
 impl FeetechBusConfig {
@@ -408,6 +462,22 @@ pub struct SharedServoConfigFile {
     pub legs: Vec<LegConfig>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ArmConfigFile {
+    pub bus: BusConfig,
+    pub arm: ArmMetadataConfig,
+    #[serde(default)]
+    pub servos: Vec<ArmServoConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ArmMetadataConfig {
+    pub name: String,
+    pub mount: String,
+    #[serde(default)]
+    pub joint_order: Vec<String>,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SharedPoseConfigFile {
     #[serde(default, alias = "home")]
@@ -484,6 +554,18 @@ impl RobotConfig {
                 config.locomotion = locomotion;
             }
             config.legs = servo_file.legs;
+        }
+
+        if let Some(arm_store) = &config.arm_store {
+            let arm_path = resolve_config_path(path, &arm_store.path);
+            let arm_file: ArmConfigFile = read_toml(&arm_path)?;
+            config.arm = Some(RobotArmConfig {
+                name: arm_file.arm.name,
+                mount: arm_file.arm.mount,
+                joint_order: arm_file.arm.joint_order,
+                bus: arm_file.bus,
+                servos: arm_file.servos,
+            });
         }
 
         if let Some(pose_store) = &config.pose_store {
@@ -1564,6 +1646,7 @@ mod tests {
 
         let main_config = temp_dir.join("host-usb.toml");
         let servo_config = temp_dir.join("servo-config.toml");
+        let arm_config = temp_dir.join("arm-servo-config.toml");
         let pose_config = temp_dir.join("servo-poses.toml");
 
         fs::write(
@@ -1580,6 +1663,9 @@ perception_hz = 20
 
 [servo_store]
 path = "servo-config.toml"
+
+[arm_store]
+path = "arm-servo-config.toml"
 
 [pose_store]
 path = "servo-poses.toml"
@@ -1655,6 +1741,39 @@ tibia_lift_sign = 1
         .expect("failed to write shared servo config");
 
         fs::write(
+            &arm_config,
+            r#"
+[bus.feetech]
+port = "/dev/ttyACM-arm"
+baud_rate = 1000000
+telemetry_stride = 2
+
+[arm]
+name = "test-arm"
+mount = "top_of_robot"
+joint_order = ["base_yaw", "claw_open_close"]
+
+[[servos]]
+servo_id = 70
+joint_key = "base_yaw"
+display_name = "Base"
+axis = "yaw"
+segment = "base"
+order = 1
+
+[[servos]]
+servo_id = 7
+joint_key = "claw_open_close"
+display_name = "Claw"
+axis = "grip"
+segment = "end_effector"
+order = 2
+note = "Opens and closes the claw."
+"#,
+        )
+        .expect("failed to write arm config");
+
+        fs::write(
             &pose_config,
             r#"
 [stand_reference.front_left]
@@ -1684,6 +1803,13 @@ tibia_deg = 0.0
             vec!["/dev/ttyACM-test", "/dev/ttyACM-arm"]
         );
         assert_eq!(config.bus.feetech.telemetry_stride, 4);
+        let arm = config.arm.as_ref().expect("arm store should load");
+        assert_eq!(arm.name, "test-arm");
+        assert_eq!(arm.mount, "top_of_robot");
+        assert_eq!(arm.bus.feetech.port, "/dev/ttyACM-arm");
+        assert_eq!(arm.joint_order, vec!["base_yaw", "claw_open_close"]);
+        assert_eq!(arm.servo_ids(), vec![70, 7]);
+        assert_eq!(arm.servos[1].note, "Opens and closes the claw.");
         assert_eq!(config.servo_eeprom.entries.len(), 2);
         assert_eq!(config.servo_eeprom.entries[0].address, 8);
         assert_eq!(config.servo_eeprom.entries[1].value, 1000);

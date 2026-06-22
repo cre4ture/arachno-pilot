@@ -765,6 +765,13 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
       border: 1px solid rgba(255, 111, 97, 0.24);
     }
 
+    .arm-servo-chain {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+      gap: 10px;
+      margin-top: 16px;
+    }
+
     .muted {
       color: var(--muted);
     }
@@ -938,6 +945,59 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
             The map follows the robot's physical layout. Left legs are arms 1-3 from front to back, right legs are arms 4-6. Each cluster combines a top-view live leg preview with the detailed coxa, femur, and tibia telemetry cards.
           </div>
         </div>
+      </div>
+    </section>
+
+    <section class="panel" style="margin-top: 18px;">
+      <div class="panel-header">
+        <h2>Arm</h2>
+        <div class="muted" id="arm-summary">arm unavailable</div>
+      </div>
+      <div class="panel-body">
+        <div class="manual-grid">
+          <div class="manual-card">
+            <div class="stat-label">Arm Bus</div>
+            <div class="stat-value" id="arm-name">No arm configured</div>
+            <div class="stat-note" id="arm-bus-port">Load a profile with an arm store to enable this section.</div>
+          </div>
+          <div class="manual-card">
+            <div class="stat-label">Arm Mode</div>
+            <div class="stat-value" id="arm-mode-state">unconfigured</div>
+            <div class="stat-note" id="arm-mode-note">Switch the motion mode to <code>Manual</code> to enable arm control when an arm is configured.</div>
+          </div>
+        </div>
+
+        <div class="manual-grid" style="margin-top: 18px;">
+          <div class="manual-card">
+            <div class="stat-label">Mount</div>
+            <div class="stat-value" id="arm-mount">-</div>
+            <div class="stat-note" id="arm-servo-count-note">0 / 0 configured arm servos replying.</div>
+          </div>
+          <div class="manual-card">
+            <div class="stat-label">Bus Health</div>
+            <div class="stat-value" id="arm-servo-count">0 / 0</div>
+            <div class="stat-note" id="arm-bus-note">Waiting for arm bus state.</div>
+          </div>
+        </div>
+
+        <div id="arm-slider-fields" class="manual-sliders">
+          <div class="stat-note">No arm joints are configured for this profile.</div>
+        </div>
+
+        <label class="manual-live-toggle">
+          <input id="arm-live-apply" type="checkbox" checked />
+          <span>Apply arm slider movement immediately while dragging</span>
+        </label>
+
+        <div class="manual-actions">
+          <button id="arm-apply" type="button">Apply Arm Pose</button>
+          <button id="arm-reset" type="button">Reset Arm To Zero/Home</button>
+          <button id="arm-capture" class="wide" type="button">Capture Current Pose As Arm Zero/Home</button>
+          <button id="arm-sync-current" class="wide" type="button">Set Arm Target To Current Pose</button>
+        </div>
+
+        <div class="stat-note" id="arm-layout-note" style="margin-top: 8px;">Configured arm joints will appear here in arm-config order.</div>
+        <div id="arm-servo-chain" class="arm-servo-chain"></div>
       </div>
     </section>
 
@@ -1184,12 +1244,18 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
     const manualTorqueLimitUrl = "/api/manual/torque-limit";
     const manualSyncCurrentUrl = "/api/manual/sync-current";
     const manualJumpUrl = "/api/manual/jump";
+    const armApplyUrl = "/api/arm/apply";
+    const armResetUrl = "/api/arm/reset";
+    const armCaptureUrl = "/api/arm/capture";
+    const armSyncCurrentUrl = "/api/arm/sync-current";
+    const armJumpUrl = "/api/arm/jump";
     const tiltedStandApplyUrl = "/api/tilted-stand/apply";
     const tiltedStandResetUrl = "/api/tilted-stand/reset";
     const calibrationCaptureUrl = "/api/calibration/capture";
     const calibrationClearUrl = "/api/calibration/clear";
     const calibrationReloadUrl = "/api/calibration/reload";
     const manualLiveApplyIntervalMs = 200;
+    const armLiveApplyIntervalMs = 200;
     const tiltedStandLiveApplyIntervalMs = 200;
     let streamStarted = false;
     let manualGroupsReady = false;
@@ -1197,11 +1263,16 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
     let manualLiveApplyPending = false;
     let lastManualLiveApplyAt = 0;
     let manualSlidersInitialized = { value: false };
+    let armLiveApplyTimer = null;
+    let armLiveApplyPending = false;
+    let lastArmLiveApplyAt = 0;
+    let armSlidersInitialized = { value: false };
     let tiltedStandLiveApplyTimer = null;
     let tiltedStandLiveApplyPending = false;
     let lastTiltedStandLiveApplyAt = 0;
     let tiltedStandSlidersInitialized = { value: false };
     const manualPanelState = { enabled: false, ready: false };
+    const armPanelState = { configured: false, enabled: false, ready: false };
     const tiltedStandPanelState = { enabled: false, ready: false };
     const LEG_ORDER = [
       "front_left",
@@ -1300,6 +1371,36 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
       return document.getElementById("manual-live-apply").checked;
     }
 
+    function armSliderValue(jointKey) {
+      return Number(document.getElementById(`arm-${jointKey}-slider`).value);
+    }
+
+    function armJointRange(jointKey) {
+      const slider = document.getElementById(`arm-${jointKey}-slider`);
+      return {
+        min: Number(slider.min),
+        max: Number(slider.max),
+      };
+    }
+
+    function clampArmJointValue(jointKey, value) {
+      const { min, max } = armJointRange(jointKey);
+      return Math.min(max, Math.max(min, value));
+    }
+
+    function updateArmReadout(jointKey) {
+      document.getElementById(`arm-${jointKey}-input`).value = armSliderValue(jointKey).toFixed(1);
+    }
+
+    function armJumpValue(jointKey) {
+      const value = Number(document.getElementById(`arm-${jointKey}-jump`).value);
+      return Number.isFinite(value) ? value : 0;
+    }
+
+    function armLiveApplyEnabled() {
+      return document.getElementById("arm-live-apply").checked;
+    }
+
     function tiltedStandValue(axis) {
       return Number(document.getElementById(`tilted-stand-${axis}-slider`).value);
     }
@@ -1344,6 +1445,29 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
         }
         if (manualLiveApplyPending) {
           scheduleLiveManualApply();
+        }
+      }, delay);
+    }
+
+    function scheduleLiveArmApply() {
+      if (!armLiveApplyEnabled()) return;
+      armLiveApplyPending = true;
+      if (armLiveApplyTimer) return;
+
+      const now = Date.now();
+      const delay = Math.max(0, armLiveApplyIntervalMs - (now - lastArmLiveApplyAt));
+      armLiveApplyTimer = setTimeout(async () => {
+        armLiveApplyTimer = null;
+        if (!armLiveApplyPending) return;
+        armLiveApplyPending = false;
+        lastArmLiveApplyAt = Date.now();
+        try {
+          await applyArmPose();
+        } catch (error) {
+          document.getElementById("arm-summary").textContent = String(error);
+        }
+        if (armLiveApplyPending) {
+          scheduleLiveArmApply();
         }
       }, delay);
     }
@@ -1756,6 +1880,95 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
       document.body.removeChild(textarea);
     }
 
+    function armMountLabel(mount) {
+      return mount ? String(mount).replaceAll("_", " ") : "-";
+    }
+
+    function currentArmJointValue(jointKey) {
+      return (window.__armJointValues ?? []).find((joint) => joint.key === jointKey) ?? null;
+    }
+
+    function renderArmSliderField(joint) {
+      const note = joint.note || `${joint.axis} / ${joint.segment}`;
+      return `
+        <label class="slider-field">
+          <div class="slider-top">
+            <strong>${joint.label}</strong>
+          </div>
+          <div class="slider-main-row">
+            <div class="slider-value-box">
+              <input id="arm-${joint.key}-input" type="number" min="${joint.min_deg}" max="${joint.max_deg}" step="0.1" value="0.0" />
+              <span>°</span>
+            </div>
+            <div class="slider-track">
+              <input id="arm-${joint.key}-slider" type="range" min="${joint.min_deg}" max="${joint.max_deg}" step="0.5" value="0" />
+              <div class="slider-legend">
+                <span id="arm-${joint.key}-negative">${joint.negative_label}</span>
+                <span id="arm-${joint.key}-positive">${joint.positive_label}</span>
+              </div>
+            </div>
+            <div class="slider-jump">
+              <input id="arm-${joint.key}-jump" type="number" step="0.1" value="5.0" aria-label="Relative ${joint.label} angle jump in degrees" />
+              <button id="arm-${joint.key}-jump-apply" type="button">Jump</button>
+            </div>
+          </div>
+          <div class="stat-note">${note}</div>
+        </label>
+      `;
+    }
+
+    function ensureArmSliderFields(joints) {
+      const signature = JSON.stringify(joints ?? []);
+      if (window.__armSliderSignature === signature) return;
+
+      const container = document.getElementById("arm-slider-fields");
+      container.innerHTML = joints?.length
+        ? joints.map(renderArmSliderField).join("")
+        : '<div class="stat-note">No arm joints are configured for this profile.</div>';
+      window.__armSliderSignature = signature;
+      window.__armControlsBound = false;
+      armSlidersInitialized.value = false;
+    }
+
+    function setArmAxisFromInput(jointKey) {
+      const input = document.getElementById(`arm-${jointKey}-input`);
+      const slider = document.getElementById(`arm-${jointKey}-slider`);
+      const value = Number(input.value);
+      if (!Number.isFinite(value)) {
+        updateArmReadout(jointKey);
+        return;
+      }
+      const clamped = clampArmJointValue(jointKey, value);
+      slider.value = String(clamped);
+      updateArmReadout(jointKey);
+    }
+
+    function setArmSlidersFromState(force = false) {
+      const joints = window.__armJoints ?? [];
+      if (!joints.length) return;
+      if (!force && armSlidersInitialized.value) return;
+      for (const joint of joints) {
+        const value = currentArmJointValue(joint.key)?.angle_deg ?? 0;
+        document.getElementById(`arm-${joint.key}-slider`).value = String(value.toFixed(1));
+        updateArmReadout(joint.key);
+      }
+      armSlidersInitialized.value = true;
+    }
+
+    function setArmControlsEnabled(enabled) {
+      document.getElementById("arm-apply").disabled = !enabled;
+      document.getElementById("arm-reset").disabled = !enabled;
+      document.getElementById("arm-capture").disabled = !enabled;
+      document.getElementById("arm-sync-current").disabled = !enabled;
+      document.getElementById("arm-live-apply").disabled = !enabled;
+      for (const joint of window.__armJoints ?? []) {
+        document.getElementById(`arm-${joint.key}-slider`).disabled = !enabled;
+        document.getElementById(`arm-${joint.key}-input`).disabled = !enabled;
+        document.getElementById(`arm-${joint.key}-jump`).disabled = !enabled;
+        document.getElementById(`arm-${joint.key}-jump-apply`).disabled = !enabled;
+      }
+    }
+
     function setManualSlidersFromGroupValue(force = false) {
       const group = currentManualGroupValue();
       if (!group) return;
@@ -1875,6 +2088,48 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
       });
       document.getElementById("manual-summary").textContent = result.summary;
       await refresh();
+    }
+
+    async function applyArmPose() {
+      const result = await postJson(armApplyUrl, {
+        joints: (window.__armJoints ?? []).map((joint) => ({
+          joint_key: joint.key,
+          angle_deg: armSliderValue(joint.key),
+        })),
+      });
+      document.getElementById("arm-summary").textContent = result.summary;
+      await refresh();
+    }
+
+    async function resetArmPose() {
+      const result = await postJson(armResetUrl, {});
+      document.getElementById("arm-summary").textContent = result.summary;
+      await refresh();
+      setArmSlidersFromState(true);
+    }
+
+    async function captureArmZero() {
+      const result = await postJson(armCaptureUrl, {});
+      document.getElementById("arm-summary").textContent = result.summary;
+      await refresh();
+      setArmSlidersFromState(true);
+    }
+
+    async function syncArmTargetToCurrent() {
+      const result = await postJson(armSyncCurrentUrl, {});
+      document.getElementById("arm-summary").textContent = result.summary;
+      await refresh();
+      setArmSlidersFromState(true);
+    }
+
+    async function applyArmJointJump(jointKey) {
+      const result = await postJson(armJumpUrl, {
+        joint_key: jointKey,
+        delta_deg: armJumpValue(jointKey),
+      });
+      document.getElementById("arm-summary").textContent = result.summary;
+      await refresh();
+      setArmSlidersFromState(true);
     }
 
     async function applyTiltedStand() {
@@ -2095,6 +2350,60 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
       }));
     }
 
+    function bindArmControls() {
+      if (!window.__armActionButtonsBound) {
+        window.__armActionButtonsBound = true;
+        document.getElementById("arm-apply").addEventListener("click", () => applyArmPose().catch((error) => {
+          document.getElementById("arm-summary").textContent = String(error);
+        }));
+        document.getElementById("arm-reset").addEventListener("click", () => resetArmPose().catch((error) => {
+          document.getElementById("arm-summary").textContent = String(error);
+        }));
+        document.getElementById("arm-capture").addEventListener("click", () => captureArmZero().catch((error) => {
+          document.getElementById("arm-summary").textContent = String(error);
+        }));
+        document.getElementById("arm-sync-current").addEventListener("click", () => syncArmTargetToCurrent().catch((error) => {
+          document.getElementById("arm-summary").textContent = String(error);
+        }));
+      }
+      if (window.__armControlsBound) return;
+      window.__armControlsBound = true;
+      for (const joint of window.__armJoints ?? []) {
+        const slider = document.getElementById(`arm-${joint.key}-slider`);
+        slider.addEventListener("input", () => {
+          updateArmReadout(joint.key);
+          scheduleLiveArmApply();
+        });
+        slider.addEventListener("change", () => {
+          updateArmReadout(joint.key);
+        });
+        const input = document.getElementById(`arm-${joint.key}-input`);
+        input.addEventListener("input", () => {
+          setArmAxisFromInput(joint.key);
+          scheduleLiveArmApply();
+        });
+        input.addEventListener("change", () => {
+          setArmAxisFromInput(joint.key);
+        });
+        const jumpInput = document.getElementById(`arm-${joint.key}-jump`);
+        const jumpButton = document.getElementById(`arm-${joint.key}-jump-apply`);
+        jumpButton.addEventListener("click", () => {
+          applyArmJointJump(joint.key).catch((error) => {
+            document.getElementById("arm-summary").textContent = String(error);
+          });
+        });
+        jumpInput.addEventListener("keydown", (event) => {
+          if (event.key === "Enter") {
+            event.preventDefault();
+            applyArmJointJump(joint.key).catch((error) => {
+              document.getElementById("arm-summary").textContent = String(error);
+            });
+          }
+        });
+        updateArmReadout(joint.key);
+      }
+    }
+
     function bindTiltedStandControls() {
       if (window.__tiltedStandControlsBound) return;
       window.__tiltedStandControlsBound = true;
@@ -2152,6 +2461,55 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
         : "Switch the motion mode to Manual to enable dashboard-based servo control.";
 
       setManualControlsEnabled(Boolean(enabled && manualGroupsReady));
+    }
+
+    function updateArmPanel(arm) {
+      window.__armState = arm ?? null;
+      window.__armJoints = arm?.joints ?? [];
+      window.__armJointValues = arm?.joint_values ?? [];
+      ensureArmSliderFields(window.__armJoints);
+      bindArmControls();
+
+      const configured = Boolean(arm);
+      const enabled = Boolean(arm?.enabled);
+      const ready = Boolean(arm?.ready);
+      const becameConfigured = configured && !armPanelState.configured;
+      const becameReady = enabled && ready && !(armPanelState.enabled && armPanelState.ready);
+      setArmSlidersFromState(!armSlidersInitialized.value || becameConfigured || becameReady);
+      armPanelState.configured = configured;
+      armPanelState.enabled = enabled;
+      armPanelState.ready = ready;
+
+      document.getElementById("arm-summary").textContent = arm?.summary ?? "arm unavailable";
+      document.getElementById("arm-name").textContent = arm?.name ?? "No arm configured";
+      document.getElementById("arm-bus-port").textContent = arm?.bus_port ?? "Load a profile with an arm store to enable this section.";
+      document.getElementById("arm-mode-state").textContent = !configured
+        ? "unconfigured"
+        : enabled
+          ? (ready ? "ready" : "waiting")
+          : "disabled";
+      document.getElementById("arm-mode-note").textContent = !configured
+        ? "This profile does not currently load an arm configuration."
+        : enabled
+          ? (arm.base_pose_captured
+              ? "Arm zero/home is captured. Sliders are relative to that pose."
+              : "Waiting for a full arm feedback sweep before relative control becomes ready.")
+          : "Switch the motion mode to Manual to enable dashboard-based arm control.";
+      document.getElementById("arm-mount").textContent = armMountLabel(arm?.mount);
+      document.getElementById("arm-servo-count").textContent = arm
+        ? `${arm.online_servo_count} / ${arm.servos.length}`
+        : "0 / 0";
+      document.getElementById("arm-servo-count-note").textContent = arm
+        ? `${arm.online_servo_count} / ${arm.servos.length} configured arm servos replying.`
+        : "0 / 0 configured arm servos replying.";
+      document.getElementById("arm-bus-note").textContent = arm?.last_poll_error
+        ?? (arm ? "All configured arm servos replied on the last poll." : "Waiting for arm bus state.");
+      document.getElementById("arm-layout-note").textContent = arm
+        ? "Configured arm joints appear in the command order defined by the arm config."
+        : "No arm servo layout is available for this profile.";
+      document.getElementById("arm-servo-chain").innerHTML = renderArmServoChain(arm?.servos ?? []);
+
+      setArmControlsEnabled(Boolean(enabled && ready && window.__armJoints.length));
     }
 
     function updateTiltedStandPanel(tiltedStand) {
@@ -2247,7 +2605,7 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
       document.getElementById("imu-health-note").textContent = healthBits || "No telemetry yet.";
     }
 
-    function renderServoNode(servo) {
+    function renderServoNode(servo, labelOverride = null) {
       const telemetry = servo.telemetry;
       const faults = telemetry?.faults ?? [];
       const classes = ["servo-node"];
@@ -2260,7 +2618,7 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
       }
 
       const jointIndex = jointIndexForServo(servo);
-      const jointLabel = JOINT_LABEL[jointIndex] ?? "joint";
+      const jointLabel = labelOverride ?? servo.label ?? JOINT_LABEL[jointIndex] ?? "joint";
       const load = telemetry ? `${fmt(telemetry.present_load_pct)}%` : "n/a";
       const voltage = telemetry ? `${fmt(telemetry.present_voltage_v, 1)} V` : "n/a";
       const current = telemetry?.present_current_ma != null ? `${telemetry.present_current_ma} mA` : "n/a";
@@ -2299,7 +2657,7 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
       const preview = renderLegPreviewRow(legKey, sorted);
       const chain = `
         <div class="${chainClass}">
-          ${sorted.map(renderServoNode).join("")}
+          ${sorted.map((servo) => renderServoNode(servo, JOINT_LABEL[jointIndexForServo(servo)] ?? "joint")).join("")}
         </div>
       `;
       const clusterRow = meta.side === "left"
@@ -2319,6 +2677,15 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
     function renderServoMap(servos) {
       const grouped = groupServosByLeg(servos);
       return LEG_ORDER.map((legKey) => renderLegCluster(legKey, grouped[legKey])).join("");
+    }
+
+    function renderArmServoChain(servos) {
+      if (!servos.length) {
+        return '<div class="stat-note">No arm servos are configured for this profile.</div>';
+      }
+      return servos
+        .map((servo) => renderServoNode(servo, servo.label ?? `servo ${servo.servo_id}`))
+        .join("");
     }
 
     function groupServosByLeg(servos) {
@@ -2486,10 +2853,13 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
         const state = await response.json();
         window.__latestState = state;
         window.__legPreviews = state.leg_previews ?? [];
+        const armServos = state.arm?.servos ?? [];
+        const totalOnlineServoCount = Number(state.online_servo_count ?? 0) + Number(state.arm?.online_servo_count ?? 0);
+        const totalConfiguredServoCount = (state.servos?.length ?? 0) + armServos.length;
 
         document.getElementById("deployment-profile").textContent = state.deployment_profile;
         document.getElementById("compute-target").textContent = state.compute_target;
-        document.getElementById("servo-count").textContent = `${state.online_servo_count} / ${state.servos.length}`;
+        document.getElementById("servo-count").textContent = `${totalOnlineServoCount} / ${totalConfiguredServoCount}`;
         document.getElementById("serial-port").textContent = state.serial_port;
         document.getElementById("serial-note").textContent = state.last_poll_error ?? "All configured servos replied on the last poll.";
         document.getElementById("camera-backend").textContent = state.camera_backend;
@@ -2503,20 +2873,26 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
         updateMotionButtons(state.motion_mode);
         updateImuPanel(state.imu);
         updateManualPanel(state.manual);
+        updateArmPanel(state.arm);
         updateTiltedStandPanel(state.tilted_stand);
         updateCalibrationPanel(state.calibration);
 
-        const faulted = state.servos.filter((servo) => servo.telemetry && servo.telemetry.faults.length > 0).length;
+        const faulted = state.servos.filter((servo) => servo.telemetry && servo.telemetry.faults.length > 0).length
+          + armServos.filter((servo) => servo.telemetry && servo.telemetry.faults.length > 0).length;
         const groupedServos = groupServosByLeg(state.servos);
         const liveLegs = LEG_ORDER.filter((legKey) => groupedServos[legKey].filter((servo) => servo.online).length === 3).length;
-        document.getElementById("fault-summary").textContent = `${liveLegs}/${LEG_ORDER.length} legs fully live · ${faulted} servo(s) reporting status flags`;
+        document.getElementById("fault-summary").textContent = armServos.length
+          ? `${liveLegs}/${LEG_ORDER.length} legs fully live · arm ${state.arm.online_servo_count}/${armServos.length} live · ${faulted} servo(s) reporting status flags`
+          : `${liveLegs}/${LEG_ORDER.length} legs fully live · ${faulted} servo(s) reporting status flags`;
         document.getElementById("robot-note").textContent =
-          `${state.motion_mode}: ${state.motion_summary} ${state.online_servo_count}/${state.servos.length} joints responding.`;
+          armServos.length
+            ? `${state.motion_mode}: ${state.motion_summary} legs ${state.online_servo_count}/${state.servos.length}, arm ${state.arm.online_servo_count}/${armServos.length} joints responding.`
+            : `${state.motion_mode}: ${state.motion_summary} ${state.online_servo_count}/${state.servos.length} joints responding.`;
         document.getElementById("servo-map-legs").innerHTML = renderServoMap(state.servos);
 
         updateBadge(
-          state.online_servo_count > 0 && !state.motion_fault,
-          `${state.robot_name}: ${state.motion_mode}, ${state.online_servo_count}/${state.servos.length} online`
+          totalOnlineServoCount > 0 && !state.motion_fault,
+          `${state.robot_name}: ${state.motion_mode}, ${totalOnlineServoCount}/${totalConfiguredServoCount} online`
         );
 
         if (state.camera_backend === "v4l2" && !streamStarted) {
