@@ -5152,6 +5152,8 @@ fn gst_argus_args(config: &RobotConfig) -> Vec<String> {
         "-q".to_owned(),
         "nvarguscamerasrc".to_owned(),
         format!("sensor-id={sensor_id}"),
+        "gainrange=1 16".to_owned(),
+        "ispdigitalgainrange=1 1".to_owned(),
         "!".to_owned(),
         format!(
             "video/x-raw(memory:NVMM),width=(int){w},height=(int){h},framerate=(fraction){fps}/1,format=(string)NV12"
