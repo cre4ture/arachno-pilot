@@ -14,8 +14,9 @@ mod dashboard_page;
 use anyhow::Context;
 use arachno_camera::RobotCamera;
 use arachno_core::{
-    ArmServoConfig, CameraBackend, LegPoseAngles, LegSideViewPose, LegTopViewPose, RobotArmConfig,
-    RobotConfig, SemanticPoseKind, now_ms, resolve_config_path, smoothstep,
+    ArmServoConfig, CameraBackend, DEFAULT_IMU_REFERENCE_DOWN_SENSOR,
+    DEFAULT_IMU_REFERENCE_FORWARD_SENSOR, LegPoseAngles, LegSideViewPose, LegTopViewPose,
+    RobotArmConfig, RobotConfig, SemanticPoseKind, now_ms, resolve_config_path, smoothstep,
 };
 use arachno_feetech_sts::{
     RealStsBus, set_verified_torque_limit_on_current_position_for_ids,
@@ -354,6 +355,60 @@ struct TelemetryImuState {
     pitch_deg: Option<f32>,
     accel_norm_mps2: Option<f32>,
     gyro_norm_deg_s: Option<f32>,
+    #[serde(skip)]
+    reference_frame: ImuReferenceFrame,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ImuReferenceFrame {
+    forward_sensor: [f32; 3],
+    right_sensor: [f32; 3],
+    down_sensor: [f32; 3],
+}
+
+impl Default for ImuReferenceFrame {
+    fn default() -> Self {
+        Self {
+            forward_sensor: DEFAULT_IMU_REFERENCE_FORWARD_SENSOR,
+            right_sensor: [0.0, 1.0, 0.0],
+            down_sensor: DEFAULT_IMU_REFERENCE_DOWN_SENSOR,
+        }
+    }
+}
+
+impl ImuReferenceFrame {
+    fn from_config(imu: &arachno_core::ImuConfig) -> Self {
+        Self::new(imu.reference_forward_sensor, imu.reference_down_sensor)
+    }
+
+    fn new(forward_sensor: [f32; 3], down_sensor: [f32; 3]) -> Self {
+        let Some(down_sensor) = normalize3(down_sensor) else {
+            return Self::default();
+        };
+        let Some(forward_sensor) = orthogonal_unit3(down_sensor, forward_sensor) else {
+            return Self::default();
+        };
+        let Some(right_sensor) = normalize3(cross3(down_sensor, forward_sensor)) else {
+            return Self::default();
+        };
+        let Some(forward_sensor) = normalize3(cross3(right_sensor, down_sensor)) else {
+            return Self::default();
+        };
+
+        Self {
+            forward_sensor,
+            right_sensor,
+            down_sensor,
+        }
+    }
+
+    fn project_vector(self, sensor_vector: [f32; 3]) -> [f32; 3] {
+        [
+            dot3(sensor_vector, self.forward_sensor),
+            dot3(sensor_vector, self.right_sensor),
+            dot3(sensor_vector, self.down_sensor),
+        ]
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -5044,7 +5099,6 @@ async fn camera_stream(State(state): State<AppState>) -> Response {
                         .into_response()
                 })
         }
-
     }
 }
 
@@ -5099,7 +5153,9 @@ fn gst_argus_args(config: &RobotConfig) -> Vec<String> {
         "nvarguscamerasrc".to_owned(),
         format!("sensor-id={sensor_id}"),
         "!".to_owned(),
-        format!("video/x-raw(memory:NVMM),width=(int){w},height=(int){h},framerate=(fraction){fps}/1,format=(string)NV12"),
+        format!(
+            "video/x-raw(memory:NVMM),width=(int){w},height=(int){h},framerate=(fraction){fps}/1,format=(string)NV12"
+        ),
         "!".to_owned(),
         "nvvidconv".to_owned(),
         "!".to_owned(),
@@ -5146,6 +5202,7 @@ fn telemetry_imu_from_config(config: &RobotConfig) -> Option<TelemetryImuState> 
         pitch_deg: None,
         accel_norm_mps2: None,
         gyro_norm_deg_s: None,
+        reference_frame: ImuReferenceFrame::from_config(imu),
     })
 }
 
@@ -5199,7 +5256,8 @@ fn drain_imu_bridge(
     }
 
     if let Some(sample) = latest {
-        let (roll_deg, pitch_deg) = estimate_roll_pitch_deg(sample.accel_mps2);
+        let (roll_deg, pitch_deg) =
+            estimate_roll_pitch_deg(sample.accel_mps2, state.reference_frame);
         state.accel_norm_mps2 = Some(vector_norm3(sample.accel_mps2));
         state.gyro_norm_deg_s =
             Some(vector_norm3(sample.gyro_rad_s) * 180.0 / std::f32::consts::PI);
@@ -5235,13 +5293,55 @@ fn imu_fault_label(code: u8) -> &'static str {
     }
 }
 
-fn estimate_roll_pitch_deg(accel_mps2: [f32; 3]) -> (f32, f32) {
-    let ax = accel_mps2[0];
-    let ay = accel_mps2[1];
-    let az = accel_mps2[2];
+fn estimate_roll_pitch_deg(accel_mps2: [f32; 3], reference_frame: ImuReferenceFrame) -> (f32, f32) {
+    let body_accel_mps2 = reference_frame.project_vector(accel_mps2);
+    let ax = body_accel_mps2[0];
+    let ay = body_accel_mps2[1];
+    let az = body_accel_mps2[2];
     let roll = ay.atan2(az).to_degrees();
     let pitch = (-ax).atan2((ay * ay + az * az).sqrt()).to_degrees();
     (roll, pitch)
+}
+
+fn normalize3(values: [f32; 3]) -> Option<[f32; 3]> {
+    let norm = vector_norm3(values);
+    (norm > f32::EPSILON).then_some([values[0] / norm, values[1] / norm, values[2] / norm])
+}
+
+fn dot3(lhs: [f32; 3], rhs: [f32; 3]) -> f32 {
+    lhs[0] * rhs[0] + lhs[1] * rhs[1] + lhs[2] * rhs[2]
+}
+
+fn cross3(lhs: [f32; 3], rhs: [f32; 3]) -> [f32; 3] {
+    [
+        lhs[1] * rhs[2] - lhs[2] * rhs[1],
+        lhs[2] * rhs[0] - lhs[0] * rhs[2],
+        lhs[0] * rhs[1] - lhs[1] * rhs[0],
+    ]
+}
+
+fn orthogonal_unit3(normal: [f32; 3], preferred: [f32; 3]) -> Option<[f32; 3]> {
+    let projected = [
+        preferred[0] - normal[0] * dot3(preferred, normal),
+        preferred[1] - normal[1] * dot3(preferred, normal),
+        preferred[2] - normal[2] * dot3(preferred, normal),
+    ];
+    if let Some(unit) = normalize3(projected) {
+        return Some(unit);
+    }
+
+    for axis in [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]] {
+        let candidate = [
+            axis[0] - normal[0] * dot3(axis, normal),
+            axis[1] - normal[1] * dot3(axis, normal),
+            axis[2] - normal[2] * dot3(axis, normal),
+        ];
+        if let Some(unit) = normalize3(candidate) {
+            return Some(unit);
+        }
+    }
+
+    None
 }
 
 fn vector_norm3(values: [f32; 3]) -> f32 {
@@ -5265,13 +5365,13 @@ mod tests {
     };
 
     use super::{
-        ArmControlState, BODY_ATTITUDE_STRIKES_TO_TRIP, BrainMode, LegPoseAngles,
-        ManualControlState, MotionCommand, MotionRuntime, SemanticCalibrationState,
+        ArmControlState, BODY_ATTITUDE_STRIKES_TO_TRIP, BrainMode, ImuReferenceFrame,
+        LegPoseAngles, ManualControlState, MotionCommand, MotionRuntime, SemanticCalibrationState,
         TelemetryImuState, arm_joint_infos, arm_relative_degrees_between_ticks,
         body_attitude_fault_reason, clamp_tilted_stand_pitch_deg, clamp_tilted_stand_roll_deg,
-        derive_leg_lift_deltas, named_pose_with_calibration, relative_ticks_for_degrees,
-        stand_pose_labels, sync_arm_mode_state, sync_manual_mode_state, tilted_stand_leg_geometry,
-        tilted_stand_pose,
+        derive_leg_lift_deltas, estimate_roll_pitch_deg, named_pose_with_calibration,
+        relative_ticks_for_degrees, stand_pose_labels, sync_arm_mode_state, sync_manual_mode_state,
+        tilted_stand_leg_geometry, tilted_stand_pose,
     };
     use arachno_core::{LegConfig, RobotConfig, SafetyConfig, SemanticPoseKind};
 
@@ -5316,6 +5416,7 @@ mod tests {
             pitch_deg,
             accel_norm_mps2: Some(9.81),
             gyro_norm_deg_s: None,
+            reference_frame: ImuReferenceFrame::default(),
         }
     }
 
@@ -5594,6 +5695,40 @@ mod tests {
         assert_eq!(clamp_tilted_stand_pitch_deg(-24.0), -20.0);
         assert_eq!(clamp_tilted_stand_roll_deg(21.0), 20.0);
         assert_eq!(clamp_tilted_stand_roll_deg(-21.0), -20.0);
+    }
+
+    #[test]
+    fn default_imu_reference_frame_preserves_existing_attitude_estimate() {
+        let accel_mps2 = [2.4, 3.6, 8.7];
+
+        let (roll_deg, pitch_deg) =
+            estimate_roll_pitch_deg(accel_mps2, ImuReferenceFrame::default());
+
+        let expected_roll_deg = accel_mps2[1].atan2(accel_mps2[2]).to_degrees();
+        let expected_pitch_deg = (-accel_mps2[0])
+            .atan2((accel_mps2[1] * accel_mps2[1] + accel_mps2[2] * accel_mps2[2]).sqrt())
+            .to_degrees();
+
+        assert!((roll_deg - expected_roll_deg).abs() < 1e-6);
+        assert!((pitch_deg - expected_pitch_deg).abs() < 1e-6);
+    }
+
+    #[test]
+    fn imu_reference_frame_can_zero_the_current_robot_pose() {
+        let reference_frame =
+            ImuReferenceFrame::new([0.0, 0.0, 1.0], [-0.999_980, 0.005_598, -0.002_893]);
+        let accel_mps2 = [-9.744_745, 0.054_549, -0.028_194];
+
+        let (roll_deg, pitch_deg) = estimate_roll_pitch_deg(accel_mps2, reference_frame);
+
+        assert!(
+            roll_deg.abs() < 0.5,
+            "expected near-zero roll, got {roll_deg}"
+        );
+        assert!(
+            pitch_deg.abs() < 0.5,
+            "expected near-zero pitch, got {pitch_deg}"
+        );
     }
 
     #[test]

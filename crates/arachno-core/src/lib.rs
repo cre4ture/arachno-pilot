@@ -258,6 +258,21 @@ pub struct ImuConfig {
     pub device: Option<String>,
     pub sample_hz: u16,
     pub protocol: String,
+    #[serde(default = "default_imu_reference_forward_sensor")]
+    pub reference_forward_sensor: [f32; 3],
+    #[serde(default = "default_imu_reference_down_sensor")]
+    pub reference_down_sensor: [f32; 3],
+}
+
+pub const DEFAULT_IMU_REFERENCE_FORWARD_SENSOR: [f32; 3] = [1.0, 0.0, 0.0];
+pub const DEFAULT_IMU_REFERENCE_DOWN_SENSOR: [f32; 3] = [0.0, 0.0, 1.0];
+
+fn default_imu_reference_forward_sensor() -> [f32; 3] {
+    DEFAULT_IMU_REFERENCE_FORWARD_SENSOR
+}
+
+fn default_imu_reference_down_sensor() -> [f32; 3] {
+    DEFAULT_IMU_REFERENCE_DOWN_SENSOR
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1680,6 +1695,15 @@ fps = 30
 fov_deg = 60.0
 pixel_format = "MJPG"
 
+[imu]
+enabled = true
+mode = "usb_bridge"
+device = "/dev/ttyACM-imu"
+sample_hz = 200
+protocol = "arachno_imu_v1"
+reference_forward_sensor = [0.0, 1.0, 0.0]
+reference_down_sensor = [0.0, 0.0, -1.0]
+
 [learning]
 mode = "shadow"
 policy_transport = "unix-socket"
@@ -1824,6 +1848,9 @@ tibia_deg = 0.0
         assert_eq!(stand_reference_pose.coxa_deg, 1.0);
         assert_eq!(stand_reference_pose.femur_deg, 52.5);
         assert_eq!(stand_reference_pose.tibia_deg, -120.0);
+        let imu = config.imu.as_ref().expect("imu config should load");
+        assert_eq!(imu.reference_forward_sensor, [0.0, 1.0, 0.0]);
+        assert_eq!(imu.reference_down_sensor, [0.0, 0.0, -1.0]);
         let stand_high_pose = config
             .pose_for_leg(SemanticPoseKind::StandHigh, "front_left")
             .expect("pose store should provide a stand-high pose");
