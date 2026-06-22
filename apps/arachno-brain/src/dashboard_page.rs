@@ -2895,17 +2895,12 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
           `${state.robot_name}: ${state.motion_mode}, ${totalOnlineServoCount}/${totalConfiguredServoCount} online`
         );
 
-        if (state.camera_backend === "v4l2" && !streamStarted) {
+        if (!streamStarted) {
           const img = document.getElementById("camera-stream");
           document.getElementById("stream-placeholder").hidden = true;
           img.hidden = false;
           img.src = cameraUrl;
           streamStarted = true;
-        }
-
-        if (state.camera_backend !== "v4l2") {
-          document.getElementById("stream-placeholder").textContent =
-            "This dashboard currently serves live video for the host-usb V4L2 camera path. The onboard Jetson profile is prepared, but its stream route still needs a Jetson-native capture backend.";
         }
       } catch (error) {
         updateBadge(false, "dashboard fetch error");

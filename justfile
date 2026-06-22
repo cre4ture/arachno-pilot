@@ -84,7 +84,7 @@ jetson-brain host="uli@192.168.178.131" listen="0.0.0.0:4000":
     CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=rust-lld \
       cargo build -p arachno-brain --release --target "${target}"
 
-    ssh "${host}" "mkdir -p ~/bin ~/log ~/arachno-brain-config"
+    ssh "${host}" "mkdir -p ~/bin ~/log ~/arachno-brain-config && pkill -x arachno-brain || true"
 
     scp "${binary}" "${host}:${remote_bin}"
     scp \
