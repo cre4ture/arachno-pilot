@@ -611,6 +611,44 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
       transform: none;
     }
 
+    .slider-aux-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      align-items: end;
+      margin-top: 12px;
+    }
+
+    .slider-inline-control {
+      min-width: 10rem;
+      display: grid;
+      gap: 6px;
+    }
+
+    .slider-inline-label {
+      color: var(--muted);
+      font-size: 0.75rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .slider-inline-control input {
+      width: 100%;
+      border: 1px solid rgba(255,255,255,0.1);
+      background: rgba(7, 11, 16, 0.88);
+      color: var(--text);
+      border-radius: 10px;
+      padding: 8px 10px;
+      font: inherit;
+    }
+
+    .slider-aux-note {
+      flex: 1 1 18rem;
+      color: var(--muted);
+      font-size: 0.84rem;
+      line-height: 1.45;
+    }
+
     .manual-actions {
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1352,6 +1390,13 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
                 <button id="manual-coxa-jump-apply" type="button">Jump</button>
               </div>
             </div>
+            <div class="slider-aux-row">
+              <div class="slider-inline-control">
+                <div class="slider-inline-label">Torque Limit</div>
+                <input id="manual-coxa-torque-limit" type="number" min="0" max="1000" step="1" value="1000" aria-label="Torque limit for the selected group's coxa servos" />
+              </div>
+              <div class="slider-aux-note">Changing this value syncs the selected group's coxa targets to the live pose before applying the new torque limit.</div>
+            </div>
           </label>
 
           <label class="slider-field">
@@ -1375,6 +1420,13 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
                 <button id="manual-femur-jump-apply" type="button">Jump</button>
               </div>
             </div>
+            <div class="slider-aux-row">
+              <div class="slider-inline-control">
+                <div class="slider-inline-label">Torque Limit</div>
+                <input id="manual-femur-torque-limit" type="number" min="0" max="1000" step="1" value="1000" aria-label="Torque limit for the selected group's femur servos" />
+              </div>
+              <div class="slider-aux-note">Changing this value syncs the selected group's femur targets to the live pose before applying the new torque limit.</div>
+            </div>
           </label>
 
           <label class="slider-field">
@@ -1397,6 +1449,13 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
                 <input id="manual-tibia-jump" type="number" step="0.1" value="5.0" aria-label="Relative tibia angle jump in degrees" />
                 <button id="manual-tibia-jump-apply" type="button">Jump</button>
               </div>
+            </div>
+            <div class="slider-aux-row">
+              <div class="slider-inline-control">
+                <div class="slider-inline-label">Torque Limit</div>
+                <input id="manual-tibia-torque-limit" type="number" min="0" max="1000" step="1" value="1000" aria-label="Torque limit for the selected group's tibia servos" />
+              </div>
+              <div class="slider-aux-note">Changing this value syncs the selected group's tibia targets to the live pose before applying the new torque limit.</div>
             </div>
           </label>
         </div>
@@ -1547,6 +1606,7 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
     const armResetUrl = "/api/arm/reset";
     const armCaptureUrl = "/api/arm/capture";
     const armSyncCurrentUrl = "/api/arm/sync-current";
+    const armTorqueLimitUrl = "/api/arm/torque-limit";
     const armJumpUrl = "/api/arm/jump";
     const tiltedStandApplyUrl = "/api/tilted-stand/apply";
     const tiltedStandResetUrl = "/api/tilted-stand/reset";
@@ -1566,6 +1626,7 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
     let armLiveApplyPending = false;
     let lastArmLiveApplyAt = 0;
     let armSlidersInitialized = { value: false };
+    let armTorqueSyncPending = false;
     let tiltedStandLiveApplyTimer = null;
     let tiltedStandLiveApplyPending = false;
     let lastTiltedStandLiveApplyAt = 0;
@@ -1651,10 +1712,18 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
       document.getElementById(`manual-${axis}-input`).value = sliderValue(axis).toFixed(1);
     }
 
-    function manualTorqueLimitValue() {
-      const value = Number(document.getElementById("manual-torque-limit").value);
+    function torqueLimitValue(inputId) {
+      const value = Number(document.getElementById(inputId).value);
       if (!Number.isFinite(value)) return 1000;
       return Math.min(1000, Math.max(0, Math.round(value)));
+    }
+
+    function manualTorqueLimitValue() {
+      return torqueLimitValue("manual-torque-limit");
+    }
+
+    function manualAxisTorqueLimitValue(axis) {
+      return torqueLimitValue(`manual-${axis}-torque-limit`);
     }
 
     function manualTorqueTargetValue() {
@@ -1694,6 +1763,10 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
     function armJumpValue(jointKey) {
       const value = Number(document.getElementById(`arm-${jointKey}-jump`).value);
       return Number.isFinite(value) ? value : 0;
+    }
+
+    function armJointTorqueLimitValue(jointKey) {
+      return torqueLimitValue(`arm-${jointKey}-torque-limit`);
     }
 
     function armLiveApplyEnabled() {
@@ -2211,6 +2284,13 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
               <button id="arm-${joint.key}-jump-apply" type="button">Jump</button>
             </div>
           </div>
+          <div class="slider-aux-row">
+            <div class="slider-inline-control">
+              <div class="slider-inline-label">Torque Limit</div>
+              <input id="arm-${joint.key}-torque-limit" type="number" min="0" max="1000" step="1" value="1000" aria-label="Torque limit for ${joint.label}" />
+            </div>
+            <div class="slider-aux-note">Changing this value syncs ${joint.label} to the live pose before applying the new torque limit.</div>
+          </div>
           <div class="stat-note">${note}</div>
         </label>
       `;
@@ -2265,6 +2345,7 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
         document.getElementById(`arm-${joint.key}-input`).disabled = !enabled;
         document.getElementById(`arm-${joint.key}-jump`).disabled = !enabled;
         document.getElementById(`arm-${joint.key}-jump-apply`).disabled = !enabled;
+        document.getElementById(`arm-${joint.key}-torque-limit`).disabled = !enabled;
       }
     }
 
@@ -2297,6 +2378,7 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
         document.getElementById(`manual-${axis}-input`).disabled = !enabled;
         document.getElementById(`manual-${axis}-jump`).disabled = !enabled;
         document.getElementById(`manual-${axis}-jump-apply`).disabled = !enabled;
+        document.getElementById(`manual-${axis}-torque-limit`).disabled = !enabled;
       }
     }
 
@@ -2431,6 +2513,16 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
       setArmSlidersFromState(true);
     }
 
+    async function applyArmJointTorqueLimit(jointKey) {
+      const result = await postJson(armTorqueLimitUrl, {
+        joint_key: jointKey,
+        torque_limit: armJointTorqueLimitValue(jointKey),
+      });
+      armTorqueSyncPending = true;
+      document.getElementById("arm-summary").textContent = result.summary;
+      await refresh();
+    }
+
     async function applyTiltedStand() {
       const result = await postJson(tiltedStandApplyUrl, {
         pitch_deg: tiltedStandValue("pitch"),
@@ -2455,6 +2547,17 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
       });
       document.getElementById("manual-summary").textContent = result.summary;
       await refresh();
+    }
+
+    async function applyManualAxisTorqueLimit(axis) {
+      const result = await postJson(manualTorqueLimitUrl, {
+        group_key: document.getElementById("manual-group").value,
+        target: axis,
+        torque_limit: manualAxisTorqueLimitValue(axis),
+      });
+      document.getElementById("manual-summary").textContent = result.summary;
+      await refresh();
+      setManualSlidersFromGroupValue(true);
     }
 
     async function syncManualTargetToCurrent() {
@@ -2597,6 +2700,20 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
             });
           }
         });
+        const torqueInput = document.getElementById(`manual-${axis}-torque-limit`);
+        torqueInput.addEventListener("change", () => {
+          applyManualAxisTorqueLimit(axis).catch((error) => {
+            document.getElementById("manual-summary").textContent = String(error);
+          });
+        });
+        torqueInput.addEventListener("keydown", (event) => {
+          if (event.key === "Enter") {
+            event.preventDefault();
+            applyManualAxisTorqueLimit(axis).catch((error) => {
+              document.getElementById("manual-summary").textContent = String(error);
+            });
+          }
+        });
         updateSliderReadout(axis);
       }
       document.getElementById("manual-group").addEventListener("change", () => {
@@ -2699,6 +2816,20 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
             });
           }
         });
+        const torqueInput = document.getElementById(`arm-${joint.key}-torque-limit`);
+        torqueInput.addEventListener("change", () => {
+          applyArmJointTorqueLimit(joint.key).catch((error) => {
+            document.getElementById("arm-summary").textContent = String(error);
+          });
+        });
+        torqueInput.addEventListener("keydown", (event) => {
+          if (event.key === "Enter") {
+            event.preventDefault();
+            applyArmJointTorqueLimit(joint.key).catch((error) => {
+              document.getElementById("arm-summary").textContent = String(error);
+            });
+          }
+        });
         updateArmReadout(joint.key);
       }
     }
@@ -2774,7 +2905,18 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
       const ready = Boolean(arm?.ready);
       const becameConfigured = configured && !armPanelState.configured;
       const becameReady = enabled && ready && !(armPanelState.enabled && armPanelState.ready);
-      setArmSlidersFromState(!armSlidersInitialized.value || becameConfigured || becameReady);
+      const completedTorqueSync = Boolean(
+        armTorqueSyncPending && arm?.summary?.startsWith("arm utility:")
+      );
+      setArmSlidersFromState(
+        !armSlidersInitialized.value || becameConfigured || becameReady || completedTorqueSync
+      );
+      if (completedTorqueSync) {
+        armTorqueSyncPending = false;
+      }
+      if (!configured || !enabled || arm?.summary?.startsWith("arm utility failed:")) {
+        armTorqueSyncPending = false;
+      }
       armPanelState.configured = configured;
       armPanelState.enabled = enabled;
       armPanelState.ready = ready;
@@ -3388,5 +3530,23 @@ mod tests {
             layout_end > rail_start,
             "layout section should keep the side rail inside the grid"
         );
+    }
+
+    #[test]
+    fn dashboard_html_includes_per_slider_torque_controls_for_legs_and_arm() {
+        for needle in [
+            "id=\"manual-coxa-torque-limit\"",
+            "id=\"manual-femur-torque-limit\"",
+            "id=\"manual-tibia-torque-limit\"",
+            "id=\"arm-${joint.key}-torque-limit\"",
+            "const armTorqueLimitUrl = \"/api/arm/torque-limit\";",
+            "applyManualAxisTorqueLimit",
+            "applyArmJointTorqueLimit",
+        ] {
+            assert!(
+                DASHBOARD_HTML.contains(needle),
+                "dashboard html should contain {needle}"
+            );
+        }
     }
 }

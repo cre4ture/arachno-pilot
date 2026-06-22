@@ -53,7 +53,7 @@ const STAND_UP_BODY_RISE_RATIO: f32 = 0.45;
 const MANUAL_COXA_LIMIT_DEG: f32 = 180.0;
 const MANUAL_FEMUR_LIMIT_DEG: f32 = 180.0;
 const MANUAL_TIBIA_LIMIT_DEG: f32 = 180.0;
-const MANUAL_TORQUE_LIMIT_MAX: u16 = 1000;
+const DASHBOARD_TORQUE_LIMIT_MAX: u16 = 1000;
 const TILTED_STAND_PITCH_LIMIT_DEG: f32 = 20.0;
 const TILTED_STAND_ROLL_LIMIT_DEG: f32 = 20.0;
 
@@ -570,6 +570,7 @@ struct ArmControlState {
     base_pose: Option<BTreeMap<u8, u16>>,
     target_pose: Option<BTreeMap<u8, u16>>,
     summary: String,
+    pending_actions: VecDeque<ArmHardwareAction>,
 }
 
 #[derive(Debug, Clone)]
@@ -589,6 +590,14 @@ enum ManualHardwareAction {
     },
     SyncTargetToCurrent {
         group_key: String,
+    },
+}
+
+#[derive(Debug, Clone)]
+enum ArmHardwareAction {
+    SetTorqueLimit {
+        joint_key: String,
+        torque_limit: u16,
     },
 }
 
@@ -662,6 +671,12 @@ struct ArmJointCommandInput {
 struct ArmJumpRequest {
     joint_key: String,
     delta_deg: f32,
+}
+
+#[derive(Debug, Deserialize)]
+struct ArmTorqueLimitRequest {
+    joint_key: String,
+    torque_limit: u16,
 }
 
 #[derive(Debug, Deserialize)]
@@ -896,6 +911,7 @@ impl ArmControlState {
             base_pose: None,
             target_pose: None,
             summary: summary.to_owned(),
+            pending_actions: VecDeque::new(),
         }
     }
 }
@@ -1660,6 +1676,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/arm/apply", post(api_arm_apply))
         .route("/api/arm/reset", post(api_arm_reset))
         .route("/api/arm/sync-current", post(api_arm_sync_current))
+        .route("/api/arm/torque-limit", post(api_arm_torque_limit))
         .route("/api/arm/jump", post(api_arm_jump))
         .route("/api/tilted-stand/apply", post(api_tilted_stand_apply))
         .route("/api/tilted-stand/reset", post(api_tilted_stand_reset))
@@ -2054,11 +2071,25 @@ fn spawn_control_worker(
                             if mode == BrainMode::Manual && motion.fault.is_none() {
                                 ensure_arm_reference_pose(&arm_control, mode, &arm_pose);
 
+                                if let Err(err) =
+                                    process_pending_arm_action(real_arm_bus, arm, &arm_control)
+                                {
+                                    warn!(error = %err, "arm utility failed");
+                                    arm_transport_error =
+                                        Some(format!("arm utility failed: {err}"));
+                                    if let Ok(mut control) = arm_control.write() {
+                                        control.summary = format!("arm utility failed: {err}");
+                                    }
+                                    reopen_arm_bus = true;
+                                    arm_torque_enabled = false;
+                                }
+
                                 let maybe_target_pose = arm_control
                                     .read()
                                     .ok()
                                     .and_then(|control| control.target_pose.clone());
-                                if let Some(target_pose) = maybe_target_pose
+                                if !reopen_arm_bus
+                                    && let Some(target_pose) = maybe_target_pose
                                     && let Err(err) = real_arm_bus
                                         .sync_write_positions(&pose_to_commands(&target_pose))
                                 {
@@ -2538,6 +2569,7 @@ fn arm_snapshot(
                 base_pose: None,
                 target_pose: None,
                 summary: "arm control state is unavailable".to_owned(),
+                pending_actions: VecDeque::new(),
             },
             servo_states,
             transport_error,
@@ -3285,6 +3317,35 @@ fn manual_group_servo_ids(
     servo_ids
 }
 
+fn sync_target_pose_to_live_servo_positions<B>(
+    bus: &mut B,
+    servo_ids: &[u8],
+    target_seed: Option<BTreeMap<u8, u16>>,
+    context_label: &str,
+) -> anyhow::Result<BTreeMap<u8, u16>>
+where
+    B: ServoBus,
+{
+    let current_pose = read_current_pose(bus, servo_ids)
+        .map_err(|err| anyhow::anyhow!("failed to read current pose for {context_label}: {err}"))?;
+
+    let mut next_target_pose = if let Some(seed) = target_seed {
+        seed
+    } else {
+        let all_servo_ids = bus.servo_ids().to_vec();
+        read_current_pose(bus, &all_servo_ids).map_err(|err| {
+            anyhow::anyhow!(
+                "failed to read current pose while seeding target for {context_label}: {err}"
+            )
+        })?
+    };
+    for (&servo_id, &ticks) in &current_pose {
+        next_target_pose.insert(servo_id, ticks);
+    }
+
+    Ok(next_target_pose)
+}
+
 fn process_pending_manual_action(
     bus: &mut RealStsBus,
     config: &RobotConfig,
@@ -3317,20 +3378,8 @@ fn process_pending_manual_action(
     let (group_label, legs) = resolve_manual_group(config, group_key)
         .ok_or_else(|| anyhow::anyhow!("unknown manual control group {group_key}"))?;
     let servo_ids = manual_group_servo_ids(&legs, torque_target);
-    let current_group_pose = read_current_pose(bus, &servo_ids)
-        .map_err(|err| anyhow::anyhow!("failed to read current pose for {group_label}: {err}"))?;
-
-    let mut next_target_pose = if let Some(seed) = target_seed {
-        seed
-    } else {
-        let all_servo_ids = bus.servo_ids().to_vec();
-        read_current_pose(bus, &all_servo_ids).map_err(|err| {
-            anyhow::anyhow!("failed to read current pose while seeding manual target: {err}")
-        })?
-    };
-    for (&servo_id, &ticks) in &current_group_pose {
-        next_target_pose.insert(servo_id, ticks);
-    }
+    let next_target_pose =
+        sync_target_pose_to_live_servo_positions(bus, &servo_ids, target_seed, &group_label)?;
 
     let summary = match action {
         ManualHardwareAction::SetTorqueLimit {
@@ -3366,6 +3415,67 @@ fn process_pending_manual_action(
     let mut control = manual
         .write()
         .map_err(|_| anyhow::anyhow!("manual control lock poisoned"))?;
+    control.target_pose = Some(next_target_pose);
+    control.summary = summary.clone();
+    Ok(Some(summary))
+}
+
+fn process_pending_arm_action(
+    bus: &mut RealStsBus,
+    arm: &RobotArmConfig,
+    arm_control: &Arc<RwLock<ArmControlState>>,
+) -> anyhow::Result<Option<String>> {
+    let (action, target_seed, base_pose_seed) = {
+        let mut control = arm_control
+            .write()
+            .map_err(|_| anyhow::anyhow!("arm control lock poisoned"))?;
+        (
+            control.pending_actions.pop_front(),
+            control
+                .target_pose
+                .clone()
+                .or_else(|| control.base_pose.clone()),
+            control.base_pose.clone(),
+        )
+    };
+    let Some(action) = action else {
+        return Ok(None);
+    };
+
+    let (joint_key, torque_limit) = match &action {
+        ArmHardwareAction::SetTorqueLimit {
+            joint_key,
+            torque_limit,
+        } => (joint_key.as_str(), *torque_limit),
+    };
+    let servo = resolve_arm_servo(arm, joint_key)
+        .ok_or_else(|| anyhow::anyhow!("unknown arm joint {joint_key}"))?;
+    let servo_ids = [servo.servo_id];
+    let context_label = format!("arm joint {}", servo.display_name);
+    let next_target_pose =
+        sync_target_pose_to_live_servo_positions(bus, &servo_ids, target_seed, &context_label)?;
+
+    set_verified_torque_limit_on_current_position_for_ids(bus, &servo_ids, torque_limit).map_err(
+        |err| {
+            anyhow::anyhow!(
+                "failed to apply verified torque limit {} to {}: {}",
+                torque_limit,
+                servo.display_name,
+                err
+            )
+        },
+    )?;
+    let summary = format!(
+        "arm utility: synced {} to the live pose and applied torque limit {}",
+        servo.display_name, torque_limit
+    );
+
+    let mut control = arm_control
+        .write()
+        .map_err(|_| anyhow::anyhow!("arm control lock poisoned"))?;
+    if control.base_pose.is_none() {
+        control.base_pose = Some(base_pose_seed.unwrap_or_else(|| next_target_pose.clone()));
+    }
     control.target_pose = Some(next_target_pose);
     control.summary = summary.clone();
     Ok(Some(summary))
@@ -4517,7 +4627,7 @@ async fn api_manual_torque_limit(
     ensure_manual_enabled(&state)?;
     let (group_label, _) = resolve_manual_group(&state.config, &request.group_key)
         .ok_or_else(|| manual_api_error(StatusCode::BAD_REQUEST, "unknown manual control group"))?;
-    let torque_limit = request.torque_limit.min(MANUAL_TORQUE_LIMIT_MAX);
+    let torque_limit = request.torque_limit.min(DASHBOARD_TORQUE_LIMIT_MAX);
 
     let mut manual = state.manual.write().map_err(|_| {
         manual_api_error(
@@ -4756,6 +4866,36 @@ async fn api_arm_sync_current(
         arm_control.base_pose = Some(pose.clone());
     }
     arm_control.target_pose = Some(pose);
+    arm_control.summary = summary.clone();
+
+    Ok(Json(ManualCommandResponse { summary }))
+}
+
+async fn api_arm_torque_limit(
+    State(state): State<AppState>,
+    Json(request): Json<ArmTorqueLimitRequest>,
+) -> Result<Json<ManualCommandResponse>, (StatusCode, String)> {
+    let arm = ensure_arm_enabled(&state)?;
+    let servo = resolve_arm_servo(arm, &request.joint_key)
+        .ok_or_else(|| manual_api_error(StatusCode::BAD_REQUEST, "unknown arm joint"))?;
+    let torque_limit = request.torque_limit.min(DASHBOARD_TORQUE_LIMIT_MAX);
+
+    let mut arm_control = state.arm_control.write().map_err(|_| {
+        manual_api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "arm control lock poisoned",
+        )
+    })?;
+    arm_control
+        .pending_actions
+        .push_back(ArmHardwareAction::SetTorqueLimit {
+            joint_key: request.joint_key.clone(),
+            torque_limit,
+        });
+    let summary = format!(
+        "queued torque limit {} for {}; the control worker will sync the live joint pose first",
+        torque_limit, servo.display_name
+    );
     arm_control.summary = summary.clone();
 
     Ok(Json(ManualCommandResponse { summary }))
@@ -5367,15 +5507,46 @@ mod tests {
     };
 
     use super::{
-        ArmControlState, BODY_ATTITUDE_STRIKES_TO_TRIP, BrainMode, ImuReferenceFrame,
-        LegPoseAngles, ManualControlState, MotionCommand, MotionRuntime, SemanticCalibrationState,
-        TelemetryImuState, arm_joint_infos, arm_relative_degrees_between_ticks,
-        body_attitude_fault_reason, clamp_tilted_stand_pitch_deg, clamp_tilted_stand_roll_deg,
-        derive_leg_lift_deltas, estimate_roll_pitch_deg, named_pose_with_calibration,
-        relative_ticks_for_degrees, stand_pose_labels, sync_arm_mode_state, sync_manual_mode_state,
-        tilted_stand_leg_geometry, tilted_stand_pose,
+        ArmControlState, ArmHardwareAction, BODY_ATTITUDE_STRIKES_TO_TRIP, BrainMode,
+        ImuReferenceFrame, LegPoseAngles, ManualControlState, MotionCommand, MotionRuntime,
+        SemanticCalibrationState, TelemetryImuState, arm_joint_infos,
+        arm_relative_degrees_between_ticks, body_attitude_fault_reason,
+        clamp_tilted_stand_pitch_deg, clamp_tilted_stand_roll_deg, derive_leg_lift_deltas,
+        estimate_roll_pitch_deg, named_pose_with_calibration, relative_ticks_for_degrees,
+        stand_pose_labels, sync_arm_mode_state, sync_manual_mode_state,
+        sync_target_pose_to_live_servo_positions, tilted_stand_leg_geometry, tilted_stand_pose,
     };
     use arachno_core::{LegConfig, RobotConfig, SafetyConfig, SemanticPoseKind};
+    use arachno_hal::{HalResult, ServoBus};
+    use arachno_msg::{JointCommand, ServoTelemetry};
+
+    #[derive(Default)]
+    struct TestServoBus {
+        ids: Vec<u8>,
+        feedback: BTreeMap<u8, ServoTelemetry>,
+        writes: Vec<Vec<JointCommand>>,
+    }
+
+    impl ServoBus for TestServoBus {
+        fn servo_ids(&self) -> &[u8] {
+            &self.ids
+        }
+
+        fn enable_torque(&mut self, _enabled: bool) -> HalResult<()> {
+            Ok(())
+        }
+
+        fn sync_write_positions(&mut self, commands: &[JointCommand]) -> HalResult<()> {
+            self.writes.push(commands.to_vec());
+            Ok(())
+        }
+
+        fn read_feedback(&mut self, servo_id: u8) -> HalResult<ServoTelemetry> {
+            self.feedback.get(&servo_id).cloned().ok_or_else(|| {
+                arachno_hal::HalError::Communication(format!("missing servo {servo_id}"))
+            })
+        }
+    }
 
     fn make_tripod_test_leg() -> LegConfig {
         LegConfig {
@@ -5435,6 +5606,21 @@ mod tests {
             .expect("jetson robot config with arm should load for tests")
     }
 
+    fn test_servo_telemetry(servo_id: u8, present_position_ticks: u16) -> ServoTelemetry {
+        ServoTelemetry {
+            servo_id,
+            present_position_ticks,
+            present_speed_ticks: 0,
+            present_load_pct: 0.0,
+            present_voltage_v: 7.4,
+            present_current_ma: Some(0),
+            present_temperature_c: Some(25),
+            status_bits: Some(0),
+            faults: Vec::new(),
+            moving: false,
+        }
+    }
+
     #[test]
     fn manual_motion_command_maps_to_manual_mode() {
         assert_eq!(MotionCommand::Manual.as_brain_mode(), BrainMode::Manual);
@@ -5470,6 +5656,12 @@ mod tests {
             base_pose: Some(BTreeMap::from([(70, 2048u16)])),
             target_pose: Some(BTreeMap::from([(70, 2200u16)])),
             summary: "stale".to_owned(),
+            pending_actions: std::collections::VecDeque::from([
+                ArmHardwareAction::SetTorqueLimit {
+                    joint_key: "base_yaw".to_owned(),
+                    torque_limit: 420,
+                },
+            ]),
         }));
 
         sync_arm_mode_state(&arm_control, BrainMode::Manual, true);
@@ -5478,7 +5670,60 @@ mod tests {
         assert!(control.enabled);
         assert!(control.base_pose.is_none());
         assert!(control.target_pose.is_none());
+        assert!(control.pending_actions.is_empty());
         assert!(control.summary.contains("current arm pose"));
+    }
+
+    #[test]
+    fn live_pose_seeding_updates_only_the_selected_servo_targets() {
+        let mut bus = TestServoBus {
+            ids: vec![11, 12, 13],
+            feedback: BTreeMap::from([
+                (11, test_servo_telemetry(11, 1500)),
+                (12, test_servo_telemetry(12, 2600)),
+                (13, test_servo_telemetry(13, 3700)),
+            ]),
+            writes: Vec::new(),
+        };
+
+        let target_pose = sync_target_pose_to_live_servo_positions(
+            &mut bus,
+            &[11, 13],
+            Some(BTreeMap::from([
+                (11, 1111u16),
+                (12, 2222u16),
+                (13, 3333u16),
+            ])),
+            "test group",
+        )
+        .expect("selected servo targets should seed from live feedback");
+
+        assert_eq!(target_pose.get(&11), Some(&1500));
+        assert_eq!(target_pose.get(&12), Some(&2222));
+        assert_eq!(target_pose.get(&13), Some(&3700));
+        assert!(bus.writes.is_empty(), "seeding should only read feedback");
+    }
+
+    #[test]
+    fn live_pose_seeding_reads_the_full_pose_when_no_target_seed_exists() {
+        let mut bus = TestServoBus {
+            ids: vec![21, 22],
+            feedback: BTreeMap::from([
+                (21, test_servo_telemetry(21, 1800)),
+                (22, test_servo_telemetry(22, 2900)),
+            ]),
+            writes: Vec::new(),
+        };
+
+        let target_pose = sync_target_pose_to_live_servo_positions(
+            &mut bus,
+            &[21],
+            None,
+            "arm joint shoulder_pitch",
+        )
+        .expect("missing seeds should fall back to the full live pose");
+
+        assert_eq!(target_pose, BTreeMap::from([(21, 1800u16), (22, 2900u16)]));
     }
 
     #[test]
