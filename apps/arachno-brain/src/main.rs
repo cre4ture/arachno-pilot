@@ -3799,12 +3799,12 @@ fn tilted_stand_leg_geometry(
         leg,
         SemanticPoseKind::StandReference,
     );
-    let top_view = leg.top_view_pose(semantic.coxa_deg, semantic.femur_deg, semantic.tibia_deg);
+    let body_pose = leg.body_frame_pose(semantic.coxa_deg, semantic.femur_deg, semantic.tibia_deg);
     let side_view = leg.side_view_pose(semantic.femur_deg, semantic.tibia_deg);
     TiltedStandLegGeometry {
         semantic,
-        foot_forward_cm: top_view.tibia_end.x,
-        foot_left_cm: top_view.tibia_end.y,
+        foot_forward_cm: body_pose.tibia_end.x,
+        foot_left_cm: body_pose.tibia_end.y,
         reach_cm: (side_view.tibia_end.x - side_view.coxa_end.x).abs(),
         height_cm: side_view.tibia_end.y - side_view.coxa_end.y,
     }
@@ -5641,8 +5641,9 @@ mod tests {
         arm_relative_degrees_between_ticks, body_attitude_fault_reason, build_body_scene,
         clamp_tilted_stand_pitch_deg, clamp_tilted_stand_roll_deg, derive_leg_lift_deltas,
         estimate_roll_pitch_deg, named_pose_with_calibration, relative_ticks_for_degrees,
-        stand_pose_labels, sync_arm_mode_state, sync_manual_mode_state,
-        sync_target_pose_to_live_servo_positions, tilted_stand_leg_geometry, tilted_stand_pose,
+        semantic_pose_from_base_pose, stand_pose_labels, sync_arm_mode_state,
+        sync_manual_mode_state, sync_target_pose_to_live_servo_positions,
+        tilted_stand_leg_geometry, tilted_stand_pose,
     };
     use arachno_core::{LegConfig, RobotConfig, SafetyConfig, SemanticPoseKind};
     use arachno_hal::{HalResult, ServoBus};
@@ -5698,6 +5699,7 @@ mod tests {
             coxa_length_cm: Some(3.0),
             femur_length_cm: Some(8.5),
             tibia_length_cm: Some(14.5),
+            mount_position_cm: None,
         }
     }
 
@@ -6032,6 +6034,35 @@ mod tests {
             achieved_height_cm >= 9.5,
             "expected about 10 cm of lift, got {achieved_height_cm:.2} cm"
         );
+    }
+
+    #[test]
+    fn tilted_stand_geometry_uses_configured_leg_mount_offsets() {
+        let mut config = load_test_robot_config();
+        let calibration = SemanticCalibrationState::default();
+        let base_pose =
+            named_pose_with_calibration(&config, &calibration, SemanticPoseKind::StandReference);
+        let leg_index = config
+            .legs
+            .iter()
+            .position(|leg| leg.name == "front_left")
+            .expect("front_left leg should exist");
+        config.legs[leg_index].mount_position_cm = Some([14.0, 9.0, 0.0]);
+        let leg = config.legs[leg_index].clone();
+        let semantic = semantic_pose_from_base_pose(
+            &config,
+            &calibration,
+            &base_pose,
+            &leg,
+            SemanticPoseKind::StandReference,
+        );
+
+        let geometry = tilted_stand_leg_geometry(&config, &calibration, &base_pose, &leg);
+        let expected =
+            leg.body_frame_pose(semantic.coxa_deg, semantic.femur_deg, semantic.tibia_deg);
+
+        assert!((geometry.foot_forward_cm - expected.tibia_end.x).abs() < 1e-4);
+        assert!((geometry.foot_left_cm - expected.tibia_end.y).abs() < 1e-4);
     }
 
     #[test]

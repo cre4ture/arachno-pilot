@@ -1,5 +1,10 @@
 set shell := ["bash", "-cu"]
 
+jetson_target := "aarch64-unknown-linux-musl"
+jetson_remote_bin_dir := "~/bin"
+jetson_remote_config_dir := "~/arachno-brain-config"
+jetson_remote_log_dir := "~/log"
+
 default:
     @just --list
 
@@ -73,18 +78,22 @@ jetson-brain host="uli@192.168.178.131" listen="0.0.0.0:4000":
     #!/usr/bin/env bash
     set -euo pipefail
 
-    target='aarch64-unknown-linux-musl'
+    target='{{ jetson_target }}'
     binary="target/${target}/release/arachno-brain"
-    remote_bin='~/bin/arachno-brain'
-    remote_config_dir='~/arachno-brain-config'
-    remote_log='~/log/arachno-brain.log'
-    host='{{host}}'
-    listen='{{listen}}'
+    remote_bin='{{ jetson_remote_bin_dir }}/arachno-brain'
+    remote_config_dir='{{ jetson_remote_config_dir }}'
+    remote_log='{{ jetson_remote_log_dir }}/arachno-brain.log'
+    host='{{ host }}'
+    listen='{{ listen }}'
 
     CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=rust-lld \
       cargo build -p arachno-brain --release --target "${target}"
 
-    ssh "${host}" "mkdir -p ~/bin ~/log ~/arachno-brain-config && pkill -x arachno-brain || true"
+    ssh "${host}" "
+      set -euo pipefail
+      mkdir -p {{ jetson_remote_bin_dir }} {{ jetson_remote_log_dir }} ${remote_config_dir}
+      pkill -x arachno-brain || true
+    "
 
     scp "${binary}" "${host}:${remote_bin}"
     scp \
@@ -101,6 +110,40 @@ jetson-brain host="uli@192.168.178.131" listen="0.0.0.0:4000":
       sleep 2
       pgrep -af arachno-brain
       tail -n 20 ${remote_log}
+    "
+
+jetson-apply-eeprom host="uli@192.168.178.131":
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    target='{{ jetson_target }}'
+    binary="target/${target}/release/arachno-calibrate"
+    remote_bin='{{ jetson_remote_bin_dir }}/arachno-calibrate'
+    remote_config_dir='{{ jetson_remote_config_dir }}'
+    host='{{ host }}'
+
+    CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=rust-lld \
+      cargo build -p arachno-calibrate --release --target "${target}"
+
+    ssh "${host}" "
+      set -euo pipefail
+      mkdir -p {{ jetson_remote_bin_dir }} {{ jetson_remote_log_dir }} ${remote_config_dir}
+      pkill -x arachno-brain || true
+      pkill -x arachno-calibrate || true
+    "
+
+    scp "${binary}" "${host}:${remote_bin}"
+    scp \
+      config/robot/jetson-onboard.toml \
+      config/robot/servo-config.toml \
+      config/robot/servo-poses.toml \
+      config/robot/servo-semantic-calibration.toml \
+      config/robot/arm-servo-config.toml \
+      "${host}:${remote_config_dir}/"
+
+    ssh "${host}" "
+      set -euo pipefail
+      ${remote_bin} --config ${remote_config_dir}/jetson-onboard.toml --mode apply-eeprom
     "
 
 codex-quota:

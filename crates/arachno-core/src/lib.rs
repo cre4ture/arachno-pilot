@@ -384,6 +384,8 @@ pub struct LegConfig {
     pub femur_length_cm: Option<f32>,
     #[serde(default, alias = "tibia_length")]
     pub tibia_length_cm: Option<f32>,
+    #[serde(default, alias = "body_mount_position_cm")]
+    pub mount_position_cm: Option<[f32; 3]>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -911,9 +913,15 @@ impl LegConfig {
         }
     }
 
-    /// Approximate coxa mount point used for body-frame sketches until a full chassis model
-    /// becomes configurable.
-    pub fn body_anchor_point_cm(&self) -> LegPoint2 {
+    /// Coxa mount point in the ROS body frame (+x forward, +y left, +z up).
+    ///
+    /// Falls back to the previous nominal hexapod layout when the config does not yet provide a
+    /// measured mount position.
+    pub fn body_mount_position_cm(&self) -> LegPoint3 {
+        if let Some([x, y, z]) = self.mount_position_cm {
+            return LegPoint3 { x, y, z };
+        }
+
         let longitudinal_slot = if self.name.starts_with("front_") {
             1.0
         } else if self.name.starts_with("rear_") {
@@ -922,9 +930,18 @@ impl LegConfig {
             0.0
         };
         let lateral_sign = if self.is_left_side() { 1.0 } else { -1.0 };
-        LegPoint2 {
+        LegPoint3 {
             x: self.coxa_length_cm() * 2.25 * longitudinal_slot,
             y: self.coxa_length_cm() * 1.85 * lateral_sign,
+            z: 0.0,
+        }
+    }
+
+    pub fn body_anchor_point_cm(&self) -> LegPoint2 {
+        let mount = self.body_mount_position_cm();
+        LegPoint2 {
+            x: mount.x,
+            y: mount.y,
         }
     }
 
@@ -966,21 +983,17 @@ impl LegConfig {
         semantic_femur_deg: f32,
         semantic_tibia_deg: f32,
     ) -> LegBodyFramePose {
-        let anchor_xy = self.body_anchor_point_cm();
+        let mount = self.body_mount_position_cm();
         let top_view =
             self.top_view_pose(semantic_coxa_deg, semantic_femur_deg, semantic_tibia_deg);
         let side_view = self.side_view_pose(semantic_femur_deg, semantic_tibia_deg);
         let translate = |point: LegPoint2, z: f32| LegPoint3 {
-            x: anchor_xy.x + point.x,
-            y: anchor_xy.y + point.y,
-            z,
+            x: mount.x + point.x,
+            y: mount.y + point.y,
+            z: mount.z + z,
         };
         LegBodyFramePose {
-            anchor: LegPoint3 {
-                x: anchor_xy.x,
-                y: anchor_xy.y,
-                z: 0.0,
-            },
+            anchor: mount,
             coxa_end: translate(top_view.coxa_end, 0.0),
             femur_end: translate(top_view.femur_end, side_view.femur_end.y),
             tibia_end: translate(top_view.tibia_end, side_view.tibia_end.y),
@@ -1621,6 +1634,7 @@ mod tests {
             coxa_length_cm: None,
             femur_length_cm: None,
             tibia_length_cm: None,
+            mount_position_cm: None,
         }
     }
 
@@ -1729,6 +1743,24 @@ mod tests {
             pose.tibia_end.z < pose.anchor.z,
             "foot should sit below the body plane"
         );
+    }
+
+    #[test]
+    fn body_frame_pose_uses_configured_mount_position() {
+        let mut leg = make_leg("middle_right");
+        leg.coxa_zero_heading_deg = Some(0.0);
+        leg.coxa_length_cm = Some(3.0);
+        leg.femur_length_cm = Some(8.5);
+        leg.tibia_length_cm = Some(14.5);
+        leg.mount_position_cm = Some([12.0, -8.0, 1.5]);
+
+        let pose = leg.body_frame_pose(0.0, -45.0, 0.0);
+
+        assert!((pose.anchor.x - 12.0).abs() < 1e-4);
+        assert!((pose.anchor.y + 8.0).abs() < 1e-4);
+        assert!((pose.anchor.z - 1.5).abs() < 1e-4);
+        assert!(pose.coxa_end.y < pose.anchor.y);
+        assert!(pose.tibia_end.z < pose.anchor.z);
     }
 
     #[test]
@@ -1884,6 +1916,7 @@ tibia_lay_down_ticks = 2040
 coxa_forward_sign = 1
 femur_lift_sign = -1
 tibia_lift_sign = 1
+mount_position_cm = [7.5, 6.0, 0.5]
 "#,
         )
         .expect("failed to write shared servo config");
@@ -1966,6 +1999,10 @@ tibia_deg = 0.0
         assert_eq!(config.locomotion.stand_up.duration_seconds, 12.0);
         assert_eq!(config.legs.len(), 1);
         assert_eq!(config.legs[0].name, "front_left");
+        assert_eq!(config.legs[0].mount_position_cm, Some([7.5, 6.0, 0.5]));
+        assert_eq!(config.legs[0].body_mount_position_cm().x, 7.5);
+        assert_eq!(config.legs[0].body_mount_position_cm().y, 6.0);
+        assert_eq!(config.legs[0].body_mount_position_cm().z, 0.5);
         let stand_reference_pose = config
             .pose_for_leg(SemanticPoseKind::StandReference, "front_left")
             .expect("pose store should provide a stand-reference pose");
@@ -2108,6 +2145,7 @@ tibia_deg = 0.0
             femur_zero_reference_ticks: None,
             tibia_zero_reference_ticks: None,
             coxa_zero_heading_deg: None,
+            mount_position_cm: None,
         };
         let ws = LegWorkspace {
             min_reach_cm: 5.0,
@@ -2147,6 +2185,7 @@ tibia_deg = 0.0
             femur_zero_reference_ticks: None,
             tibia_zero_reference_ticks: None,
             coxa_zero_heading_deg: None,
+            mount_position_cm: None,
         };
         // FK of stand reference to get foot position.
         let sv = leg.side_view_pose(54.8, -123.0);

@@ -125,6 +125,7 @@ cargo run -p arachno-brain -- --config config/robot/default.toml --listen 127.0.
 cargo run -p arachno-calibrate -- --config config/robot/default.toml
 cargo run -p arachno-calibrate -- --config config/robot/host-usb.toml --mode apply-eeprom
 cargo run -p arachno-calibrate -- --config config/robot/host-usb.toml --mode verify-eeprom
+just jetson-apply-eeprom
 cargo run -p arachno-calibrate -- --config config/robot/host-usb.toml --mode sense-ranges --output config/robot/servo-ranges.toml
 cargo run -p arachno-calibrate -- --config config/robot/host-usb.toml --mode sense-ranges --output config/robot/servo-ranges.toml --trace-output /tmp/servo-ranges.trace.log
 cargo run -p arachno-calibrate -- --config config/robot/host-usb.toml --mode check-poses --ranges config/robot/servo-ranges.toml

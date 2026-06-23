@@ -1025,6 +1025,65 @@ pub const DASHBOARD_HTML: &str = r##"<!doctype html>
       line-height: 1.45;
     }
 
+    .robot-scene-feedback {
+      margin-top: 10px;
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    .robot-scene-feedback-chip {
+      padding: 9px 10px;
+      border-radius: 12px;
+      border: 1px solid rgba(255,255,255,0.08);
+      background: rgba(10, 14, 20, 0.58);
+      min-width: 0;
+    }
+
+    .robot-scene-feedback-chip.high {
+      border-color: rgba(255, 111, 97, 0.30);
+      background: rgba(61, 19, 20, 0.46);
+    }
+
+    .robot-scene-feedback-chip.medium {
+      border-color: rgba(255, 194, 107, 0.26);
+      background: rgba(54, 35, 10, 0.42);
+    }
+
+    .robot-scene-feedback-chip.low {
+      border-color: rgba(101, 214, 164, 0.22);
+      background: rgba(14, 42, 31, 0.40);
+    }
+
+    .robot-scene-feedback-top {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      align-items: baseline;
+      margin-bottom: 4px;
+      color: rgba(238, 243, 247, 0.88);
+      font-size: 0.78rem;
+    }
+
+    .robot-scene-feedback-name {
+      font-weight: 600;
+      letter-spacing: 0.03em;
+    }
+
+    .robot-scene-feedback-load {
+      color: rgba(255,255,255,0.72);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .robot-scene-feedback-meta {
+      color: rgba(148, 164, 182, 0.96);
+      font-size: 0.73rem;
+      line-height: 1.4;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
     .rail-visual-card {
       display: grid;
       gap: 12px;
@@ -1772,6 +1831,9 @@ pub const DASHBOARD_HTML: &str = r##"<!doctype html>
                   </div>
                   <div class="robot-scene-note" id="robot-scene-note">
                     The view uses a WebGL renderer in the ROS body frame: +x forward, +y left, +z up. The chassis shell is still a nominal layout guide until a full body model is configured.
+                  </div>
+                  <div id="robot-scene-feedback" class="robot-scene-feedback">
+                    <div class="stat-note">Waiting for live servo load feedback.</div>
                   </div>
                 </div>
               </div>
@@ -3294,10 +3356,139 @@ pub const DASHBOARD_HTML: &str = r##"<!doctype html>
       canvas.hidden = true;
     }
 
-    function robotSceneLegColor(onlineJointCount) {
-      if (onlineJointCount === 3) return { segment: "#ff9254", joint: "#ffd6bd", foot: "#ff9254" };
-      if (onlineJointCount > 0) return { segment: "#9fd2ff", joint: "#d7edff", foot: "#9fd2ff" };
-      return { segment: "#5a6775", joint: "#758292", foot: "#5a6775" };
+    function robotSceneMixHex(fromHex, toHex, ratio) {
+      const t = clamp(Number(ratio) || 0, 0, 1);
+      const parse = (hex) => {
+        const normalized = hex.replace("#", "");
+        return [
+          parseInt(normalized.slice(0, 2), 16),
+          parseInt(normalized.slice(2, 4), 16),
+          parseInt(normalized.slice(4, 6), 16),
+        ];
+      };
+      const [r1, g1, b1] = parse(fromHex);
+      const [r2, g2, b2] = parse(toHex);
+      const toHexByte = (value) => Math.round(value).toString(16).padStart(2, "0");
+      return `#${toHexByte(r1 + (r2 - r1) * t)}${toHexByte(g1 + (g2 - g1) * t)}${toHexByte(b1 + (b2 - b1) * t)}`;
+    }
+
+    function robotSceneLegTelemetryByKey(servos) {
+      const grouped = groupServosByLeg(servos ?? []);
+      return Object.fromEntries(LEG_ORDER.map((legKey) => {
+        const legServos = grouped[legKey] ?? [];
+        const onlineServos = legServos.filter((servo) => servo.online);
+        const loads = onlineServos
+          .map((servo) => Math.abs(Number(servo.telemetry?.present_load_pct)))
+          .filter((value) => Number.isFinite(value));
+        const currents = onlineServos
+          .map((servo) => Number(servo.telemetry?.present_current_ma))
+          .filter((value) => Number.isFinite(value));
+        const faultCount = onlineServos.reduce(
+          (count, servo) => count + (servo.telemetry?.faults?.length ?? 0),
+          0,
+        );
+        const avgLoadPct = loads.length
+          ? loads.reduce((sum, value) => sum + value, 0) / loads.length
+          : 0;
+        const maxLoadPct = loads.length ? Math.max(...loads) : 0;
+        const avgCurrentMa = currents.length
+          ? currents.reduce((sum, value) => sum + value, 0) / currents.length
+          : 0;
+        const maxCurrentMa = currents.length ? Math.max(...currents) : 0;
+        return [legKey, {
+          onlineJointCount: onlineServos.length,
+          avgLoadPct,
+          maxLoadPct,
+          avgCurrentMa,
+          maxCurrentMa,
+          faultCount,
+        }];
+      }));
+    }
+
+    function robotSceneLegColor(feedback) {
+      if (!feedback || feedback.onlineJointCount === 0) {
+        return {
+          segment: "#5a6775",
+          joint: "#758292",
+          foot: "#5a6775",
+          emissive: "#3c4651",
+          emphasis: 0.0,
+        };
+      }
+      if (feedback.faultCount > 0) {
+        return {
+          segment: "#ff6f61",
+          joint: "#ffd0cb",
+          foot: "#ff6f61",
+          emissive: "#ff897c",
+          emphasis: 1.0,
+        };
+      }
+
+      const partialPenalty = feedback.onlineJointCount < 3 ? 0.28 : 0.0;
+      const loadRatio = clamp(
+        Math.max(feedback.avgLoadPct, feedback.maxLoadPct * 0.82) / 100 - partialPenalty,
+        0,
+        1,
+      );
+      let segment = "#77e4b5";
+      let foot = "#77e4b5";
+      if (loadRatio > 0.55) {
+        const t = (loadRatio - 0.55) / 0.45;
+        segment = robotSceneMixHex("#ffb15b", "#ff6f61", t);
+        foot = robotSceneMixHex("#ffc26b", "#ff6f61", t);
+      } else if (loadRatio > 0.18) {
+        const t = (loadRatio - 0.18) / 0.37;
+        segment = robotSceneMixHex("#77e4b5", "#ffb15b", t);
+        foot = robotSceneMixHex("#95efc4", "#ffc26b", t);
+      }
+
+      if (feedback.onlineJointCount < 3) {
+        segment = robotSceneMixHex(segment, "#9fd2ff", 0.48);
+        foot = robotSceneMixHex(foot, "#9fd2ff", 0.48);
+      }
+
+      return {
+        segment,
+        joint: robotSceneMixHex("#eef3f7", segment, 0.32),
+        foot,
+        emissive: robotSceneMixHex("#6be6d2", foot, 0.58),
+        emphasis: loadRatio,
+      };
+    }
+
+    function robotSceneFeedbackClass(feedback) {
+      if (!feedback || feedback.onlineJointCount === 0) return "";
+      if (feedback.faultCount > 0 || feedback.maxLoadPct >= 55) return "high";
+      if (feedback.maxLoadPct >= 22) return "medium";
+      return "low";
+    }
+
+    function renderRobotSceneFeedback(servos) {
+      const feedbackByKey = robotSceneLegTelemetryByKey(servos);
+      return LEG_ORDER.map((legKey) => {
+        const feedback = feedbackByKey[legKey];
+        const meta = LEG_META[legKey];
+        const loadText = feedback?.onlineJointCount
+          ? `${fmt(feedback.maxLoadPct, 0)}% load`
+          : "offline";
+        const currentText = feedback?.onlineJointCount
+          ? `${Math.round(feedback.maxCurrentMa || 0)} mA`
+          : "no current";
+        const healthText = feedback?.faultCount
+          ? `${feedback.faultCount} fault${feedback.faultCount === 1 ? "" : "s"}`
+          : `${feedback?.onlineJointCount ?? 0}/3 joints`;
+        return `
+          <div class="robot-scene-feedback-chip ${robotSceneFeedbackClass(feedback)}">
+            <div class="robot-scene-feedback-top">
+              <span class="robot-scene-feedback-name">${meta.label}</span>
+              <span class="robot-scene-feedback-load">${loadText}</span>
+            </div>
+            <div class="robot-scene-feedback-meta">${currentText} · ${healthText}</div>
+          </div>
+        `;
+      }).join("");
     }
 
     function robotSceneVector(point) {
@@ -3356,7 +3547,7 @@ pub const DASHBOARD_HTML: &str = r##"<!doctype html>
       resetRobotSceneCamera(runtime);
     }
 
-    function buildRobotSceneSegment(start, end, radius, color) {
+    function buildRobotSceneSegment(start, end, radius, color, emissive = color, emissiveIntensity = 0.0) {
       const direction = end.clone().sub(start);
       const length = direction.length();
       if (length < 0.001) {
@@ -3366,6 +3557,8 @@ pub const DASHBOARD_HTML: &str = r##"<!doctype html>
         new THREE_NS.CylinderGeometry(radius, radius, length, 12, 1, false),
         new THREE_NS.MeshStandardMaterial({
           color,
+          emissive,
+          emissiveIntensity,
           roughness: 0.42,
           metalness: 0.08,
         }),
@@ -3375,10 +3568,11 @@ pub const DASHBOARD_HTML: &str = r##"<!doctype html>
       return mesh;
     }
 
-    function buildRobotSceneRoot(bodyScene, imu) {
+    function buildRobotSceneRoot(bodyScene, imu, servos) {
       const root = new THREE_NS.Group();
       const pitchGroup = new THREE_NS.Group();
       const rollGroup = new THREE_NS.Group();
+      const feedbackByKey = robotSceneLegTelemetryByKey(servos);
       root.add(pitchGroup);
       pitchGroup.add(rollGroup);
       // Keep the scene in direct ROS coordinates: +x forward, +y left, +z up.
@@ -3425,20 +3619,24 @@ pub const DASHBOARD_HTML: &str = r##"<!doctype html>
 
       for (const leg of bodyScene.legs ?? []) {
         if (!leg.pose) continue;
-        const color = robotSceneLegColor(leg.online_joint_count);
+        const feedback = feedbackByKey[leg.leg_key] ?? { onlineJointCount: leg.online_joint_count, avgLoadPct: 0, maxLoadPct: 0, avgCurrentMa: 0, maxCurrentMa: 0, faultCount: 0 };
+        const color = robotSceneLegColor(feedback);
         const points = [
           robotSceneVector(leg.pose.anchor),
           robotSceneVector(leg.pose.coxa_end),
           robotSceneVector(leg.pose.femur_end),
           robotSceneVector(leg.pose.tibia_end),
         ];
-        const segmentRadii = [0.24, 0.22, 0.20];
+        const segmentScale = 1.0 + color.emphasis * 0.38;
+        const segmentRadii = [0.24, 0.22, 0.20].map((radius) => radius * segmentScale);
         for (let index = 0; index < points.length - 1; index += 1) {
           const segment = buildRobotSceneSegment(
             points[index],
             points[index + 1],
             segmentRadii[index] ?? 0.20,
             color.segment,
+            color.emissive,
+            0.05 + color.emphasis * 0.22,
           );
           if (segment) {
             rollGroup.add(segment);
@@ -3449,6 +3647,8 @@ pub const DASHBOARD_HTML: &str = r##"<!doctype html>
             new THREE_NS.SphereGeometry(0.30, 14, 12),
             new THREE_NS.MeshStandardMaterial({
               color: color.joint,
+              emissive: color.emissive,
+              emissiveIntensity: 0.02 + color.emphasis * 0.16,
               roughness: 0.24,
               metalness: 0.04,
             }),
@@ -3457,11 +3657,11 @@ pub const DASHBOARD_HTML: &str = r##"<!doctype html>
           rollGroup.add(joint);
         }
         const foot = new THREE_NS.Mesh(
-          new THREE_NS.SphereGeometry(0.36, 16, 14),
+          new THREE_NS.SphereGeometry(0.36 + color.emphasis * 0.12, 16, 14),
           new THREE_NS.MeshStandardMaterial({
             color: color.foot,
-            emissive: color.foot,
-            emissiveIntensity: 0.14,
+            emissive: color.emissive,
+            emissiveIntensity: 0.10 + color.emphasis * 0.34,
             roughness: 0.18,
             metalness: 0.02,
           }),
@@ -3591,21 +3791,30 @@ pub const DASHBOARD_HTML: &str = r##"<!doctype html>
       return runtime;
     }
 
-    function updateRobotScene(bodyScene, imu) {
+    function updateRobotScene(bodyScene, imu, servos = []) {
       const liveLegs = bodyScene?.legs?.filter((leg) => leg.online_joint_count === 3).length ?? 0;
       const totalLegs = bodyScene?.legs?.length ?? 0;
+      const feedbackByKey = robotSceneLegTelemetryByKey(servos);
+      const strongestLeg = LEG_ORDER
+        .map((legKey) => ({ legKey, feedback: feedbackByKey[legKey] }))
+        .filter((entry) => entry.feedback?.onlineJointCount)
+        .sort((left, right) => (right.feedback.maxLoadPct ?? 0) - (left.feedback.maxLoadPct ?? 0))[0];
       document.getElementById("robot-scene-summary").textContent = bodyScene
-        ? `${liveLegs}/${totalLegs} legs live`
+        ? strongestLeg
+          ? `${liveLegs}/${totalLegs} live · max load ${LEG_META[strongestLeg.legKey].label} ${fmt(strongestLeg.feedback.maxLoadPct, 0)}%`
+          : `${liveLegs}/${totalLegs} legs live`
         : "ROS body frame";
       if (robotSceneModuleError) {
         robotScenePlaceholder("3D renderer unavailable. The browser could not load three.js or OrbitControls.");
         document.getElementById("robot-scene-note").textContent =
           "The dashboard stayed online, but the WebGL body view could not load its three.js modules. If you want this fully offline, I can vendor the renderer assets next.";
+        document.getElementById("robot-scene-feedback").innerHTML = '<div class="stat-note">3D feedback overlay unavailable while the renderer modules are missing.</div>';
         return;
       }
 
       if (!bodyScene?.legs?.length) {
         robotScenePlaceholder("Waiting for live body geometry.");
+        document.getElementById("robot-scene-feedback").innerHTML = '<div class="stat-note">Waiting for live servo load feedback.</div>';
         return;
       }
 
@@ -3626,7 +3835,7 @@ pub const DASHBOARD_HTML: &str = r##"<!doctype html>
         disposeRobotSceneObject(runtime.root);
       }
 
-      const root = buildRobotSceneRoot(bodyScene, imu);
+      const root = buildRobotSceneRoot(bodyScene, imu, servos);
       runtime.root = root;
       runtime.scene.add(root);
       const bounds = new THREE_NS.Box3().setFromObject(root);
@@ -3638,8 +3847,9 @@ pub const DASHBOARD_HTML: &str = r##"<!doctype html>
       }
 
       document.getElementById("robot-scene-note").textContent = bodyScene.imu_mount_configured
-        ? "The WebGL body view follows the ROS body frame and uses the configured IMU mount offset. Drag the view to orbit around the robot while you compare pitch and roll."
-        : "The WebGL body view follows the ROS body frame. Drag the view to orbit around the robot; the IMU marker stays at the body origin until an IMU mount offset is configured.";
+        ? "The WebGL body view follows the ROS body frame and uses the configured IMU mount offset. Leg tint and glow now reflect live servo load and resistance."
+        : "The WebGL body view follows the ROS body frame. Leg tint and glow now reflect live servo load and resistance; the IMU marker stays at the body origin until an IMU mount offset is configured.";
+      document.getElementById("robot-scene-feedback").innerHTML = renderRobotSceneFeedback(servos);
     }
 
     function renderServoNode(servo, labelOverride = null) {
@@ -3966,7 +4176,11 @@ pub const DASHBOARD_HTML: &str = r##"<!doctype html>
       bodyPane.hidden = !showingBody;
 
       if (showingBody && window.__latestState) {
-        updateRobotScene(window.__latestState.body_scene, window.__latestState.imu);
+        updateRobotScene(
+          window.__latestState.body_scene,
+          window.__latestState.imu,
+          window.__latestState.servos ?? [],
+        );
       }
     }
 
@@ -4015,7 +4229,7 @@ pub const DASHBOARD_HTML: &str = r##"<!doctype html>
         document.getElementById("updated-at").textContent = state.updated_at_ms ? new Date(state.updated_at_ms).toLocaleTimeString() : "never";
         updateMotionButtons(state.motion_mode);
         updateImuPanel(state.imu);
-        updateRobotScene(state.body_scene, state.imu);
+        updateRobotScene(state.body_scene, state.imu, state.servos ?? []);
         updateManualPanel(state.manual);
         updateArmPanel(state.arm);
         updateTiltedStandPanel(state.tilted_stand);
@@ -4094,6 +4308,8 @@ mod tests {
             "updateRailImuPanel",
             "bindRailVisualTabs",
             "setRailVisualTab",
+            "robotSceneLegTelemetryByKey",
+            "renderRobotSceneFeedback",
             "ensureRobotSceneRuntime",
             "buildRobotSceneRoot",
             "updateRobotScene",
@@ -4132,6 +4348,22 @@ mod tests {
             "id=\"rail-visual-pane-legs\" class=\"rail-tab-pane\" role=\"tabpanel\" aria-labelledby=\"rail-visual-tab-legs\" hidden",
             "min-height: 22.4rem;",
             "height: 22.4rem;",
+        ] {
+            assert!(
+                DASHBOARD_HTML.contains(needle),
+                "dashboard html should contain {needle}"
+            );
+        }
+    }
+
+    #[test]
+    fn dashboard_html_robot_scene_integrates_servo_load_feedback() {
+        for needle in [
+            "id=\"robot-scene-feedback\"",
+            "present_load_pct",
+            "present_current_ma",
+            "max load",
+            "Leg tint and glow now reflect live servo load and resistance.",
         ] {
             assert!(
                 DASHBOARD_HTML.contains(needle),
