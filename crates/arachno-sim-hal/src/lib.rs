@@ -5,8 +5,12 @@ use arachno_core::{LegConfig, RobotConfig, SemanticPoseKind};
 use arachno_hal::{HalError, HalResult, ImuSource, ServoBus};
 use arachno_msg::{ImuTelemetry, JointCommand, ServoTelemetry};
 
-// ── Body state estimated from FK after every command step ────────────────────
+// ── Public body state ─────────────────────────────────────────────────────────
 
+/// Body state shared between [`SimServoBus`] and [`SimImu`].
+///
+/// Updated every `sync_write_positions` call via a critically-damped second-order
+/// body model driven by FK-computed equilibrium targets.
 #[derive(Debug, Clone)]
 pub struct SimBodyState {
     /// Estimated height of the body frame origin above the ground plane (cm).
@@ -15,6 +19,12 @@ pub struct SimBodyState {
     pub pitch_rad: f32,
     /// Body roll: positive = right side down (radians).
     pub roll_rad: f32,
+    /// Vertical body acceleration (m/s²). Non-zero during settling or pose changes.
+    pub vertical_accel_m_s2: f32,
+    /// Body pitch rate (rad/s). Non-zero during transitions.
+    pub pitch_rate_rad_s: f32,
+    /// Body roll rate (rad/s). Non-zero during transitions.
+    pub roll_rate_rad_s: f32,
 }
 
 impl Default for SimBodyState {
@@ -23,13 +33,16 @@ impl Default for SimBodyState {
             body_height_cm: 6.5,
             pitch_rad: 0.0,
             roll_rad: 0.0,
+            vertical_accel_m_s2: 0.0,
+            pitch_rate_rad_s: 0.0,
+            roll_rate_rad_s: 0.0,
         }
     }
 }
 
 // ── Simulated IMU ─────────────────────────────────────────────────────────────
 
-/// IMU that synthesizes gravity-based readings from a shared [`SimBodyState`].
+/// IMU that synthesizes readings from a shared [`SimBodyState`].
 ///
 /// Construct via [`SimServoBus::build_pair`] so the bus and IMU share the same
 /// body-state arc and stay in sync after every command step.
@@ -61,17 +74,24 @@ impl ImuSource for SimImu {
         let (sp, cp) = (state.pitch_rad.sin(), state.pitch_rad.cos());
         let (sr, cr) = (state.roll_rad.sin(), state.roll_rad.cos());
 
-        // Accelerometer specific force = gravity rotated into body frame.
-        // World gravity vector: [0, 0, 9.81] (body frame +z up, static case).
-        // Apply pitch (rotation about body Y) then roll (rotation about body X):
-        //   ax = G·sin(pitch)
+        // Accelerometer specific force = gravity rotated into body frame
+        // plus the body's vertical acceleration (non-zero during settling).
+        //   ax =  G·sin(pitch)
         //   ay = −G·sin(roll)·cos(pitch)
-        //   az =  G·cos(pitch)·cos(roll)
+        //   az =  G·cos(pitch)·cos(roll) + vertical_accel
         const G: f32 = 9.806_65;
+        let az = G * cp * cr + state.vertical_accel_m_s2;
+
+        // Gyroscope: angular velocity of body (body-frame, small-angle approximation).
+        // Positive pitch rate (nose up) → +gyro_y. Positive roll rate (right down) → +gyro_x.
         Ok(Some(ImuTelemetry {
             timestamp_ms: self.sample_count * 1000 / u64::from(self.sample_hz.max(1)),
-            accel_mps2: [G * sp, -G * sr * cp, G * cp * cr],
-            gyro_rad_s: [0.0, 0.0, 0.0],
+            accel_mps2: [G * sp, -G * sr * cp, az],
+            gyro_rad_s: [
+                state.roll_rate_rad_s,
+                state.pitch_rate_rad_s,
+                0.0,
+            ],
             temperature_c: Some(35.0),
             status_bits: Some(0x0001),
             faults: Vec::new(),
@@ -80,6 +100,84 @@ impl ImuSource for SimImu {
 
     fn description(&self) -> &str {
         "sim-imu"
+    }
+}
+
+// ── Physics parameters (pre-computed from RobotConfig) ────────────────────────
+
+#[derive(Debug, Clone)]
+struct BodyPhysics {
+    dt_s: f32,
+    /// Second-order natural frequency for the body dynamics filter (rad/s).
+    /// Chosen so that ω_n · dt ≪ √2 to keep explicit Euler stable.
+    omega_n: f32,
+}
+
+impl BodyPhysics {
+    fn from_config(config: &RobotConfig) -> Self {
+        let dt_s = 1.0 / config.locomotion.command_hz.max(1) as f32;
+        // Natural frequency: 5 rad/s (~0.8 Hz) gives realistic settling in ~0.5 s.
+        // Stability check: ω_n · dt = 5 * 0.05 = 0.25 ≪ √2. ✓
+        Self {
+            dt_s,
+            omega_n: 5.0,
+        }
+    }
+}
+
+// ── Private body dynamics integrator ─────────────────────────────────────────
+
+/// Critically-damped second-order body integrator (internal to SimServoBus).
+#[derive(Debug, Clone)]
+struct BodyDynamics {
+    height_m: f32,
+    velocity_m_s: f32,
+    pitch_rad: f32,
+    dpitch_rad_s: f32,
+    roll_rad: f32,
+    droll_rad_s: f32,
+}
+
+impl BodyDynamics {
+    fn from_initial_height_m(height_m: f32) -> Self {
+        Self {
+            height_m,
+            velocity_m_s: 0.0,
+            pitch_rad: 0.0,
+            dpitch_rad_s: 0.0,
+            roll_rad: 0.0,
+            droll_rad_s: 0.0,
+        }
+    }
+
+    /// Step the critically-damped 2nd-order filter toward `target`.
+    /// Returns the instantaneous acceleration (for IMU synthesis).
+    fn step_vertical(&mut self, target_m: f32, p: &BodyPhysics) -> f32 {
+        let wn = p.omega_n;
+        let kd = 2.0 * wn; // critical damping
+        let accel = wn * wn * (target_m - self.height_m) - kd * self.velocity_m_s;
+        self.velocity_m_s += accel * p.dt_s;
+        self.height_m += self.velocity_m_s * p.dt_s;
+        self.height_m = self.height_m.max(0.005); // cannot go underground
+        accel
+    }
+
+    fn step_pitch(&mut self, target_rad: f32, p: &BodyPhysics) {
+        let wn = p.omega_n;
+        let kd = 2.0 * wn;
+        let alpha = wn * wn * (target_rad - self.pitch_rad) - kd * self.dpitch_rad_s;
+        self.dpitch_rad_s += alpha * p.dt_s;
+        self.pitch_rad += self.dpitch_rad_s * p.dt_s;
+        self.pitch_rad = self.pitch_rad.clamp(-0.52, 0.52); // ±30°
+    }
+
+    fn step_roll(&mut self, target_rad: f32, p: &BodyPhysics) {
+        let wn = p.omega_n;
+        let kd = 2.0 * wn;
+        let alpha = wn * wn * (target_rad - self.roll_rad) - kd * self.droll_rad_s;
+        self.droll_rad_s += alpha * p.dt_s;
+        self.roll_rad += self.droll_rad_s * p.dt_s;
+        self.roll_rad = self.roll_rad.clamp(-0.52, 0.52);
     }
 }
 
@@ -116,6 +214,8 @@ pub struct SimServoBus {
     present_voltage_v: f32,
     present_temperature_c: u8,
     legs: Vec<LegConfig>,
+    physics: BodyPhysics,
+    dynamics: BodyDynamics,
     body_state: Arc<Mutex<SimBodyState>>,
 }
 
@@ -127,8 +227,10 @@ impl SimServoBus {
     }
 
     /// Create a bus and a paired [`SimImu`] that share the same body-state arc.
-    /// After every [`ServoBus::sync_write_positions`] call the body state is
-    /// updated from FK, and the IMU will synthesize the matching gravity vector.
+    ///
+    /// After every [`ServoBus::sync_write_positions`] the body state is updated
+    /// via a critically-damped second-order model. The IMU will synthesize
+    /// gravity, dynamic acceleration, and angular rate readings from that state.
     pub fn build_pair(config: &RobotConfig, seed_pose: SemanticPoseKind) -> (Self, SimImu) {
         let body_state = Arc::new(Mutex::new(SimBodyState::default()));
         let bus = Self::new_with_body_state(config, seed_pose, Arc::clone(&body_state));
@@ -165,6 +267,10 @@ impl SimServoBus {
         let max_step_ticks =
             (config.simulation.max_servo_speed_deg_s * ticks_per_degree / 20.0).round() as u16;
 
+        let physics = BodyPhysics::from_config(config);
+        let initial_height_m = fk_equilibrium_height_m(&servos, &config.legs);
+        let dynamics = BodyDynamics::from_initial_height_m(initial_height_m);
+
         Self {
             ids,
             servos,
@@ -174,6 +280,8 @@ impl SimServoBus {
             present_voltage_v: config.safety.min_bus_voltage_v.max(6.4),
             present_temperature_c: 32,
             legs: config.legs.clone(),
+            physics,
+            dynamics,
             body_state,
         }
     }
@@ -208,17 +316,19 @@ impl SimServoBus {
         step
     }
 
-    /// Recompute body height, pitch, and roll from current servo positions via FK.
+    /// Step the body dynamics toward the FK-derived equilibrium and publish
+    /// the result into the shared [`SimBodyState`].
     ///
-    /// The ground plane is defined implicitly: the lowest (most negative body-frame z)
-    /// feet set the effective ground, and the body height is their average support distance.
-    /// Tilt is estimated from the per-group support-height deltas (small-angle approximation).
-    fn update_body_state(&self) {
-        let mut all_z: Vec<f32> = Vec::with_capacity(self.legs.len());
-        let mut front_z: Vec<f32> = Vec::new();
-        let mut rear_z: Vec<f32> = Vec::new();
-        let mut left_z: Vec<f32> = Vec::new();
-        let mut right_z: Vec<f32> = Vec::new();
+    /// Uses a critically-damped second-order filter so pose transitions produce
+    /// realistic settling transients in body height, tilt, and the synthesized
+    /// IMU readings.
+    fn update_body_state(&mut self) {
+        // ── FK: classify feet by group ────────────────────────────────────
+        let mut all_z_m: Vec<f32> = Vec::with_capacity(self.legs.len());
+        let mut front_z_m: Vec<f32> = Vec::new();
+        let mut rear_z_m: Vec<f32> = Vec::new();
+        let mut left_z_m: Vec<f32> = Vec::new();
+        let mut right_z_m: Vec<f32> = Vec::new();
 
         for leg in &self.legs {
             let Some(c) = self.servos.get(&leg.coxa_servo_id) else { continue };
@@ -230,28 +340,29 @@ impl SimServoBus {
             let tibia_deg = leg.tibia_deg_from_ticks(t.present_position_ticks);
 
             let pose = leg.body_frame_pose(coxa_deg, femur_deg, tibia_deg);
-            let z = pose.tibia_end.z;
-            all_z.push(z);
+            let z_m = pose.tibia_end.z / 100.0; // cm → m
+            all_z_m.push(z_m);
 
             if leg.name.starts_with("front_") {
-                front_z.push(z);
+                front_z_m.push(z_m);
             }
             if leg.name.starts_with("rear_") {
-                rear_z.push(z);
+                rear_z_m.push(z_m);
             }
             if leg.name.contains("_left") {
-                left_z.push(z);
+                left_z_m.push(z_m);
             }
             if leg.name.contains("_right") {
-                right_z.push(z);
+                right_z_m.push(z_m);
             }
         }
 
-        let below: Vec<f32> = all_z.iter().filter(|&&z| z < 0.0).map(|&z| -z).collect();
+        // ── FK equilibrium targets ─────────────────────────────────────────
+        let below: Vec<f32> = all_z_m.iter().filter(|&&z| z < 0.0).map(|&z| -z).collect();
         if below.is_empty() {
-            return;
+            return; // no supporting feet — skip integration
         }
-        let body_height = below.iter().sum::<f32>() / below.len() as f32;
+        let target_h = below.iter().sum::<f32>() / below.len() as f32;
 
         fn avg_support(zs: &[f32]) -> Option<f32> {
             if zs.is_empty() {
@@ -260,24 +371,34 @@ impl SimServoBus {
             Some(-zs.iter().sum::<f32>() / zs.len() as f32)
         }
 
-        // Pitch: front feet reaching further down (more support) → nose up → positive.
-        // Longitudinal span ≈ 15 cm; small-angle: θ ≈ Δh / span.
-        let pitch_rad = match (avg_support(&front_z), avg_support(&rear_z)) {
-            (Some(fs), Some(rs)) => (fs - rs) / 15.0,
+        // Pitch target: nose up when front feet reach further down.
+        // Longitudinal body span ≈ 15 cm.
+        let target_pitch = match (avg_support(&front_z_m), avg_support(&rear_z_m)) {
+            (Some(fs), Some(rs)) => (fs - rs) / 0.15,
             _ => 0.0,
         };
 
-        // Roll: right feet reaching further down → right side down → positive.
-        // Lateral span ≈ 10 cm.
-        let roll_rad = match (avg_support(&right_z), avg_support(&left_z)) {
-            (Some(rs), Some(ls)) => (rs - ls) / 10.0,
+        // Roll target: right side down when right feet reach further down.
+        // Lateral body span ≈ 10 cm.
+        let target_roll = match (avg_support(&right_z_m), avg_support(&left_z_m)) {
+            (Some(rs), Some(ls)) => (rs - ls) / 0.10,
             _ => 0.0,
         };
 
+        // ── Dynamics integration ───────────────────────────────────────────
+        let p = self.physics.clone();
+        let vert_accel = self.dynamics.step_vertical(target_h, &p);
+        self.dynamics.step_pitch(target_pitch, &p);
+        self.dynamics.step_roll(target_roll, &p);
+
+        // ── Publish to shared state ────────────────────────────────────────
         let mut state = self.body_state.lock().unwrap();
-        state.body_height_cm = body_height;
-        state.pitch_rad = pitch_rad;
-        state.roll_rad = roll_rad;
+        state.body_height_cm = self.dynamics.height_m * 100.0;
+        state.pitch_rad = self.dynamics.pitch_rad;
+        state.roll_rad = self.dynamics.roll_rad;
+        state.vertical_accel_m_s2 = vert_accel;
+        state.pitch_rate_rad_s = self.dynamics.dpitch_rad_s;
+        state.roll_rate_rad_s = self.dynamics.droll_rad_s;
     }
 }
 
@@ -339,6 +460,35 @@ impl ServoBus for SimServoBus {
         })
     }
 }
+
+// ── FK helpers ────────────────────────────────────────────────────────────────
+
+/// Compute the steady-state body height in metres from the current servo positions.
+fn fk_equilibrium_height_m(
+    servos: &BTreeMap<u8, SimServoState>,
+    legs: &[LegConfig],
+) -> f32 {
+    let below: Vec<f32> = legs
+        .iter()
+        .filter_map(|leg| {
+            let c = servos.get(&leg.coxa_servo_id)?;
+            let f = servos.get(&leg.femur_servo_id)?;
+            let t = servos.get(&leg.tibia_servo_id)?;
+            let coxa_deg = leg.coxa_deg_from_ticks(c.present_position_ticks);
+            let femur_deg = leg.femur_deg_from_ticks(f.present_position_ticks);
+            let tibia_deg = leg.tibia_deg_from_ticks(t.present_position_ticks);
+            let z_m = leg.body_frame_pose(coxa_deg, femur_deg, tibia_deg).tibia_end.z / 100.0;
+            (z_m < 0.0).then_some(-z_m)
+        })
+        .collect();
+
+    if below.is_empty() {
+        return 0.065; // 6.5 cm fallback
+    }
+    below.iter().sum::<f32>() / below.len() as f32
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -407,7 +557,6 @@ mod tests {
             .expect("stand commands should apply");
 
         let state = bus.body_state();
-        // Standing body height should be in a physically plausible range.
         assert!(
             state.body_height_cm > 2.0 && state.body_height_cm < 20.0,
             "body_height_cm={} out of expected range",
@@ -416,25 +565,55 @@ mod tests {
     }
 
     #[test]
-    fn sim_imu_synthesizes_gravity_when_level() {
-        let config = load_test_config();
-        let (mut bus, mut imu) = SimServoBus::build_pair(&config, SemanticPoseKind::StandReference);
-
-        // Issue stand-reference commands so the bus updates body state to level.
+    fn sim_servo_bus_seeded_at_stand_reference_has_small_dynamics_transient() {
         use arachno_core::TripodGait;
+
+        let config = load_test_config();
+        // Seed at stand pose so dynamics start near equilibrium.
+        let mut bus =
+            SimServoBus::from_robot_config(&config, SemanticPoseKind::StandReference);
         let commands = TripodGait.stand_reference_commands(&config);
-        bus.sync_write_positions(&commands).unwrap();
+
+        // Run a few steps so the dynamics settle.
+        for _ in 0..10 {
+            bus.sync_write_positions(&commands).unwrap();
+        }
+
+        let state = bus.body_state();
+        // Accelerations and rates should be small after settling.
+        assert!(
+            state.vertical_accel_m_s2.abs() < 2.0,
+            "accel={} should be small at equilibrium",
+            state.vertical_accel_m_s2
+        );
+        assert!(
+            state.pitch_rate_rad_s.abs() < 0.2,
+            "pitch_rate={} should be small at equilibrium",
+            state.pitch_rate_rad_s
+        );
+    }
+
+    #[test]
+    fn sim_imu_synthesizes_gravity_when_level() {
+        use arachno_core::TripodGait;
+
+        let config = load_test_config();
+        let (mut bus, mut imu) =
+            SimServoBus::build_pair(&config, SemanticPoseKind::StandReference);
+
+        let commands = TripodGait.stand_reference_commands(&config);
+        for _ in 0..20 {
+            bus.sync_write_positions(&commands).unwrap();
+        }
 
         imu.start().unwrap();
         let sample = imu.next_sample().unwrap().expect("sample should be available");
 
-        // Near-level stance: z-axis accel should dominate (close to 9.81 m/s²).
         let az = sample.accel_mps2[2];
         assert!(
             az > 9.0 && az <= 9.82,
-            "az={az} should be close to 9.81 for level stance"
+            "az={az} should be close to 9.81 for settled level stance"
         );
-        // x and y components should be small for a near-level robot.
         let ax = sample.accel_mps2[0].abs();
         let ay = sample.accel_mps2[1].abs();
         assert!(ax < 1.0, "ax={ax} too large for level stance");
@@ -445,8 +624,29 @@ mod tests {
     fn sim_imu_and_bus_share_body_state() {
         let config = load_test_config();
         let (bus, _imu) = SimServoBus::build_pair(&config, SemanticPoseKind::StandReference);
-        // The body_state Arc is shared — bus.body_state() reflects the most recent FK update.
         let state = bus.body_state();
         assert!(state.body_height_cm > 0.0);
+    }
+
+    #[test]
+    fn sim_imu_gyro_is_near_zero_when_settled() {
+        use arachno_core::TripodGait;
+
+        let config = load_test_config();
+        let (mut bus, mut imu) =
+            SimServoBus::build_pair(&config, SemanticPoseKind::StandReference);
+        let commands = TripodGait.stand_reference_commands(&config);
+
+        for _ in 0..30 {
+            bus.sync_write_positions(&commands).unwrap();
+        }
+
+        imu.start().unwrap();
+        let sample = imu.next_sample().unwrap().unwrap();
+        let [gx, gy, gz] = sample.gyro_rad_s;
+        assert!(
+            gx.abs() < 0.05 && gy.abs() < 0.05 && gz.abs() < 0.001,
+            "gyro {gx:.3} {gy:.3} {gz:.3} should be near zero when settled"
+        );
     }
 }
