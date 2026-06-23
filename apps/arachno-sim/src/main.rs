@@ -120,9 +120,10 @@ fn run_sil_stand(
         message: format!("{seed_pose:?}"),
     })?;
 
-    let servo_bus = SimServoBus::from_robot_config(config, seed_pose.as_pose_kind());
+    let (servo_bus, sim_imu) = SimServoBus::build_pair(config, seed_pose.as_pose_kind());
     let camera = RobotCamera::new(config.camera.clone());
-    let mut controller = SpiderController::new(config.clone(), servo_bus, camera, None);
+    let mut controller =
+        SpiderController::new(config.clone(), servo_bus, camera, Some(Box::new(sim_imu)));
     controller
         .initialize()
         .context("failed to initialize simulated controller")?;

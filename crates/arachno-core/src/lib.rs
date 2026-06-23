@@ -1057,6 +1057,14 @@ impl LegConfig {
         }
     }
 
+    pub fn coxa_deg_from_ticks(&self, ticks: u16) -> f32 {
+        ticks_to_semantic_deg(
+            self.coxa_zero_reference_ticks(),
+            self.coxa_forward_sign(),
+            ticks,
+        )
+    }
+
     pub fn femur_deg_from_ticks(&self, ticks: u16) -> f32 {
         ticks_to_semantic_deg(
             self.femur_zero_reference_ticks(),
