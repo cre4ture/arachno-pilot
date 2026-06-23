@@ -1991,14 +1991,21 @@ fn spawn_control_worker(
             }
 
             if mode.requires_torque() && motion.armed_at.is_none() {
-                if let Some(start_pose) = current_pose(&servo_ids, &servo_states) {
-                    ensure_manual_reference_pose(&manual, mode, &start_pose);
-                    motion.arm(start_pose);
-                } else {
-                    motion.summary = format!(
-                        "waiting for all {} servo feedback replies before motion",
-                        servo_ids.len()
+                if let Err(err) = arm_motion_from_current_pose(
+                    &mut motion,
+                    &manual,
+                    &servo_ids,
+                    &servo_states,
+                    || restore_configured_motion_torque_limit(real_bus, &config, &servo_ids),
+                ) {
+                    warn!(
+                        error = %err,
+                        mode = %mode.as_state_label(),
+                        "failed to restore configured torque limit before motion arm"
                     );
+                    motion.disarm(format!(
+                        "failed to restore torque limit before motion: {err}"
+                    ));
                 }
             }
 
@@ -3223,6 +3230,55 @@ fn current_pose(
     }
 
     Some(pose)
+}
+
+fn restore_configured_motion_torque_limit(
+    bus: &mut RealStsBus,
+    config: &RobotConfig,
+    servo_ids: &[u8],
+) -> Result<(), String> {
+    let Some(torque_limit) = config.configured_max_torque_limit() else {
+        return Ok(());
+    };
+
+    set_verified_torque_limit_on_current_position_for_ids(bus, servo_ids, torque_limit).map_err(
+        |err| {
+            format!(
+                "failed to restore configured torque limit {} on {} leg servo(s): {}",
+                torque_limit,
+                servo_ids.len(),
+                err
+            )
+        },
+    )
+}
+
+fn arm_motion_from_current_pose<F>(
+    motion: &mut MotionRuntime,
+    manual: &Arc<RwLock<ManualControlState>>,
+    servo_ids: &[u8],
+    servo_states: &BTreeMap<u8, TelemetryServoState>,
+    mut before_arm: F,
+) -> Result<bool, String>
+where
+    F: FnMut() -> Result<(), String>,
+{
+    if !motion.mode.requires_torque() || motion.armed_at.is_some() {
+        return Ok(false);
+    }
+
+    let Some(start_pose) = current_pose(servo_ids, servo_states) else {
+        motion.summary = format!(
+            "waiting for all {} servo feedback replies before motion",
+            servo_ids.len()
+        );
+        return Ok(false);
+    };
+
+    before_arm()?;
+    ensure_manual_reference_pose(manual, motion.mode, &start_pose);
+    motion.arm(start_pose);
+    Ok(true)
 }
 
 fn current_pose_from_snapshot_servos(servos: &[TelemetryServoState]) -> Option<BTreeMap<u8, u16>> {
@@ -5638,12 +5694,12 @@ mod tests {
         ArmControlState, ArmHardwareAction, BODY_ATTITUDE_STRIKES_TO_TRIP, BrainMode,
         ImuReferenceFrame, LegPoseAngles, ManualControlState, MotionCommand, MotionRuntime,
         SemanticCalibrationState, TelemetryImuState, TelemetryServoState, arm_joint_infos,
-        arm_relative_degrees_between_ticks, body_attitude_fault_reason, build_body_scene,
-        clamp_tilted_stand_pitch_deg, clamp_tilted_stand_roll_deg, derive_leg_lift_deltas,
-        estimate_roll_pitch_deg, named_pose_with_calibration, relative_ticks_for_degrees,
-        semantic_pose_from_base_pose, stand_pose_labels, sync_arm_mode_state,
-        sync_manual_mode_state, sync_target_pose_to_live_servo_positions,
-        tilted_stand_leg_geometry, tilted_stand_pose,
+        arm_motion_from_current_pose, arm_relative_degrees_between_ticks,
+        body_attitude_fault_reason, build_body_scene, clamp_tilted_stand_pitch_deg,
+        clamp_tilted_stand_roll_deg, derive_leg_lift_deltas, estimate_roll_pitch_deg,
+        named_pose_with_calibration, relative_ticks_for_degrees, semantic_pose_from_base_pose,
+        stand_pose_labels, sync_arm_mode_state, sync_manual_mode_state,
+        sync_target_pose_to_live_servo_positions, tilted_stand_leg_geometry, tilted_stand_pose,
     };
     use arachno_core::{LegConfig, RobotConfig, SafetyConfig, SemanticPoseKind};
     use arachno_hal::{HalResult, ServoBus};
@@ -5802,6 +5858,72 @@ mod tests {
         assert!(control.target_pose.is_none());
         assert!(control.pending_actions.is_empty());
         assert!(control.summary.contains("current arm pose"));
+    }
+
+    #[test]
+    fn motion_arming_restores_torque_limit_before_arming() {
+        let manual = Arc::new(RwLock::new(ManualControlState::for_mode(BrainMode::Stand)));
+        let servo_ids = vec![11, 12];
+        let servo_states = BTreeMap::from([
+            (
+                11,
+                TelemetryServoState::online(
+                    "front-left coxa".to_owned(),
+                    test_servo_telemetry(11, 1500),
+                ),
+            ),
+            (
+                12,
+                TelemetryServoState::online(
+                    "front-left femur".to_owned(),
+                    test_servo_telemetry(12, 2600),
+                ),
+            ),
+        ]);
+        let mut motion = MotionRuntime::new(BrainMode::Stand, None);
+        let mut restore_calls = 0usize;
+
+        let result =
+            arm_motion_from_current_pose(&mut motion, &manual, &servo_ids, &servo_states, || {
+                restore_calls += 1;
+                Ok(())
+            })
+            .expect("arming should succeed once torque restore succeeds");
+
+        assert!(result);
+        assert_eq!(restore_calls, 1);
+        assert!(motion.armed_at.is_some());
+        assert_eq!(
+            motion.initial_pose,
+            Some(BTreeMap::from([(11, 1500u16), (12, 2600u16)]))
+        );
+    }
+
+    #[test]
+    fn motion_arming_stops_when_torque_restore_fails() {
+        let manual = Arc::new(RwLock::new(ManualControlState::for_mode(BrainMode::Stand)));
+        let servo_ids = vec![11];
+        let servo_states = BTreeMap::from([(
+            11,
+            TelemetryServoState::online(
+                "front-left coxa".to_owned(),
+                test_servo_telemetry(11, 1500),
+            ),
+        )]);
+        let mut motion = MotionRuntime::new(BrainMode::Stand, None);
+        let mut restore_calls = 0usize;
+
+        let err =
+            arm_motion_from_current_pose(&mut motion, &manual, &servo_ids, &servo_states, || {
+                restore_calls += 1;
+                Err("simulated restore failure".to_owned())
+            })
+            .expect_err("arming should fail when torque restore fails");
+
+        assert_eq!(err, "simulated restore failure");
+        assert_eq!(restore_calls, 1);
+        assert!(motion.armed_at.is_none());
+        assert!(motion.initial_pose.is_none());
     }
 
     #[test]

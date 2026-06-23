@@ -148,6 +148,16 @@ pub struct ServoEepromConfig {
     pub entries: Vec<ServoEepromEntry>,
 }
 
+impl ServoEepromConfig {
+    pub fn entry_named(&self, name: &str) -> Option<&ServoEepromEntry> {
+        self.entries.iter().find(|entry| entry.name == name)
+    }
+
+    pub fn entry_value(&self, name: &str) -> Option<u16> {
+        self.entry_named(name).map(|entry| entry.value)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServoEepromEntry {
     pub name: String,
@@ -634,6 +644,10 @@ impl RobotConfig {
             .iter()
             .flat_map(|leg| [leg.coxa_servo_id, leg.femur_servo_id, leg.tibia_servo_id])
             .collect()
+    }
+
+    pub fn configured_max_torque_limit(&self) -> Option<u16> {
+        self.servo_eeprom.entry_value("max_torque_limit")
     }
 
     pub fn pose_for_leg(&self, kind: SemanticPoseKind, leg_name: &str) -> Option<LegPoseAngles> {
@@ -2020,6 +2034,31 @@ tibia_deg = 0.0
         assert_eq!(stand_high_pose.tibia_deg, -46.0);
 
         fs::remove_dir_all(&temp_dir).expect("failed to clean temp config dir");
+    }
+
+    #[test]
+    fn configured_max_torque_limit_reads_named_eeprom_entry() {
+        let config_path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../config/robot/default.toml");
+        let config =
+            RobotConfig::load_from_path(&config_path).expect("robot config should load for tests");
+
+        assert_eq!(config.configured_max_torque_limit(), Some(600));
+    }
+
+    #[test]
+    fn configured_max_torque_limit_returns_none_when_missing() {
+        let config_path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../config/robot/default.toml");
+        let mut config =
+            RobotConfig::load_from_path(&config_path).expect("robot config should load for tests");
+
+        config
+            .servo_eeprom
+            .entries
+            .retain(|entry| entry.name != "max_torque_limit");
+
+        assert_eq!(config.configured_max_torque_limit(), None);
     }
 
     #[test]
