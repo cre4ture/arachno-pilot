@@ -35,7 +35,7 @@ mode = "usb_bridge"
 device = "/dev/serial/by-id/usb-arachno-pilot_RP2040_IMU_bridge_arachno-imu-bridge-0001-if00"
 sample_hz = 200
 protocol = "arachno_imu_v1"
-reference_forward_sensor = [0.0, 0.0, 1.0]
+reference_forward_sensor = [0.0, 1.0, 0.0]
 reference_down_sensor = [-0.999980, 0.005598, -0.002893]
 
 [learning]

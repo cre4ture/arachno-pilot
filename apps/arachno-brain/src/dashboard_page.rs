@@ -1,6 +1,6 @@
 // Shared built-in dashboard page served directly by `arachno-brain` when
 // the `--dashboard` command-line option is enabled.
-pub const DASHBOARD_HTML: &str = r#"<!doctype html>
+pub const DASHBOARD_HTML: &str = r##"<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
@@ -911,6 +911,165 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
       height: 3.8rem;
     }
 
+    .robot-scene-card {
+      margin-top: 0;
+      padding: 14px;
+      border-radius: 18px;
+      border: 1px solid rgba(255,255,255,0.08);
+      background:
+        radial-gradient(circle at top left, rgba(125, 200, 255, 0.12), transparent 52%),
+        linear-gradient(180deg, rgba(255,255,255,0.05), rgba(0,0,0,0.22));
+    }
+
+    .robot-scene-top {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: baseline;
+      margin-bottom: 10px;
+      color: var(--muted);
+      font-size: 0.82rem;
+    }
+
+    .robot-scene-shell {
+      position: relative;
+      min-height: 22.4rem;
+      border-radius: 16px;
+      border: 1px solid rgba(255,255,255,0.08);
+      background:
+        linear-gradient(180deg, rgba(12, 18, 24, 0.92), rgba(6, 9, 13, 0.96));
+      overflow: hidden;
+      isolation: isolate;
+    }
+
+    .robot-scene-canvas {
+      width: 100%;
+      height: 22.4rem;
+      display: block;
+    }
+
+    .robot-scene-canvas[hidden] {
+      display: none;
+    }
+
+    .robot-scene-canvas canvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+      touch-action: none;
+    }
+
+    .robot-scene-empty {
+      position: absolute;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      padding: 16px;
+      text-align: center;
+      color: rgba(214, 224, 235, 0.82);
+      background:
+        radial-gradient(circle at top, rgba(125, 200, 255, 0.08), transparent 48%),
+        linear-gradient(180deg, rgba(12, 18, 24, 0.72), rgba(6, 9, 13, 0.84));
+      z-index: 2;
+    }
+
+    .robot-scene-empty[hidden] {
+      display: none;
+    }
+
+    .robot-scene-hud {
+      position: absolute;
+      left: 12px;
+      right: 12px;
+      bottom: 12px;
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: center;
+      pointer-events: none;
+      z-index: 3;
+      color: rgba(214, 224, 235, 0.78);
+      font-size: 0.74rem;
+      line-height: 1.35;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .robot-scene-hint,
+    .robot-scene-axes {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 10px;
+      border-radius: 999px;
+      background: rgba(6, 9, 13, 0.46);
+      border: 1px solid rgba(255,255,255,0.08);
+      backdrop-filter: blur(10px);
+    }
+
+    .robot-scene-axis-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 999px;
+      display: inline-block;
+    }
+
+    .robot-scene-axis-dot.front { background: #ff9254; }
+    .robot-scene-axis-dot.left { background: #7dc8ff; }
+    .robot-scene-axis-dot.up { background: #9cf0a8; }
+
+    .robot-scene-note {
+      margin-top: 10px;
+      color: rgba(214, 224, 235, 0.72);
+      font-size: 0.82rem;
+      line-height: 1.45;
+    }
+
+    .rail-visual-card {
+      display: grid;
+      gap: 12px;
+    }
+
+    .rail-tab-strip {
+      display: inline-flex;
+      gap: 8px;
+      align-items: center;
+      padding: 4px;
+      border-radius: 999px;
+      background: rgba(10, 14, 20, 0.68);
+      border: 1px solid rgba(255,255,255,0.08);
+      width: fit-content;
+    }
+
+    .rail-tab-btn {
+      appearance: none;
+      border: 0;
+      background: transparent;
+      color: var(--muted);
+      border-radius: 999px;
+      padding: 8px 14px;
+      font: inherit;
+      font-size: 0.8rem;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      cursor: pointer;
+      transition: background 140ms ease, color 140ms ease, transform 140ms ease;
+    }
+
+    .rail-tab-btn:hover {
+      color: var(--text);
+    }
+
+    .rail-tab-btn.active {
+      background: rgba(255, 146, 84, 0.16);
+      color: #ffd7c0;
+      box-shadow: inset 0 0 0 1px rgba(255, 146, 84, 0.18);
+    }
+
+    .rail-tab-pane[hidden] {
+      display: none;
+    }
+
     .leg-chain {
       display: flex;
       gap: 10px;
@@ -1211,14 +1370,14 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
               <div class="robot-body">
                 <div class="robot-body-core">
                   <div class="robot-body-title">Hexapod Layout</div>
-                  <div class="robot-body-note" id="robot-note">Bird's-eye leg previews show coxa heading and projected reach from femur and tibia.</div>
+                  <div class="robot-body-note" id="robot-note">Bird's-eye leg previews follow the ROS body frame: +x forward and +y left.</div>
                 </div>
               </div>
               <div id="servo-map-legs"></div>
             </div>
           </div>
           <div class="servo-orientation">
-            The map follows the robot's physical layout. Left legs are arms 1-3 from front to back, right legs are arms 4-6. Each cluster combines a top-view live leg preview with the detailed coxa, femur, and tibia telemetry cards.
+            The map follows the robot's physical layout in the ROS body frame. Left legs are arms 1-3 from front to back, right legs are arms 4-6. Each cluster combines a top-view live leg preview with the detailed coxa, femur, and tibia telemetry cards.
           </div>
         </div>
       </div>
@@ -1328,8 +1487,8 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
               <div class="slider-track">
                 <input id="tilted-stand-roll-slider" type="range" min="-20" max="20" step="0.5" value="0" />
                 <div class="slider-legend">
-                  <span id="tilted-stand-roll-negative">left up</span>
-                  <span id="tilted-stand-roll-positive">right up</span>
+                  <span id="tilted-stand-roll-negative">right up</span>
+                  <span id="tilted-stand-roll-positive">left up</span>
                 </div>
               </div>
             </div>
@@ -1345,7 +1504,7 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
           <button id="tilted-stand-apply" type="button">Apply Tilt</button>
           <button id="tilted-stand-reset" type="button">Reset To Level</button>
         </div>
-        <div class="stat-note" id="tilted-stand-limits-note" style="margin-top: 8px;">Pitch and roll are clamped to the mode's configured limits.</div>
+        <div class="stat-note" id="tilted-stand-limits-note" style="margin-top: 8px;">Pitch and roll follow the ROS body frame and are clamped to the mode's configured limits.</div>
       </div>
     </section>
 
@@ -1579,12 +1738,43 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
 
         <section class="panel rail-panel rail-span-2">
           <div class="panel-header">
-            <h2>Leg Glance</h2>
+            <h2>Leg Visuals</h2>
             <div class="muted" id="rail-leg-summary">waiting for leg telemetry</div>
           </div>
           <div class="panel-body">
-            <div id="rail-leg-previews" class="rail-leg-grid">
-              <div class="stat-note">Waiting for live leg previews.</div>
+            <div class="rail-visual-card">
+              <div class="rail-tab-strip" role="tablist" aria-label="Leg visual mode">
+                <button id="rail-visual-tab-legs" class="rail-tab-btn" type="button" role="tab" aria-selected="false" aria-controls="rail-visual-pane-legs">Leg Glance</button>
+                <button id="rail-visual-tab-body" class="rail-tab-btn active" type="button" role="tab" aria-selected="true" aria-controls="rail-visual-pane-body">3D Body</button>
+              </div>
+              <div id="rail-visual-pane-legs" class="rail-tab-pane" role="tabpanel" aria-labelledby="rail-visual-tab-legs" hidden>
+                <div id="rail-leg-previews" class="rail-leg-grid">
+                  <div class="stat-note">Waiting for live leg previews.</div>
+                </div>
+              </div>
+              <div id="rail-visual-pane-body" class="rail-tab-pane" role="tabpanel" aria-labelledby="rail-visual-tab-body">
+                <div class="robot-scene-card">
+                  <div class="robot-scene-top">
+                    <strong>3D Body View</strong>
+                    <span id="robot-scene-summary">ROS body frame</span>
+                  </div>
+                  <div id="robot-scene-view" class="robot-scene-shell">
+                    <div id="robot-scene-canvas" class="robot-scene-canvas" aria-label="Interactive 3D body view in ROS body coordinates" hidden></div>
+                    <div id="robot-scene-empty" class="robot-scene-empty">Waiting for live body geometry.</div>
+                    <div class="robot-scene-hud">
+                      <span class="robot-scene-hint">drag to orbit · scroll to zoom · double-click to reset</span>
+                      <span class="robot-scene-axes">
+                        <span class="robot-scene-axis-dot front"></span>+x front
+                        <span class="robot-scene-axis-dot left"></span>+y left
+                        <span class="robot-scene-axis-dot up"></span>+z up
+                      </span>
+                    </div>
+                  </div>
+                  <div class="robot-scene-note" id="robot-scene-note">
+                    The view uses a WebGL renderer in the ROS body frame: +x forward, +y left, +z up. The chassis shell is still a nominal layout guide until a full body model is configured.
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
         </section>
@@ -1592,7 +1782,16 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
     </section>
   </div>
 
-  <script>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://unpkg.com/three@0.166.1/build/three.module.js",
+        "three/addons/": "https://unpkg.com/three@0.166.1/examples/jsm/"
+      }
+    }
+  </script>
+
+  <script type="module">
     const stateUrl = "/api/state";
     const cameraUrl = "/camera.mjpg";
     const motionCommandUrl = "/api/motion/command";
@@ -1627,6 +1826,7 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
     let lastArmLiveApplyAt = 0;
     let armSlidersInitialized = { value: false };
     let armTorqueSyncPending = false;
+    let robotSceneRuntime = null;
     let tiltedStandLiveApplyTimer = null;
     let tiltedStandLiveApplyPending = false;
     let lastTiltedStandLiveApplyAt = 0;
@@ -1634,6 +1834,17 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
     const manualPanelState = { enabled: false, ready: false };
     const armPanelState = { configured: false, enabled: false, ready: false };
     const tiltedStandPanelState = { enabled: false, ready: false };
+    const railVisualTabState = { active: "body" };
+    let THREE_NS = null;
+    let OrbitControlsCtor = null;
+    let robotSceneModuleError = null;
+    try {
+      THREE_NS = await import("three");
+      ({ OrbitControls: OrbitControlsCtor } = await import("three/addons/controls/OrbitControls.js"));
+    } catch (error) {
+      robotSceneModuleError = error;
+      console.warn("robot scene renderer unavailable", error);
+    }
     const LEG_ORDER = [
       "front_left",
       "middle_left",
@@ -3075,6 +3286,362 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
       updateRailImuPanel(view);
     }
 
+    function robotScenePlaceholder(message) {
+      const empty = document.getElementById("robot-scene-empty");
+      const canvas = document.getElementById("robot-scene-canvas");
+      empty.hidden = false;
+      empty.textContent = message;
+      canvas.hidden = true;
+    }
+
+    function robotSceneLegColor(onlineJointCount) {
+      if (onlineJointCount === 3) return { segment: "#ff9254", joint: "#ffd6bd", foot: "#ff9254" };
+      if (onlineJointCount > 0) return { segment: "#9fd2ff", joint: "#d7edff", foot: "#9fd2ff" };
+      return { segment: "#5a6775", joint: "#758292", foot: "#5a6775" };
+    }
+
+    function robotSceneVector(point) {
+      return new THREE_NS.Vector3(
+        Number(point?.x ?? 0),
+        Number(point?.y ?? 0),
+        Number(point?.z ?? 0),
+      );
+    }
+
+    function robotSceneAxisVector(forward, left, up) {
+      return new THREE_NS.Vector3(forward, left, up);
+    }
+
+    function disposeRobotSceneObject(object) {
+      object.traverse((child) => {
+        child.geometry?.dispose?.();
+        if (Array.isArray(child.material)) {
+          child.material.forEach((material) => material?.dispose?.());
+        } else {
+          child.material?.dispose?.();
+        }
+      });
+    }
+
+    function resizeRobotSceneRuntime(runtime) {
+      const width = Math.max(Math.round(runtime.host.clientWidth), 2);
+      const height = Math.max(Math.round(runtime.host.clientHeight), 2);
+      if (width === runtime.width && height === runtime.height) return;
+      runtime.width = width;
+      runtime.height = height;
+      runtime.camera.aspect = width / height;
+      runtime.camera.updateProjectionMatrix();
+      runtime.renderer.setSize(width, height, false);
+    }
+
+    function resetRobotSceneCamera(runtime) {
+      runtime.camera.position.copy(runtime.defaultCameraPosition);
+      runtime.controls.target.copy(runtime.defaultTarget);
+      runtime.controls.update();
+    }
+
+    function primeRobotSceneCamera(runtime, root) {
+      const bounds = new THREE_NS.Box3().setFromObject(root);
+      if (!Number.isFinite(bounds.min.x) || !Number.isFinite(bounds.max.x)) {
+        return;
+      }
+      const size = bounds.getSize(new THREE_NS.Vector3());
+      const center = bounds.getCenter(new THREE_NS.Vector3());
+      const distance = Math.max(size.length() * 1.1, 26);
+      runtime.defaultTarget.copy(center);
+      runtime.defaultCameraPosition.copy(
+        center.clone().add(new THREE_NS.Vector3(-1.36, -1.02, 0.84).normalize().multiplyScalar(distance))
+      );
+      runtime.cameraPrimed = true;
+      resetRobotSceneCamera(runtime);
+    }
+
+    function buildRobotSceneSegment(start, end, radius, color) {
+      const direction = end.clone().sub(start);
+      const length = direction.length();
+      if (length < 0.001) {
+        return null;
+      }
+      const mesh = new THREE_NS.Mesh(
+        new THREE_NS.CylinderGeometry(radius, radius, length, 12, 1, false),
+        new THREE_NS.MeshStandardMaterial({
+          color,
+          roughness: 0.42,
+          metalness: 0.08,
+        }),
+      );
+      mesh.position.copy(start.clone().add(end).multiplyScalar(0.5));
+      mesh.quaternion.setFromUnitVectors(new THREE_NS.Vector3(0, 1, 0), direction.normalize());
+      return mesh;
+    }
+
+    function buildRobotSceneRoot(bodyScene, imu) {
+      const root = new THREE_NS.Group();
+      const pitchGroup = new THREE_NS.Group();
+      const rollGroup = new THREE_NS.Group();
+      root.add(pitchGroup);
+      pitchGroup.add(rollGroup);
+      // Keep the scene in direct ROS coordinates: +x forward, +y left, +z up.
+      // Positive pitch raises the nose, and positive roll raises the left side.
+      pitchGroup.rotation.y = -Number(imu?.pitch_deg ?? 0) * Math.PI / 180;
+      rollGroup.rotation.x = Number(imu?.roll_deg ?? 0) * Math.PI / 180;
+
+      const outline = bodyScene.body_outline ?? [];
+      if (outline.length >= 3) {
+        const outlinePoints = outline.map((point) => robotSceneVector(point));
+        const bodyShape = new THREE_NS.Shape(
+          outlinePoints.map((point) => new THREE_NS.Vector2(point.x, point.y))
+        );
+        const thickness = 1.0;
+        const plateGeometry = new THREE_NS.ExtrudeGeometry(bodyShape, {
+          depth: thickness,
+          bevelEnabled: false,
+        });
+        plateGeometry.translate(0, 0, -thickness / 2);
+        const bodyPlate = new THREE_NS.Mesh(
+          plateGeometry,
+          new THREE_NS.MeshStandardMaterial({
+            color: "#1f3342",
+            transparent: true,
+            opacity: 0.88,
+            roughness: 0.62,
+            metalness: 0.06,
+            side: THREE_NS.DoubleSide,
+          }),
+        );
+        rollGroup.add(bodyPlate);
+
+        const outlineLoop = new THREE_NS.LineLoop(
+          new THREE_NS.BufferGeometry().setFromPoints(outlinePoints),
+          new THREE_NS.LineBasicMaterial({
+            color: "#8fcfff",
+            transparent: true,
+            opacity: 0.82,
+          }),
+        );
+        outlineLoop.position.z = thickness * 0.12;
+        rollGroup.add(outlineLoop);
+      }
+
+      for (const leg of bodyScene.legs ?? []) {
+        if (!leg.pose) continue;
+        const color = robotSceneLegColor(leg.online_joint_count);
+        const points = [
+          robotSceneVector(leg.pose.anchor),
+          robotSceneVector(leg.pose.coxa_end),
+          robotSceneVector(leg.pose.femur_end),
+          robotSceneVector(leg.pose.tibia_end),
+        ];
+        const segmentRadii = [0.24, 0.22, 0.20];
+        for (let index = 0; index < points.length - 1; index += 1) {
+          const segment = buildRobotSceneSegment(
+            points[index],
+            points[index + 1],
+            segmentRadii[index] ?? 0.20,
+            color.segment,
+          );
+          if (segment) {
+            rollGroup.add(segment);
+          }
+        }
+        for (const point of points.slice(0, -1)) {
+          const joint = new THREE_NS.Mesh(
+            new THREE_NS.SphereGeometry(0.30, 14, 12),
+            new THREE_NS.MeshStandardMaterial({
+              color: color.joint,
+              roughness: 0.24,
+              metalness: 0.04,
+            }),
+          );
+          joint.position.copy(point);
+          rollGroup.add(joint);
+        }
+        const foot = new THREE_NS.Mesh(
+          new THREE_NS.SphereGeometry(0.36, 16, 14),
+          new THREE_NS.MeshStandardMaterial({
+            color: color.foot,
+            emissive: color.foot,
+            emissiveIntensity: 0.14,
+            roughness: 0.18,
+            metalness: 0.02,
+          }),
+        );
+        foot.position.copy(points[points.length - 1]);
+        rollGroup.add(foot);
+      }
+
+      const imuBase = robotSceneVector(bodyScene.imu_position_cm ?? { x: 0, y: 0, z: 0 });
+      const imuStemTop = imuBase.clone().add(robotSceneAxisVector(0, 0, 1.8));
+      const imuColor = bodyScene.imu_mount_configured ? "#ffd36f" : "#8ecae6";
+      const imuStem = buildRobotSceneSegment(imuBase, imuStemTop, 0.08, imuColor);
+      if (imuStem) {
+        rollGroup.add(imuStem);
+      }
+      const imuBoard = new THREE_NS.Mesh(
+        new THREE_NS.BoxGeometry(1.9, 0.36, 1.2),
+        new THREE_NS.MeshStandardMaterial({
+          color: imuColor,
+          roughness: 0.34,
+          metalness: 0.06,
+        }),
+      );
+      imuBoard.position.copy(imuBase.clone().add(robotSceneAxisVector(0, 0, 0.34)));
+      rollGroup.add(imuBoard);
+      const imuTip = new THREE_NS.Mesh(
+        new THREE_NS.ConeGeometry(0.26, 0.72, 14),
+        new THREE_NS.MeshStandardMaterial({
+          color: imuColor,
+          roughness: 0.30,
+          metalness: 0.04,
+        }),
+      );
+      imuTip.position.copy(imuStemTop.clone().add(robotSceneAxisVector(0, 0, 0.34)));
+      rollGroup.add(imuTip);
+
+      const axisOrigin = robotSceneAxisVector(0, 0, 1.1);
+      const axisSpecs = [
+        { direction: robotSceneAxisVector(1, 0, 0).normalize(), color: "#ff9254" },
+        { direction: robotSceneAxisVector(0, 1, 0).normalize(), color: "#7dc8ff" },
+        { direction: robotSceneAxisVector(0, 0, 1).normalize(), color: "#9cf0a8" },
+      ];
+      for (const axis of axisSpecs) {
+        rollGroup.add(new THREE_NS.ArrowHelper(axis.direction, axisOrigin, 4.7, axis.color, 0.78, 0.30));
+      }
+
+      return root;
+    }
+
+    function ensureRobotSceneRuntime() {
+      if (robotSceneRuntime) {
+        return robotSceneRuntime;
+      }
+      if (!THREE_NS || !OrbitControlsCtor) {
+        return null;
+      }
+
+      const host = document.getElementById("robot-scene-canvas");
+      const scene = new THREE_NS.Scene();
+      scene.fog = new THREE_NS.Fog(0x081018, 36, 128);
+
+      const camera = new THREE_NS.PerspectiveCamera(34, 1, 0.1, 320);
+      camera.up.set(0, 0, 1);
+      const renderer = new THREE_NS.WebGLRenderer({
+        antialias: true,
+        alpha: true,
+        powerPreference: "high-performance",
+      });
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio ?? 1, 2));
+      renderer.outputColorSpace = THREE_NS.SRGBColorSpace;
+      renderer.toneMapping = THREE_NS.ACESFilmicToneMapping;
+      renderer.toneMappingExposure = 1.0;
+      renderer.domElement.setAttribute("aria-hidden", "true");
+      host.replaceChildren(renderer.domElement);
+
+      const controls = new OrbitControlsCtor(camera, renderer.domElement);
+      controls.enableDamping = true;
+      controls.dampingFactor = 0.06;
+      controls.minDistance = 12;
+      controls.maxDistance = 120;
+      controls.target.set(0, 0, 0);
+
+      const ambient = new THREE_NS.AmbientLight(0xd9e8ff, 0.76);
+      const keyLight = new THREE_NS.DirectionalLight(0xfff2d6, 1.2);
+      keyLight.position.set(16, 12, 20);
+      const rimLight = new THREE_NS.DirectionalLight(0x86cfff, 0.52);
+      rimLight.position.set(-14, -18, 8);
+      const grid = new THREE_NS.GridHelper(60, 24, 0x344758, 0x16202a);
+      grid.material.transparent = true;
+      grid.material.opacity = 0.34;
+      grid.rotation.x = Math.PI / 2;
+      scene.add(ambient, keyLight, rimLight, grid);
+
+      const runtime = {
+        host,
+        scene,
+        camera,
+        renderer,
+        controls,
+        grid,
+        width: 0,
+        height: 0,
+        root: null,
+        cameraPrimed: false,
+        defaultTarget: new THREE_NS.Vector3(0, 0, 0),
+        defaultCameraPosition: new THREE_NS.Vector3(-24, -18, 18),
+      };
+      resizeRobotSceneRuntime(runtime);
+      resetRobotSceneCamera(runtime);
+
+      const tick = () => {
+        runtime.controls.update();
+        runtime.renderer.render(runtime.scene, runtime.camera);
+        window.requestAnimationFrame(tick);
+      };
+      window.requestAnimationFrame(tick);
+
+      if (typeof ResizeObserver === "function") {
+        runtime.resizeObserver = new ResizeObserver(() => resizeRobotSceneRuntime(runtime));
+        runtime.resizeObserver.observe(host);
+      } else {
+        window.addEventListener("resize", () => resizeRobotSceneRuntime(runtime));
+      }
+
+      renderer.domElement.addEventListener("dblclick", () => resetRobotSceneCamera(runtime));
+      robotSceneRuntime = runtime;
+      return runtime;
+    }
+
+    function updateRobotScene(bodyScene, imu) {
+      const liveLegs = bodyScene?.legs?.filter((leg) => leg.online_joint_count === 3).length ?? 0;
+      const totalLegs = bodyScene?.legs?.length ?? 0;
+      document.getElementById("robot-scene-summary").textContent = bodyScene
+        ? `${liveLegs}/${totalLegs} legs live`
+        : "ROS body frame";
+      if (robotSceneModuleError) {
+        robotScenePlaceholder("3D renderer unavailable. The browser could not load three.js or OrbitControls.");
+        document.getElementById("robot-scene-note").textContent =
+          "The dashboard stayed online, but the WebGL body view could not load its three.js modules. If you want this fully offline, I can vendor the renderer assets next.";
+        return;
+      }
+
+      if (!bodyScene?.legs?.length) {
+        robotScenePlaceholder("Waiting for live body geometry.");
+        return;
+      }
+
+      const runtime = ensureRobotSceneRuntime();
+      if (!runtime) {
+        robotScenePlaceholder("WebGL renderer not ready yet.");
+        return;
+      }
+
+      const canvas = document.getElementById("robot-scene-canvas");
+      const empty = document.getElementById("robot-scene-empty");
+      empty.hidden = true;
+      canvas.hidden = false;
+      resizeRobotSceneRuntime(runtime);
+
+      if (runtime.root) {
+        runtime.scene.remove(runtime.root);
+        disposeRobotSceneObject(runtime.root);
+      }
+
+      const root = buildRobotSceneRoot(bodyScene, imu);
+      runtime.root = root;
+      runtime.scene.add(root);
+      const bounds = new THREE_NS.Box3().setFromObject(root);
+      if (Number.isFinite(bounds.min.z)) {
+        runtime.grid.position.z = bounds.min.z - 0.06;
+      }
+      if (!runtime.cameraPrimed) {
+        primeRobotSceneCamera(runtime, root);
+      }
+
+      document.getElementById("robot-scene-note").textContent = bodyScene.imu_mount_configured
+        ? "The WebGL body view follows the ROS body frame and uses the configured IMU mount offset. Drag the view to orbit around the robot while you compare pitch and roll."
+        : "The WebGL body view follows the ROS body frame. Drag the view to orbit around the robot; the IMU marker stays at the body origin until an IMU mount offset is configured.";
+    }
+
     function renderServoNode(servo, labelOverride = null) {
       const telemetry = servo.telemetry;
       const faults = telemetry?.faults ?? [];
@@ -3382,6 +3949,38 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
       `;
     }
 
+    function setRailVisualTab(tabKey) {
+      const activeTab = tabKey === "body" ? "body" : "legs";
+      railVisualTabState.active = activeTab;
+      const legsButton = document.getElementById("rail-visual-tab-legs");
+      const bodyButton = document.getElementById("rail-visual-tab-body");
+      const legsPane = document.getElementById("rail-visual-pane-legs");
+      const bodyPane = document.getElementById("rail-visual-pane-body");
+      const showingBody = activeTab === "body";
+
+      legsButton.classList.toggle("active", !showingBody);
+      bodyButton.classList.toggle("active", showingBody);
+      legsButton.setAttribute("aria-selected", String(!showingBody));
+      bodyButton.setAttribute("aria-selected", String(showingBody));
+      legsPane.hidden = showingBody;
+      bodyPane.hidden = !showingBody;
+
+      if (showingBody && window.__latestState) {
+        updateRobotScene(window.__latestState.body_scene, window.__latestState.imu);
+      }
+    }
+
+    function bindRailVisualTabs() {
+      if (window.__railVisualTabsBound) return;
+      window.__railVisualTabsBound = true;
+      document.getElementById("rail-visual-tab-legs").addEventListener("click", () => {
+        setRailVisualTab("legs");
+      });
+      document.getElementById("rail-visual-tab-body").addEventListener("click", () => {
+        setRailVisualTab("body");
+      });
+    }
+
     function updateBadge(ok, text) {
       const badge = document.getElementById("status-badge");
       badge.textContent = text;
@@ -3416,6 +4015,7 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
         document.getElementById("updated-at").textContent = state.updated_at_ms ? new Date(state.updated_at_ms).toLocaleTimeString() : "never";
         updateMotionButtons(state.motion_mode);
         updateImuPanel(state.imu);
+        updateRobotScene(state.body_scene, state.imu);
         updateManualPanel(state.manual);
         updateArmPanel(state.arm);
         updateTiltedStandPanel(state.tilted_stand);
@@ -3454,12 +4054,14 @@ pub const DASHBOARD_HTML: &str = r#"<!doctype html>
       }
     }
 
+    bindRailVisualTabs();
+    setRailVisualTab(railVisualTabState.active);
     refresh();
     setInterval(refresh, 500);
   </script>
 </body>
 </html>
-"#;
+"##;
 
 #[cfg(test)]
 mod tests {
@@ -3472,6 +4074,9 @@ mod tests {
             "id=\"camera-rail-note\"",
             "id=\"rail-leg-previews\"",
             "id=\"rail-imu-summary\"",
+            "id=\"robot-scene-view\"",
+            "id=\"rail-visual-tab-legs\"",
+            "id=\"rail-visual-tab-body\"",
         ] {
             assert!(
                 DASHBOARD_HTML.contains(needle),
@@ -3487,10 +4092,76 @@ mod tests {
             "renderCompactLegPreviewCard",
             "describeImuState",
             "updateRailImuPanel",
+            "bindRailVisualTabs",
+            "setRailVisualTab",
+            "ensureRobotSceneRuntime",
+            "buildRobotSceneRoot",
+            "updateRobotScene",
         ] {
             assert!(
                 DASHBOARD_HTML.contains(needle),
                 "dashboard html should contain helper {needle}"
+            );
+        }
+    }
+
+    #[test]
+    fn dashboard_html_uses_threejs_orbit_renderer_for_robot_scene() {
+        for needle in [
+            "<script type=\"importmap\">",
+            "three.module.js",
+            "three/addons/controls/OrbitControls.js",
+            "new THREE_NS.WebGLRenderer",
+            "new OrbitControlsCtor",
+            "camera.up.set(0, 0, 1);",
+            "drag to orbit",
+            "double-click to reset",
+        ] {
+            assert!(
+                DASHBOARD_HTML.contains(needle),
+                "dashboard html should contain {needle}"
+            );
+        }
+    }
+
+    #[test]
+    fn dashboard_html_defaults_to_body_tab_with_larger_scene() {
+        for needle in [
+            "const railVisualTabState = { active: \"body\" };",
+            "id=\"rail-visual-tab-body\" class=\"rail-tab-btn active\"",
+            "id=\"rail-visual-pane-legs\" class=\"rail-tab-pane\" role=\"tabpanel\" aria-labelledby=\"rail-visual-tab-legs\" hidden",
+            "min-height: 22.4rem;",
+            "height: 22.4rem;",
+        ] {
+            assert!(
+                DASHBOARD_HTML.contains(needle),
+                "dashboard html should contain {needle}"
+            );
+        }
+    }
+
+    #[test]
+    fn dashboard_html_robot_scene_uses_direct_ros_z_up_axes() {
+        for needle in [
+            "return new THREE_NS.Vector3(\n        Number(point?.x ?? 0),\n        Number(point?.y ?? 0),\n        Number(point?.z ?? 0),\n      );",
+            "return new THREE_NS.Vector3(forward, left, up);",
+            "pitchGroup.rotation.y = -Number(imu?.pitch_deg ?? 0) * Math.PI / 180;",
+            "rollGroup.rotation.x = Number(imu?.roll_deg ?? 0) * Math.PI / 180;",
+            "grid.rotation.x = Math.PI / 2;",
+        ] {
+            assert!(
+                DASHBOARD_HTML.contains(needle),
+                "dashboard html should contain {needle}"
+            );
+        }
+        for needle in [
+            "-Number(point?.y ?? 0)",
+            "rollGroup.rotation.z =",
+            "pitchGroup.rotation.x =",
+        ] {
+            assert!(
+                !DASHBOARD_HTML.contains(needle),
+                "dashboard html should no longer contain legacy scene basis fragment {needle}"
             );
         }
     }
@@ -3501,7 +4172,10 @@ mod tests {
             "grid-template-columns: minmax(0, 1fr) clamp(38rem, 46vw, 52rem);",
             "grid-template-columns: repeat(2, minmax(0, 1fr));",
             "class=\"panel rail-panel rail-span-2\"",
+            "Leg Visuals",
+            "role=\"tablist\"",
             "class=\"rail-leg-body\"",
+            "ROS body frame",
             "railClass: \"front-left\"",
             "railClass: \"rear-right\"",
         ] {

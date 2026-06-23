@@ -262,6 +262,8 @@ pub struct ImuConfig {
     pub reference_forward_sensor: [f32; 3],
     #[serde(default = "default_imu_reference_down_sensor")]
     pub reference_down_sensor: [f32; 3],
+    #[serde(default)]
+    pub mount_position_cm: [f32; 3],
 }
 
 pub const DEFAULT_IMU_REFERENCE_FORWARD_SENSOR: [f32; 3] = [1.0, 0.0, 0.0];
@@ -390,6 +392,13 @@ pub struct LegPoint2 {
     pub y: f32,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct LegPoint3 {
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+}
+
 /// Parameters controlling a torque-limited downward probe for one leg.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct ProbeParams {
@@ -462,6 +471,14 @@ pub struct LegSideViewPose {
     pub coxa_end: LegPoint2,
     pub femur_end: LegPoint2,
     pub tibia_end: LegPoint2,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct LegBodyFramePose {
+    pub anchor: LegPoint3,
+    pub coxa_end: LegPoint3,
+    pub femur_end: LegPoint3,
+    pub tibia_end: LegPoint3,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -862,13 +879,14 @@ impl LegConfig {
     pub fn body_heading_deg_for_coxa(&self, semantic_coxa_deg: f32) -> f32 {
         let local_heading = self.coxa_zero_heading_deg() + semantic_coxa_deg;
         if self.is_left_side() {
-            180.0 + local_heading
+            90.0 - local_heading
         } else {
-            -local_heading
+            local_heading - 90.0
         }
         .rem_euclid(360.0)
     }
 
+    /// Project the leg into the ROS-style body frame: +x forward, +y left.
     pub fn top_view_pose(
         &self,
         semantic_coxa_deg: f32,
@@ -890,6 +908,23 @@ impl LegConfig {
             coxa_end,
             femur_end,
             tibia_end,
+        }
+    }
+
+    /// Approximate coxa mount point used for body-frame sketches until a full chassis model
+    /// becomes configurable.
+    pub fn body_anchor_point_cm(&self) -> LegPoint2 {
+        let longitudinal_slot = if self.name.starts_with("front_") {
+            1.0
+        } else if self.name.starts_with("rear_") {
+            -1.0
+        } else {
+            0.0
+        };
+        let lateral_sign = if self.is_left_side() { 1.0 } else { -1.0 };
+        LegPoint2 {
+            x: self.coxa_length_cm() * 2.25 * longitudinal_slot,
+            y: self.coxa_length_cm() * 1.85 * lateral_sign,
         }
     }
 
@@ -921,6 +956,34 @@ impl LegConfig {
             coxa_end,
             femur_end,
             tibia_end,
+        }
+    }
+
+    /// Combine the top- and side-view FK into a ROS body-frame pose with +z up.
+    pub fn body_frame_pose(
+        &self,
+        semantic_coxa_deg: f32,
+        semantic_femur_deg: f32,
+        semantic_tibia_deg: f32,
+    ) -> LegBodyFramePose {
+        let anchor_xy = self.body_anchor_point_cm();
+        let top_view =
+            self.top_view_pose(semantic_coxa_deg, semantic_femur_deg, semantic_tibia_deg);
+        let side_view = self.side_view_pose(semantic_femur_deg, semantic_tibia_deg);
+        let translate = |point: LegPoint2, z: f32| LegPoint3 {
+            x: anchor_xy.x + point.x,
+            y: anchor_xy.y + point.y,
+            z,
+        };
+        LegBodyFramePose {
+            anchor: LegPoint3 {
+                x: anchor_xy.x,
+                y: anchor_xy.y,
+                z: 0.0,
+            },
+            coxa_end: translate(top_view.coxa_end, 0.0),
+            femur_end: translate(top_view.femur_end, side_view.femur_end.y),
+            tibia_end: translate(top_view.tibia_end, side_view.tibia_end.y),
         }
     }
 
@@ -1237,7 +1300,7 @@ fn offset_side_point(
     semantic_deg: f32,
     length: f32,
 ) -> LegPoint2 {
-    let angle_rad = (-semantic_deg).to_radians();
+    let angle_rad = semantic_deg.to_radians();
     LegPoint2 {
         x: start.x + outward_sign * angle_rad.cos() * length,
         y: start.y + angle_rad.sin() * length,
@@ -1275,17 +1338,19 @@ fn ik_2d(
     // Angle at knee (between femur and tibia), via law of cosines.
     let cos_beta = (d_sq - l1 * l1 - l2 * l2) / (2.0 * l1 * l2);
     let beta = cos_beta.clamp(-1.0, 1.0).acos();
+    // Solve in the mirrored legacy side-view frame so the IK keeps choosing the same
+    // semantic elbow branch as the stored pose tables and live servo telemetry.
+    let mirrored_height_cm = -height_cm;
     // Angle from horizontal outward axis to the foot direction.
-    let gamma = height_cm.atan2(reach_cm);
+    let gamma = mirrored_height_cm.atan2(reach_cm);
     // Offset of femur from foot direction (determined by the triangle geometry).
     let alpha = (l2 * beta.sin()).atan2(l1 + l2 * beta.cos());
-    // Femur angle in standard math convention (positive = above horizontal).
+    // Femur angle in the mirrored frame.
     let theta = gamma - alpha;
-    // Semantic femur: positive = below horizontal (matches side_view_pose convention).
     let semantic_femur_deg = -theta.to_degrees();
-    // Tibia direction in world frame.
-    let phi = (height_cm - l1 * theta.sin()).atan2(reach_cm - l1 * theta.cos());
-    // Semantic tibia: relative rotation from femur, matching the combined-angle FK convention.
+    // Tibia direction in the mirrored frame.
+    let phi = (mirrored_height_cm - l1 * theta.sin()).atan2(reach_cm - l1 * theta.cos());
+    // Relative semantic tibia angle in the stored servo pose convention.
     let semantic_tibia_deg = -phi.to_degrees() - semantic_femur_deg;
     Ok((semantic_femur_deg, semantic_tibia_deg))
 }
@@ -1613,7 +1678,7 @@ mod tests {
     fn body_heading_deg_for_coxa_right_side_zero_semantic() {
         let mut leg = make_leg("front_right");
         leg.coxa_zero_heading_deg = Some(45.0);
-        // Right side: heading = -(45 + 0) = -45 mod 360 = 315.
+        // ROS body frame: front-right points 45 degrees to the right of +x.
         let h = leg.body_heading_deg_for_coxa(0.0);
         assert!((h - 315.0).abs() < 1e-4, "expected 315.0, got {h}");
     }
@@ -1622,9 +1687,68 @@ mod tests {
     fn body_heading_deg_for_coxa_left_side_zero_semantic() {
         let mut leg = make_leg("front_left");
         leg.coxa_zero_heading_deg = Some(45.0);
-        // Left side: heading = 180 + (45 + 0) = 225.
+        // ROS body frame: front-left points 45 degrees to the left of +x.
         let h = leg.body_heading_deg_for_coxa(0.0);
-        assert!((h - 225.0).abs() < 1e-4, "expected 225.0, got {h}");
+        assert!((h - 45.0).abs() < 1e-4, "expected 45.0, got {h}");
+    }
+
+    #[test]
+    fn top_view_pose_uses_ros_body_axes() {
+        let mut leg = make_leg("front_left");
+        leg.coxa_zero_heading_deg = Some(45.0);
+        leg.coxa_length_cm = Some(3.0);
+        leg.femur_length_cm = Some(8.5);
+        leg.tibia_length_cm = Some(14.5);
+
+        let pose = leg.top_view_pose(0.0, 0.0, 0.0);
+
+        assert!(pose.tibia_end.x > 0.0, "front foot should have positive x");
+        assert!(pose.tibia_end.y > 0.0, "left foot should have positive y");
+    }
+
+    #[test]
+    fn body_frame_pose_offsets_leg_by_nominal_body_anchor() {
+        let mut leg = make_leg("middle_right");
+        leg.coxa_zero_heading_deg = Some(0.0);
+        leg.coxa_length_cm = Some(3.0);
+        leg.femur_length_cm = Some(8.5);
+        leg.tibia_length_cm = Some(14.5);
+
+        let pose = leg.body_frame_pose(0.0, -45.0, 0.0);
+
+        assert!(
+            pose.anchor.x.abs() < 1e-4,
+            "middle leg should anchor at x ~= 0"
+        );
+        assert!(pose.anchor.y < 0.0, "right leg should anchor at negative y");
+        assert!(
+            pose.tibia_end.x > pose.anchor.x,
+            "front component should stay positive"
+        );
+        assert!(
+            pose.tibia_end.z < pose.anchor.z,
+            "foot should sit below the body plane"
+        );
+    }
+
+    #[test]
+    fn side_view_positive_femur_lifts_the_leg_upward() {
+        let mut leg = make_leg("front_right");
+        leg.coxa_length_cm = Some(3.0);
+        leg.femur_length_cm = Some(8.5);
+        leg.tibia_length_cm = Some(14.5);
+
+        let lowered = leg.side_view_pose(-30.0, 0.0);
+        let lifted = leg.side_view_pose(30.0, 0.0);
+
+        assert!(
+            lifted.femur_end.y > lowered.femur_end.y,
+            "positive femur should raise the knee in side view"
+        );
+        assert!(
+            lifted.tibia_end.y > lowered.tibia_end.y,
+            "positive femur should raise the foot in side view"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1893,8 +2017,8 @@ tibia_deg = 0.0
     /// invert with IK and verify the angles round-trip within tolerance.
     fn ik_round_trip(femur_deg: f32, tibia_deg: f32, femur_len: f32, tibia_len: f32, tol: f32) {
         // FK: compute foot position in the side-view plane (right-side leg, outward_sign=1)
-        let theta = (-femur_deg).to_radians();
-        let phi = (-(femur_deg + tibia_deg)).to_radians();
+        let theta = femur_deg.to_radians();
+        let phi = (femur_deg + tibia_deg).to_radians();
         let reach = femur_len * theta.cos() + tibia_len * phi.cos();
         let height = femur_len * theta.sin() + tibia_len * phi.sin();
 

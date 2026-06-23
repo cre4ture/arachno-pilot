@@ -397,7 +397,7 @@ fn compute_bounds(
         let femur_deg = leg.femur_deg_from_ticks(femur_stand_ticks);
         let tibia_deg = leg.tibia_deg_from_ticks(tibia_stand_ticks);
         let sv = leg.side_view_pose(femur_deg, tibia_deg);
-        sv.tibia_end.y - sv.coxa_end.y
+        sv.coxa_end.y - sv.tibia_end.y
     };
 
     let femur_lift_ticks = back_off_from_limit(
@@ -440,10 +440,14 @@ fn safe_femur_ext_limit(
     femur_stand_ticks: u16,
     floor_height_cm: f32,
 ) -> u16 {
-    // FK formula: knee_y = sin((-semantic_deg).to_radians()) * femur_length
-    // Solving for semantic_deg when knee_y = floor_height - margin:
-    let max_knee_cm = (floor_height_cm - KNEE_FLOOR_MARGIN_CM).clamp(0.0, leg.femur_length_cm());
-    let safe_deg = -(max_knee_cm / leg.femur_length_cm()).asin().to_degrees();
+    // FK formula: knee_y = sin(semantic_deg.to_radians()) * femur_length, where +y is upward.
+    // The floor sits at y = -floor_height_cm, so the knee must stay at least
+    // KNEE_FLOOR_MARGIN_CM above that depth.
+    let min_knee_height_cm = (-floor_height_cm + KNEE_FLOOR_MARGIN_CM)
+        .clamp(-leg.femur_length_cm(), leg.femur_length_cm());
+    let safe_deg = (min_knee_height_cm / leg.femur_length_cm())
+        .asin()
+        .to_degrees();
     let safe_ticks = (leg.femur_zero_reference_ticks() as f32
         + leg.femur_lift_sign() as f32 * safe_deg * 4096.0 / 360.0)
         .round()

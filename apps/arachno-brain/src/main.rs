@@ -15,8 +15,9 @@ use anyhow::Context;
 use arachno_camera::RobotCamera;
 use arachno_core::{
     ArmServoConfig, CameraBackend, DEFAULT_IMU_REFERENCE_DOWN_SENSOR,
-    DEFAULT_IMU_REFERENCE_FORWARD_SENSOR, LegPoseAngles, LegSideViewPose, LegTopViewPose,
-    RobotArmConfig, RobotConfig, SemanticPoseKind, now_ms, resolve_config_path, smoothstep,
+    DEFAULT_IMU_REFERENCE_FORWARD_SENSOR, LegBodyFramePose, LegPoint3, LegPoseAngles,
+    LegSideViewPose, LegTopViewPose, RobotArmConfig, RobotConfig, SemanticPoseKind, now_ms,
+    resolve_config_path, smoothstep,
 };
 use arachno_feetech_sts::{
     RealStsBus, set_verified_torque_limit_on_current_position_for_ids,
@@ -323,6 +324,7 @@ struct TelemetryState {
     tilted_stand: TelemetryTiltedStandState,
     calibration: TelemetryCalibrationState,
     leg_previews: Vec<TelemetryLegPreviewState>,
+    body_scene: TelemetryBodySceneState,
     servos: Vec<TelemetryServoState>,
 }
 
@@ -362,17 +364,16 @@ struct TelemetryImuState {
 #[derive(Debug, Clone, Copy)]
 struct ImuReferenceFrame {
     forward_sensor: [f32; 3],
-    right_sensor: [f32; 3],
-    down_sensor: [f32; 3],
+    left_sensor: [f32; 3],
+    up_sensor: [f32; 3],
 }
 
 impl Default for ImuReferenceFrame {
     fn default() -> Self {
-        Self {
-            forward_sensor: DEFAULT_IMU_REFERENCE_FORWARD_SENSOR,
-            right_sensor: [0.0, 1.0, 0.0],
-            down_sensor: DEFAULT_IMU_REFERENCE_DOWN_SENSOR,
-        }
+        Self::new(
+            DEFAULT_IMU_REFERENCE_FORWARD_SENSOR,
+            DEFAULT_IMU_REFERENCE_DOWN_SENSOR,
+        )
     }
 }
 
@@ -385,28 +386,29 @@ impl ImuReferenceFrame {
         let Some(down_sensor) = normalize3(down_sensor) else {
             return Self::default();
         };
-        let Some(forward_sensor) = orthogonal_unit3(down_sensor, forward_sensor) else {
+        let up_sensor = [-down_sensor[0], -down_sensor[1], -down_sensor[2]];
+        let Some(forward_sensor) = orthogonal_unit3(up_sensor, forward_sensor) else {
             return Self::default();
         };
-        let Some(right_sensor) = normalize3(cross3(down_sensor, forward_sensor)) else {
+        let Some(left_sensor) = normalize3(cross3(up_sensor, forward_sensor)) else {
             return Self::default();
         };
-        let Some(forward_sensor) = normalize3(cross3(right_sensor, down_sensor)) else {
+        let Some(forward_sensor) = normalize3(cross3(left_sensor, up_sensor)) else {
             return Self::default();
         };
 
         Self {
             forward_sensor,
-            right_sensor,
-            down_sensor,
+            left_sensor,
+            up_sensor,
         }
     }
 
     fn project_vector(self, sensor_vector: [f32; 3]) -> [f32; 3] {
         [
             dot3(sensor_vector, self.forward_sensor),
-            dot3(sensor_vector, self.right_sensor),
-            dot3(sensor_vector, self.down_sensor),
+            dot3(sensor_vector, self.left_sensor),
+            dot3(sensor_vector, self.up_sensor),
         ]
     }
 }
@@ -484,6 +486,21 @@ struct TelemetryLegPreviewState {
     leg_key: String,
     top_view: Option<LegTopViewPose>,
     side_view: Option<LegSideViewPose>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct TelemetryBodySceneState {
+    body_outline: Vec<LegPoint3>,
+    imu_position_cm: LegPoint3,
+    imu_mount_configured: bool,
+    legs: Vec<TelemetryBodyLegScene>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct TelemetryBodyLegScene {
+    leg_key: String,
+    online_joint_count: usize,
+    pose: Option<LegBodyFramePose>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -853,6 +870,7 @@ impl TelemetryState {
                     side_view: None,
                 })
                 .collect(),
+            body_scene: build_body_scene(config, &BTreeMap::new(), calibration),
             servos: config
                 .all_servo_ids()
                 .into_iter()
@@ -2324,6 +2342,7 @@ fn build_state_snapshot(
 ) -> TelemetryState {
     let pose = current_pose(servo_ids, servo_states);
     let leg_previews = build_leg_previews(config, servo_states, calibration_snapshot);
+    let body_scene = build_body_scene(config, servo_states, calibration_snapshot);
     let servos = servo_ids
         .iter()
         .map(|servo_id| {
@@ -2385,8 +2404,32 @@ fn build_state_snapshot(
         ),
         calibration: build_calibration_telemetry(config, calibration_snapshot),
         leg_previews,
+        body_scene,
         servos,
     }
+}
+
+fn semantic_leg_pose_from_servo_states(
+    config: &RobotConfig,
+    servo_states: &BTreeMap<u8, TelemetryServoState>,
+    calibration: &SemanticCalibrationState,
+    leg: &arachno_core::LegConfig,
+) -> Option<LegPoseAngles> {
+    let semantic = |servo_id| {
+        let telemetry = servo_states.get(&servo_id)?.telemetry.as_ref()?;
+        servo_semantic_angle_deg(
+            config,
+            calibration,
+            servo_id,
+            telemetry.present_position_ticks,
+        )
+    };
+
+    Some(LegPoseAngles {
+        coxa_deg: semantic(leg.coxa_servo_id)?,
+        femur_deg: semantic(leg.femur_servo_id)?,
+        tibia_deg: semantic(leg.tibia_servo_id)?,
+    })
 }
 
 fn build_leg_previews(
@@ -2398,34 +2441,119 @@ fn build_leg_previews(
         .legs
         .iter()
         .map(|leg| {
-            let semantic = |servo_id| {
-                let telemetry = servo_states.get(&servo_id)?.telemetry.as_ref()?;
-                servo_semantic_angle_deg(
-                    config,
-                    calibration,
-                    servo_id,
-                    telemetry.present_position_ticks,
-                )
-            };
-            let coxa = semantic(leg.coxa_servo_id);
-            let femur = semantic(leg.femur_servo_id);
-            let tibia = semantic(leg.tibia_servo_id);
+            let semantic =
+                semantic_leg_pose_from_servo_states(config, servo_states, calibration, leg);
 
             TelemetryLegPreviewState {
                 leg_key: leg.name.clone(),
-                top_view: match (coxa, femur, tibia) {
-                    (Some(coxa), Some(femur), Some(tibia)) => {
-                        Some(leg.top_view_pose(coxa, femur, tibia))
-                    }
-                    _ => None,
-                },
-                side_view: match (femur, tibia) {
-                    (Some(femur), Some(tibia)) => Some(leg.side_view_pose(femur, tibia)),
-                    _ => None,
-                },
+                top_view: semantic.map(|angles| {
+                    leg.top_view_pose(angles.coxa_deg, angles.femur_deg, angles.tibia_deg)
+                }),
+                side_view: semantic
+                    .map(|angles| leg.side_view_pose(angles.femur_deg, angles.tibia_deg)),
             }
         })
         .collect()
+}
+
+fn nominal_body_outline(config: &RobotConfig) -> Vec<LegPoint3> {
+    let anchors = config
+        .legs
+        .iter()
+        .map(|leg| leg.body_anchor_point_cm())
+        .collect::<Vec<_>>();
+
+    let front_x = anchors.iter().map(|point| point.x).fold(0.0_f32, f32::max) + 3.4;
+    let rear_x = anchors.iter().map(|point| point.x).fold(0.0_f32, f32::min) - 3.0;
+    let left_y = anchors.iter().map(|point| point.y).fold(0.0_f32, f32::max) + 2.6;
+    let right_y = anchors.iter().map(|point| point.y).fold(0.0_f32, f32::min) - 2.6;
+    let shoulder_x = (front_x * 0.55).max(2.5);
+    let hip_x = (rear_x * 0.55).min(-2.5);
+
+    vec![
+        LegPoint3 {
+            x: front_x,
+            y: 0.0,
+            z: 0.0,
+        },
+        LegPoint3 {
+            x: shoulder_x,
+            y: left_y,
+            z: 0.0,
+        },
+        LegPoint3 {
+            x: hip_x,
+            y: left_y,
+            z: 0.0,
+        },
+        LegPoint3 {
+            x: rear_x,
+            y: 0.0,
+            z: 0.0,
+        },
+        LegPoint3 {
+            x: hip_x,
+            y: right_y,
+            z: 0.0,
+        },
+        LegPoint3 {
+            x: shoulder_x,
+            y: right_y,
+            z: 0.0,
+        },
+    ]
+}
+
+fn build_body_scene(
+    config: &RobotConfig,
+    servo_states: &BTreeMap<u8, TelemetryServoState>,
+    calibration: &SemanticCalibrationState,
+) -> TelemetryBodySceneState {
+    let imu_mount_position_cm = config.imu.as_ref().map_or(
+        LegPoint3 {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        },
+        |imu| LegPoint3 {
+            x: imu.mount_position_cm[0],
+            y: imu.mount_position_cm[1],
+            z: imu.mount_position_cm[2],
+        },
+    );
+    let imu_mount_configured = config
+        .imu
+        .as_ref()
+        .is_some_and(|imu| imu.mount_position_cm != [0.0, 0.0, 0.0]);
+
+    let legs = config
+        .legs
+        .iter()
+        .map(|leg| {
+            let servo_ids = [leg.coxa_servo_id, leg.femur_servo_id, leg.tibia_servo_id];
+            let online_joint_count = servo_ids
+                .iter()
+                .filter(|servo_id| servo_states.get(servo_id).is_some_and(|servo| servo.online))
+                .count();
+            let pose = semantic_leg_pose_from_servo_states(config, servo_states, calibration, leg)
+                .map(|angles| {
+                    leg.body_frame_pose(angles.coxa_deg, angles.femur_deg, angles.tibia_deg)
+                });
+
+            TelemetryBodyLegScene {
+                leg_key: leg.name.clone(),
+                online_joint_count,
+                pose,
+            }
+        })
+        .collect();
+
+    TelemetryBodySceneState {
+        body_outline: nominal_body_outline(config),
+        imu_position_cm: imu_mount_position_cm,
+        imu_mount_configured,
+        legs,
+    }
 }
 
 fn build_manual_telemetry(
@@ -3622,8 +3750,8 @@ struct DerivedTripodProfile {
 #[derive(Debug, Clone, Copy)]
 struct TiltedStandLegGeometry {
     semantic: LegPoseAngles,
-    foot_x_cm: f32,
-    foot_y_cm: f32,
+    foot_forward_cm: f32,
+    foot_left_cm: f32,
     reach_cm: f32,
     height_cm: f32,
 }
@@ -3675,8 +3803,8 @@ fn tilted_stand_leg_geometry(
     let side_view = leg.side_view_pose(semantic.femur_deg, semantic.tibia_deg);
     TiltedStandLegGeometry {
         semantic,
-        foot_x_cm: top_view.tibia_end.x,
-        foot_y_cm: top_view.tibia_end.y,
+        foot_forward_cm: top_view.tibia_end.x,
+        foot_left_cm: top_view.tibia_end.y,
         reach_cm: (side_view.tibia_end.x - side_view.coxa_end.x).abs(),
         height_cm: side_view.tibia_end.y - side_view.coxa_end.y,
     }
@@ -3732,7 +3860,7 @@ fn derive_leg_lift_deltas(
                 stance_pose.femur_deg + femur_lift_deg,
                 stance_pose.tibia_deg + tibia_lift_deg,
             );
-            let step_height_cm = (stand_tip.y - lifted_pose.tibia_end.y).max(0.0);
+            let step_height_cm = (lifted_pose.tibia_end.y - stand_tip.y).max(0.0);
             let horizontal_shift_cm = (lifted_pose.tibia_end.x - stand_tip.x).abs();
             let shape_bias = (tibia_lift_deg - femur_lift_deg * 1.6).abs();
             let shortfall = (target_step_height_cm - step_height_cm).max(0.0);
@@ -3760,12 +3888,12 @@ fn direct_leg_lift_deltas(
     let stand_pose = leg.side_view_pose(stance_pose.femur_deg, stance_pose.tibia_deg);
     let reach_cm = (stand_pose.tibia_end.x - stand_pose.coxa_end.x).abs();
     let height_cm = stand_pose.tibia_end.y - stand_pose.coxa_end.y;
-    let target_height_cm = height_cm - target_step_height_cm.max(0.0);
+    let target_height_cm = height_cm + target_step_height_cm.max(0.0);
     let lifted_pose = leg
         .foot_to_angles_2d(stance_pose.coxa_deg, reach_cm, target_height_cm)
         .ok()?;
     let lifted_side = leg.side_view_pose(lifted_pose.femur_deg, lifted_pose.tibia_deg);
-    let achieved_height_cm = (stand_pose.tibia_end.y - lifted_side.tibia_end.y).max(0.0);
+    let achieved_height_cm = (lifted_side.tibia_end.y - stand_pose.tibia_end.y).max(0.0);
     Some((
         lifted_pose.femur_deg - stance_pose.femur_deg,
         lifted_pose.tibia_deg - stance_pose.tibia_deg,
@@ -3974,14 +4102,14 @@ fn tilted_stand_pose(
         })
         .collect::<Vec<_>>();
     let foot_count = geometries.len().max(1) as f32;
-    let centroid_x = geometries
+    let centroid_forward = geometries
         .iter()
-        .map(|(_, geometry)| geometry.foot_x_cm)
+        .map(|(_, geometry)| geometry.foot_forward_cm)
         .sum::<f32>()
         / foot_count;
-    let centroid_y = geometries
+    let centroid_left = geometries
         .iter()
-        .map(|(_, geometry)| geometry.foot_y_cm)
+        .map(|(_, geometry)| geometry.foot_left_cm)
         .sum::<f32>()
         / foot_count;
 
@@ -3989,9 +4117,9 @@ fn tilted_stand_pose(
     let mut constrained_legs = Vec::new();
 
     for (leg, geometry) in geometries {
-        let forward_cm = -(geometry.foot_y_cm - centroid_y);
-        let right_cm = geometry.foot_x_cm - centroid_x;
-        let body_height_offset_cm = forward_cm * pitch_tan + right_cm * roll_tan;
+        let forward_cm = geometry.foot_forward_cm - centroid_forward;
+        let left_cm = geometry.foot_left_cm - centroid_left;
+        let body_height_offset_cm = forward_cm * pitch_tan + left_cm * roll_tan;
         let target_height_cm = geometry.height_cm - body_height_offset_cm;
 
         let Some(target_semantic) = leg
@@ -5440,7 +5568,7 @@ fn estimate_roll_pitch_deg(accel_mps2: [f32; 3], reference_frame: ImuReferenceFr
     let ax = body_accel_mps2[0];
     let ay = body_accel_mps2[1];
     let az = body_accel_mps2[2];
-    let roll = ay.atan2(az).to_degrees();
+    let roll = ay.atan2(-az).to_degrees();
     let pitch = (-ax).atan2((ay * ay + az * az).sqrt()).to_degrees();
     (roll, pitch)
 }
@@ -5509,8 +5637,8 @@ mod tests {
     use super::{
         ArmControlState, ArmHardwareAction, BODY_ATTITUDE_STRIKES_TO_TRIP, BrainMode,
         ImuReferenceFrame, LegPoseAngles, ManualControlState, MotionCommand, MotionRuntime,
-        SemanticCalibrationState, TelemetryImuState, arm_joint_infos,
-        arm_relative_degrees_between_ticks, body_attitude_fault_reason,
+        SemanticCalibrationState, TelemetryImuState, TelemetryServoState, arm_joint_infos,
+        arm_relative_degrees_between_ticks, body_attitude_fault_reason, build_body_scene,
         clamp_tilted_stand_pitch_deg, clamp_tilted_stand_roll_deg, derive_leg_lift_deltas,
         estimate_roll_pitch_deg, named_pose_with_calibration, relative_ticks_for_degrees,
         stand_pose_labels, sync_arm_mode_state, sync_manual_mode_state,
@@ -5756,6 +5884,21 @@ mod tests {
     }
 
     #[test]
+    fn jetson_profile_uses_the_verified_imu_forward_axis() {
+        let config = load_jetson_test_robot_config();
+        let imu = config
+            .imu
+            .as_ref()
+            .expect("jetson profile should configure the IMU");
+
+        assert_eq!(imu.reference_forward_sensor, [0.0, 1.0, 0.0]);
+        assert_eq!(
+            imu.reference_down_sensor,
+            [-0.999_980, 0.005_598, -0.002_893]
+        );
+    }
+
+    #[test]
     fn arm_relative_tick_conversion_respects_positive_sign() {
         let base_ticks = 2048u16;
 
@@ -5951,7 +6094,7 @@ mod tests {
         let (roll_deg, pitch_deg) =
             estimate_roll_pitch_deg(accel_mps2, ImuReferenceFrame::default());
 
-        let expected_roll_deg = accel_mps2[1].atan2(accel_mps2[2]).to_degrees();
+        let expected_roll_deg = (-accel_mps2[1]).atan2(accel_mps2[2]).to_degrees();
         let expected_pitch_deg = (-accel_mps2[0])
             .atan2((accel_mps2[1] * accel_mps2[1] + accel_mps2[2] * accel_mps2[2]).sqrt())
             .to_degrees();
@@ -6010,7 +6153,7 @@ mod tests {
     }
 
     #[test]
-    fn tilted_stand_roll_lifts_right_relative_to_left() {
+    fn tilted_stand_roll_lifts_left_relative_to_right() {
         let config = load_test_robot_config();
         let calibration = SemanticCalibrationState::default();
         let base_pose =
@@ -6037,6 +6180,60 @@ mod tests {
         }
 
         assert!(left_count > 0.0 && right_count > 0.0);
-        assert!(right_delta / right_count < left_delta / left_count);
+        assert!(left_delta / left_count < right_delta / right_count);
+    }
+
+    #[test]
+    fn body_scene_marks_default_imu_mount_and_populates_live_leg_pose() {
+        let config = load_test_robot_config();
+        let calibration = SemanticCalibrationState::default();
+        let servo_states = config
+            .legs
+            .iter()
+            .flat_map(|leg| {
+                let pose = config
+                    .pose_for_leg(SemanticPoseKind::StandReference, &leg.name)
+                    .expect("stand pose should exist");
+                let (coxa, femur, tibia) = leg.pose_ticks_from_angles(pose);
+                [
+                    (
+                        leg.coxa_servo_id,
+                        TelemetryServoState::online(
+                            format!("{} / coxa", leg.name),
+                            test_servo_telemetry(leg.coxa_servo_id, coxa),
+                        ),
+                    ),
+                    (
+                        leg.femur_servo_id,
+                        TelemetryServoState::online(
+                            format!("{} / femur", leg.name),
+                            test_servo_telemetry(leg.femur_servo_id, femur),
+                        ),
+                    ),
+                    (
+                        leg.tibia_servo_id,
+                        TelemetryServoState::online(
+                            format!("{} / tibia", leg.name),
+                            test_servo_telemetry(leg.tibia_servo_id, tibia),
+                        ),
+                    ),
+                ]
+            })
+            .collect::<BTreeMap<_, _>>();
+
+        let scene = build_body_scene(&config, &servo_states, &calibration);
+
+        assert_eq!(scene.legs.len(), config.legs.len());
+        assert!(!scene.body_outline.is_empty());
+        assert_eq!(scene.imu_position_cm.x, 0.0);
+        assert_eq!(scene.imu_position_cm.y, 0.0);
+        assert_eq!(scene.imu_position_cm.z, 0.0);
+        assert!(!scene.imu_mount_configured);
+        assert!(
+            scene
+                .legs
+                .iter()
+                .all(|leg| leg.pose.is_some() && leg.online_joint_count == 3)
+        );
     }
 }
