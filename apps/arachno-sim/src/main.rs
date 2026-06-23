@@ -1,3 +1,5 @@
+mod urdf;
+
 use std::{
     fs::{self, File},
     io::BufWriter,
@@ -24,6 +26,10 @@ struct Args {
 enum SimCommand {
     ExportSpec {
         #[arg(long, default_value = "artifacts/sim/robot-spec.json")]
+        output: PathBuf,
+    },
+    ExportUrdf {
+        #[arg(long, default_value = "artifacts/sim/robot.urdf")]
         output: PathBuf,
     },
     SilStand {
@@ -60,6 +66,7 @@ fn main() -> anyhow::Result<()> {
 
     match args.command {
         SimCommand::ExportSpec { output } => export_spec(&config, output),
+        SimCommand::ExportUrdf { output } => export_urdf(&config, output),
         SimCommand::SilStand {
             trajectory_output,
             steps,
@@ -82,6 +89,27 @@ fn export_spec(config: &RobotConfig, output: PathBuf) -> anyhow::Result<()> {
     println!(
         "wrote simulation robot spec for {} to {}",
         config.robot.name,
+        output.display()
+    );
+    Ok(())
+}
+
+fn export_urdf(config: &RobotConfig, output: PathBuf) -> anyhow::Result<()> {
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+
+    let spec = config.simulation_spec();
+    let urdf = urdf::generate_urdf(&spec);
+    fs::write(&output, &urdf)
+        .with_context(|| format!("failed to write {}", output.display()))?;
+
+    println!(
+        "wrote URDF for {} ({} legs, {} joints) to {}",
+        config.robot.name,
+        config.legs.len(),
+        config.legs.len() * 3,
         output.display()
     );
     Ok(())
