@@ -16,6 +16,7 @@ Rust-first starter workspace for a hexapod that can run either on a tethered Lin
 - `apps/arachno-calibrate`: servo ID, EEPROM-profile, range-scan, pose-check, and pose-suggestion tooling.
 - `apps/arachno-fw-info`: host-side firmware version and capability query for the RP2040 IMU bridge.
 - `apps/arachno-probe`: host-device reachability checks for configured camera and servo bridge paths.
+- `apps/arachno-sim`: shared robot-spec export plus first software-in-the-loop stand-reference trajectory generation.
 - `crates/arachno-core`: robot config, gait primitives, and shared domain logic.
 - `crates/arachno-hal`: hardware traits for servo buses, cameras, and future devices.
 - `crates/arachno-feetech-sts`: STS/TTL bus implementation area.
@@ -24,6 +25,7 @@ Rust-first starter workspace for a hexapod that can run either on a tethered Lin
 - `crates/arachno-camera`: camera pipeline builder and camera-facing code for both `argus` and `v4l2`.
 - `crates/arachno-control`: loop orchestration and safety boundaries.
 - `crates/arachno-msg`: message and telemetry types shared across crates.
+- `crates/arachno-sim-hal`: deterministic simulator-backed servo-bus implementation for software-in-the-loop testing.
 - `python/`: training, evaluation, and experiment scripts.
 - `native/`: narrow C++ bridge area for TensorRT, Argus, or vendor SDK shims.
 - `firmware/`: embedded Rust workspace for microcontroller-side bridge firmware.
@@ -40,6 +42,7 @@ Rust-first starter workspace for a hexapod that can run either on a tethered Lin
 - `config/robot/default.toml`: current local-development default, aligned with the host USB setup for now.
 - `config/robot/servo-config.toml`: shared servo/bus/safety/locomotion map loaded by all deployment profiles.
 - `config/robot/servo-poses.toml`: shared semantic pose map loaded by all deployment profiles.
+- `config/robot/leg-workspace.toml`: measured reachable envelopes loaded by the sim export and foot-placement helpers.
 - `config/robot/servo-ranges.toml`: measured free-movement envelopes written by the low-torque self-stop calibration scan.
 - `config/robot/servo-semantic-calibration.toml`: dashboard-captured semantic zero-reference corrections for joint-angle display and manual control.
 
@@ -76,6 +79,24 @@ Next up:
 2. Add IMU-assisted posture stabilization on top of the hand-built gait.
 3. Add a Jetson-native live camera backend for the onboard `argus` profile.
 4. Keep training and policy tooling in `python/`, then export deployable artifacts back to Rust.
+
+## Simulation Foundation
+
+The repo now has a first simulation-oriented path for easier testing and training setup:
+
+- `RobotConfig` exports a shared JSON robot spec with body geometry, servo IDs, pose targets, IMU mounting, safety, learning, simulation tuning, and measured leg workspaces
+- `TrajectoryHeader`, `TrajectoryFrame`, and `TrajectoryEvent` define a JSONL trajectory format shared across Rust and Python
+- `crates/arachno-sim-hal` provides a deterministic simulated `ServoBus` so the existing Rust controller can run software-in-the-loop without real hardware
+- `apps/arachno-sim` can export a robot spec and record a stand-reference trajectory from the simulated bus
+- `arachno-brain` can optionally write low-rate trajectory logs with `--trajectory-log`
+
+Useful starter commands:
+
+```bash
+just sim-export
+just sim-sil-stand
+cargo run -p arachno-brain -- --config config/robot/host-usb.toml --listen 127.0.0.1:4000 --trajectory-log artifacts/trajectories/host-usb.jsonl
+```
 
 ## Debug dashboard
 
@@ -131,8 +152,11 @@ cargo run -p arachno-calibrate -- --config config/robot/host-usb.toml --mode sen
 cargo run -p arachno-calibrate -- --config config/robot/host-usb.toml --mode check-poses --ranges config/robot/servo-ranges.toml
 cargo run -p arachno-calibrate -- --config config/robot/host-usb.toml --mode suggest-poses --ranges config/robot/servo-ranges.toml --suggestions-output /tmp/servo-pose-suggestions.toml
 cargo run -p arachno-probe -- --config config/robot/default.toml
+cargo run -p arachno-sim -- --config config/robot/default.toml export-spec --output artifacts/sim/robot-spec.json
+cargo run -p arachno-sim -- --config config/robot/default.toml sil-stand --trajectory-output artifacts/sim/stand-reference.jsonl --steps 20
 cargo run -p arachno-brain -- --config config/robot/host-usb.toml --listen 127.0.0.1:4000
 cargo run -p arachno-brain -- --config config/robot/host-usb.toml --listen 127.0.0.1:4000 --dashboard
+cargo run -p arachno-brain -- --config config/robot/host-usb.toml --listen 127.0.0.1:4000 --trajectory-log artifacts/trajectories/host-usb.jsonl
 cargo run -p arachno-brain -- --config config/robot/host-usb.toml --listen 127.0.0.1:4000 --mode manual --dashboard
 cargo run -p arachno-brain -- --config config/robot/host-usb.toml --listen 127.0.0.1:4000 --mode lay-down --dashboard
 cargo run -p arachno-brain -- --config config/robot/host-usb.toml --listen 127.0.0.1:4000 --mode stand-up --dashboard
@@ -147,7 +171,7 @@ cargo run -p arachno-brain -- --config config/robot/jetson-onboard.toml --listen
 cargo check --manifest-path firmware/Cargo.toml -p rp2040-imu-bridge --target thumbv6m-none-eabi
 ```
 
-`arachno-brain` now owns the live hardware-facing telemetry API at `/api/state`, the camera route at `/camera.mjpg`, the rich dashboard UI at `/` and `/dashboard` when started with `--dashboard`, the grouped manual-control API at `/api/manual/*`, the dashboard pose-copy utility, and the first hardware motion modes through `--mode telemetry`, `--mode manual`, `--mode lay-down`, `--mode stand-up`, `--mode stand-up-high`, `--mode stand`, `--mode stand-high`, `--mode slow-walk`, `--mode backward-walk`, `--mode rotate-left`, and `--mode rotate-right`.
+`arachno-brain` now owns the live hardware-facing telemetry API at `/api/state`, the camera route at `/camera.mjpg`, the rich dashboard UI at `/` and `/dashboard` when started with `--dashboard`, the grouped manual-control API at `/api/manual/*`, the dashboard pose-copy utility, optional low-rate trajectory logging via `--trajectory-log`, and the first hardware motion modes through `--mode telemetry`, `--mode manual`, `--mode lay-down`, `--mode stand-up`, `--mode stand-up-high`, `--mode stand`, `--mode stand-high`, `--mode slow-walk`, `--mode backward-walk`, `--mode rotate-left`, and `--mode rotate-right`.
 
 Servo EEPROM policy lives in `config/robot/servo-config.toml` under `[[servo_eeprom.entries]]`. Only `arachno-calibrate --mode apply-eeprom` writes those persistent registers. Normal runtime writes are blocked from EEPROM registers in the STS driver, and `arachno-brain` validates the configured EEPROM values before it starts the control worker.
 

@@ -1,3 +1,5 @@
+mod trajectory;
+
 use std::{thread, time::Duration};
 
 use arachno_core::{RobotConfig, TripodGait, now_ms};
@@ -5,6 +7,10 @@ use arachno_hal::{
     CameraSource, HalResult, ImuSource, ServoBus, enable_torque_on_current_position,
 };
 use arachno_msg::RobotSnapshot;
+
+pub use trajectory::{
+    TrajectoryLogError, TrajectoryLogWriter, read_trajectory_records, replay_trajectory_records,
+};
 
 pub struct SpiderController<B, C> {
     config: RobotConfig,

@@ -74,6 +74,12 @@ probe:
 dashboard:
     cargo run -p arachno-brain -- --config config/robot/host-usb.toml --listen 127.0.0.1:4000 --dashboard
 
+sim-export:
+    cargo run -p arachno-sim -- --config config/robot/default.toml export-spec --output artifacts/sim/robot-spec.json
+
+sim-sil-stand:
+    cargo run -p arachno-sim -- --config config/robot/default.toml sil-stand --trajectory-output artifacts/sim/stand-reference.jsonl --steps 20
+
 jetson-brain host="uli@192.168.178.131" listen="0.0.0.0:4000":
     #!/usr/bin/env bash
     set -euo pipefail

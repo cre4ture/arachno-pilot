@@ -417,7 +417,7 @@ mod tests {
     use arachno_core::{
         BusConfig, CameraBackend, CameraConfig, DeploymentConfig, FeetechBusConfig, LearningConfig,
         LegConfig, LocomotionConfig, RobotConfig, RobotMeta, SafetyConfig, SemanticPoseSet,
-        ServoEepromConfig,
+        ServoEepromConfig, SimulationConfig,
     };
     use std::path::PathBuf;
 
@@ -455,6 +455,7 @@ mod tests {
                 perception_hz: 20,
             },
             servo_store: None,
+            arm_store: None,
             pose_store: None,
             workspace_store: None,
             semantic_calibration_store: None,
@@ -464,6 +465,7 @@ mod tests {
             bus: BusConfig {
                 feetech: FeetechBusConfig::default(),
             },
+            arm: None,
             camera: CameraConfig {
                 name: "camera".to_owned(),
                 backend: CameraBackend::V4l2,
@@ -482,6 +484,7 @@ mod tests {
                 policy_transport: "unix-socket".to_owned(),
                 policy_path: "policy.onnx".to_owned(),
             },
+            simulation: SimulationConfig::default(),
             locomotion: LocomotionConfig::default(),
             legs: vec![
                 LegConfig {
@@ -505,6 +508,7 @@ mod tests {
                     coxa_length_cm: Some(1.0),
                     femur_length_cm: Some(1.0),
                     tibia_length_cm: Some(1.0),
+                    mount_position_cm: None,
                 },
                 LegConfig {
                     name: "front_right".to_owned(),
@@ -527,6 +531,7 @@ mod tests {
                     coxa_length_cm: Some(1.0),
                     femur_length_cm: Some(1.0),
                     tibia_length_cm: Some(1.0),
+                    mount_position_cm: None,
                 },
             ],
         };

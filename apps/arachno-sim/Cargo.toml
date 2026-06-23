@@ -1,0 +1,15 @@
+[package]
+name = "arachno-sim"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+arachno-camera = { path = "../../crates/arachno-camera" }
+arachno-control = { path = "../../crates/arachno-control" }
+arachno-core = { path = "../../crates/arachno-core" }
+arachno-msg = { path = "../../crates/arachno-msg" }
+arachno-sim-hal = { path = "../../crates/arachno-sim-hal" }
+clap.workspace = true
+serde_json.workspace = true

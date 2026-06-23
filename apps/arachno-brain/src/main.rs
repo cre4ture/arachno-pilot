@@ -1,6 +1,8 @@
 use std::{
     collections::{BTreeMap, VecDeque},
     fs,
+    fs::File,
+    io::BufWriter,
     net::SocketAddr,
     path::{Path, PathBuf},
     process::Stdio,
@@ -13,6 +15,7 @@ mod dashboard_page;
 
 use anyhow::Context;
 use arachno_camera::RobotCamera;
+use arachno_control::TrajectoryLogWriter;
 use arachno_core::{
     ArmServoConfig, CameraBackend, DEFAULT_IMU_REFERENCE_DOWN_SENSOR,
     DEFAULT_IMU_REFERENCE_FORWARD_SENSOR, LegBodyFramePose, LegPoint3, LegPoseAngles,
@@ -25,7 +28,10 @@ use arachno_feetech_sts::{
 };
 use arachno_hal::{CameraSource, ImuSource, ServoBus, read_current_pose};
 use arachno_imu_host::{DeviceInfoProbe, SensorKind, UsbImuBridge};
-use arachno_msg::{ImuTelemetry, JointCommand, ServoTelemetry};
+use arachno_msg::{
+    ImuTelemetry, JointCommand, RobotSnapshot, ServoTelemetry, TrajectoryEvent, TrajectoryFrame,
+    TrajectoryHeader,
+};
 use axum::{
     Json, Router,
     body::Body,
@@ -57,6 +63,7 @@ const MANUAL_TIBIA_LIMIT_DEG: f32 = 180.0;
 const DASHBOARD_TORQUE_LIMIT_MAX: u16 = 1000;
 const TILTED_STAND_PITCH_LIMIT_DEG: f32 = 20.0;
 const TILTED_STAND_ROLL_LIMIT_DEG: f32 = 20.0;
+const DEFAULT_TRAJECTORY_LOG_HZ: u16 = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum BrainMode {
@@ -288,6 +295,10 @@ struct Args {
     tilted_stand_pitch_deg: f32,
     #[arg(long, default_value_t = 0.0)]
     tilted_stand_roll_deg: f32,
+    #[arg(long)]
+    trajectory_log: Option<PathBuf>,
+    #[arg(long, default_value_t = DEFAULT_TRAJECTORY_LOG_HZ)]
+    trajectory_log_hz: u16,
 }
 
 #[derive(Clone)]
@@ -300,6 +311,97 @@ struct AppState {
     calibration: Arc<RwLock<SemanticCalibrationState>>,
     pending_mode: Arc<RwLock<Option<BrainMode>>>,
     dashboard_enabled: bool,
+}
+
+struct BrainTrajectoryRecorder {
+    writer: TrajectoryLogWriter<BufWriter<File>>,
+    started_at: Instant,
+    next_frame_due_at: Instant,
+    frame_period: Duration,
+}
+
+impl BrainTrajectoryRecorder {
+    fn new(
+        path: &Path,
+        config: &RobotConfig,
+        config_path: &Path,
+        log_hz: u16,
+    ) -> anyhow::Result<Self> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).with_context(|| {
+                format!(
+                    "failed to create trajectory log directory {}",
+                    parent.display()
+                )
+            })?;
+        }
+
+        let file = File::create(path)
+            .with_context(|| format!("failed to create trajectory log {}", path.display()))?;
+        let mut writer = TrajectoryLogWriter::new(BufWriter::new(file));
+        writer.write_header(&TrajectoryHeader {
+            format_version: 1,
+            recorded_at_ms: now_ms(),
+            robot_name: config.robot.name.clone(),
+            deployment_profile: config.deployment.profile.clone(),
+            control_hz: config.robot.control_hz,
+            command_hz: config.locomotion.command_hz,
+            config_path: Some(config_path.display().to_string()),
+        })?;
+
+        let started_at = Instant::now();
+        let frame_period = Duration::from_secs_f32(1.0 / log_hz.max(1) as f32);
+
+        Ok(Self {
+            writer,
+            started_at,
+            next_frame_due_at: started_at,
+            frame_period,
+        })
+    }
+
+    fn should_record(&self, now: Instant) -> bool {
+        now >= self.next_frame_due_at
+    }
+
+    fn record_frame(
+        &mut self,
+        now: Instant,
+        snapshot: RobotSnapshot,
+        commands: Vec<JointCommand>,
+        motion_fault: Option<String>,
+    ) -> anyhow::Result<()> {
+        self.writer.write_frame(&TrajectoryFrame {
+            elapsed_ms: self.elapsed_ms(now),
+            snapshot,
+            commands,
+            motion_fault,
+        })?;
+        self.advance_schedule(now);
+        Ok(())
+    }
+
+    fn record_event(
+        &mut self,
+        now: Instant,
+        kind: impl Into<String>,
+        message: impl Into<String>,
+    ) -> anyhow::Result<()> {
+        self.writer.write_event(&TrajectoryEvent {
+            elapsed_ms: self.elapsed_ms(now),
+            kind: kind.into(),
+            message: message.into(),
+        })?;
+        Ok(())
+    }
+
+    fn elapsed_ms(&self, now: Instant) -> u64 {
+        now.duration_since(self.started_at).as_millis() as u64
+    }
+
+    fn advance_schedule(&mut self, now: Instant) {
+        self.next_frame_due_at = now + self.frame_period;
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1677,6 +1779,9 @@ async fn main() -> anyhow::Result<()> {
         args.walk_seconds,
         clamp_tilted_stand_pitch_deg(args.tilted_stand_pitch_deg),
         clamp_tilted_stand_roll_deg(args.tilted_stand_roll_deg),
+        args.trajectory_log.clone(),
+        args.trajectory_log_hz,
+        args.config.clone(),
     );
 
     let app = Router::new()
@@ -1784,6 +1889,9 @@ fn spawn_control_worker(
     walk_seconds: Option<f32>,
     tilted_stand_pitch_deg: f32,
     tilted_stand_roll_deg: f32,
+    trajectory_log: Option<PathBuf>,
+    trajectory_log_hz: u16,
+    config_path: PathBuf,
 ) {
     thread::spawn(move || {
         let labels = servo_labels(&config);
@@ -1815,6 +1923,27 @@ fn spawn_control_worker(
             .as_ref()
             .map(|_| "waiting for arm servo bus".to_owned());
         let mut loop_period = motion_loop_period(mode, &config);
+        let mut trajectory_recorder = trajectory_log.as_ref().and_then(|path| {
+            match BrainTrajectoryRecorder::new(path, &config, &config_path, trajectory_log_hz) {
+                Ok(mut recorder) => {
+                    if let Err(err) = recorder.record_event(
+                        Instant::now(),
+                        "start",
+                        format!("brain worker started in {}", mode.as_state_label()),
+                    ) {
+                        warn!(error = %err, path = %path.display(), "failed to seed trajectory log");
+                        None
+                    } else {
+                        info!(path = %path.display(), log_hz = trajectory_log_hz.max(1), "trajectory logging enabled");
+                        Some(recorder)
+                    }
+                }
+                Err(err) => {
+                    warn!(error = %err, path = %path.display(), "failed to initialize trajectory log");
+                    None
+                }
+            }
+        });
 
         loop {
             let tick_started = Instant::now();
@@ -1856,6 +1985,15 @@ fn spawn_control_worker(
                     new = new_mode.as_state_label(),
                     "motion mode changed via dashboard command"
                 );
+                if let Some(recorder) = trajectory_recorder.as_mut()
+                    && let Err(err) = recorder.record_event(
+                        tick_started,
+                        "mode_change",
+                        format!("{old_label} -> {}", new_mode.as_state_label()),
+                    )
+                {
+                    warn!(error = %err, "failed to append trajectory mode-change event");
+                }
             }
 
             poll_imu(&config, &mut imu_bridge, &mut imu_state);
@@ -1942,15 +2080,21 @@ fn spawn_control_worker(
                 torque_enabled = true;
             }
 
-            let read_budget = if mode == BrainMode::Telemetry || motion.armed_at.is_none() {
-                servo_ids.len()
-            } else {
-                config
-                    .bus
-                    .feetech
-                    .telemetry_stride
-                    .clamp(1, servo_ids.len())
-            };
+            let should_record_frame = trajectory_recorder
+                .as_ref()
+                .is_some_and(|recorder| recorder.should_record(tick_started));
+
+            let read_budget =
+                if should_record_frame || mode == BrainMode::Telemetry || motion.armed_at.is_none()
+                {
+                    servo_ids.len()
+                } else {
+                    config
+                        .bus
+                        .feetech
+                        .telemetry_stride
+                        .clamp(1, servo_ids.len())
+                };
 
             let poll_outcome = poll_servo_window(
                 real_bus,
@@ -2191,18 +2335,32 @@ fn spawn_control_worker(
                 continue;
             }
 
-            if let Some(commands) = motion.commands(
+            let logged_snapshot = should_record_frame.then(|| {
+                build_robot_snapshot(&motion, &servo_ids, &servo_states, imu_state.as_ref())
+            });
+            let commanded_commands = motion.commands(
                 &config,
                 &calibration_snapshot,
                 Some(&manual),
                 Some(&tilted_stand),
-            ) && let Err(err) = real_bus.sync_write_positions(&commands)
+            );
+            if let Some(commands) = commanded_commands.as_ref()
+                && let Err(err) = real_bus.sync_write_positions(commands)
             {
                 warn!(error = %err, command_count = commands.len(), "failed to send motion commands");
                 motion.trip_fault(
                     format!("failed to send motion commands: {err}"),
                     current_pose(&servo_ids, &servo_states),
                 );
+                if let Some(recorder) = trajectory_recorder.as_mut()
+                    && let Err(record_err) = recorder.record_event(
+                        tick_started,
+                        "fault",
+                        format!("sync write failed: {err}"),
+                    )
+                {
+                    warn!(error = %record_err, "failed to append trajectory fault event");
+                }
                 bus = None;
                 torque_enabled = false;
                 write_state(
@@ -2224,6 +2382,18 @@ fn spawn_control_worker(
                 );
                 sleep_remaining(tick_started, loop_period);
                 continue;
+            }
+
+            if let Some(snapshot) = logged_snapshot
+                && let Some(recorder) = trajectory_recorder.as_mut()
+                && let Err(err) = recorder.record_frame(
+                    tick_started,
+                    snapshot,
+                    commanded_commands.clone().unwrap_or_default(),
+                    motion.fault.clone(),
+                )
+            {
+                warn!(error = %err, "failed to append trajectory frame");
             }
 
             write_state(
@@ -2416,6 +2586,25 @@ fn build_state_snapshot(
     }
 }
 
+fn build_robot_snapshot(
+    motion: &MotionRuntime,
+    servo_ids: &[u8],
+    servo_states: &BTreeMap<u8, TelemetryServoState>,
+    imu: Option<&TelemetryImuState>,
+) -> RobotSnapshot {
+    RobotSnapshot {
+        timestamp_ms: now_ms(),
+        body_mode: motion.mode.as_state_label().to_owned(),
+        telemetry: servo_ids
+            .iter()
+            .filter_map(|servo_id| servo_states.get(servo_id))
+            .filter_map(|servo| servo.telemetry.clone())
+            .collect(),
+        camera: None,
+        imu: imu.and_then(|state| state.telemetry.clone()),
+    }
+}
+
 fn semantic_leg_pose_from_servo_states(
     config: &RobotConfig,
     servo_states: &BTreeMap<u8, TelemetryServoState>,
@@ -2463,54 +2652,6 @@ fn build_leg_previews(
         .collect()
 }
 
-fn nominal_body_outline(config: &RobotConfig) -> Vec<LegPoint3> {
-    let anchors = config
-        .legs
-        .iter()
-        .map(|leg| leg.body_anchor_point_cm())
-        .collect::<Vec<_>>();
-
-    let front_x = anchors.iter().map(|point| point.x).fold(0.0_f32, f32::max) + 3.4;
-    let rear_x = anchors.iter().map(|point| point.x).fold(0.0_f32, f32::min) - 3.0;
-    let left_y = anchors.iter().map(|point| point.y).fold(0.0_f32, f32::max) + 2.6;
-    let right_y = anchors.iter().map(|point| point.y).fold(0.0_f32, f32::min) - 2.6;
-    let shoulder_x = (front_x * 0.55).max(2.5);
-    let hip_x = (rear_x * 0.55).min(-2.5);
-
-    vec![
-        LegPoint3 {
-            x: front_x,
-            y: 0.0,
-            z: 0.0,
-        },
-        LegPoint3 {
-            x: shoulder_x,
-            y: left_y,
-            z: 0.0,
-        },
-        LegPoint3 {
-            x: hip_x,
-            y: left_y,
-            z: 0.0,
-        },
-        LegPoint3 {
-            x: rear_x,
-            y: 0.0,
-            z: 0.0,
-        },
-        LegPoint3 {
-            x: hip_x,
-            y: right_y,
-            z: 0.0,
-        },
-        LegPoint3 {
-            x: shoulder_x,
-            y: right_y,
-            z: 0.0,
-        },
-    ]
-}
-
 fn build_body_scene(
     config: &RobotConfig,
     servo_states: &BTreeMap<u8, TelemetryServoState>,
@@ -2556,7 +2697,7 @@ fn build_body_scene(
         .collect();
 
     TelemetryBodySceneState {
-        body_outline: nominal_body_outline(config),
+        body_outline: config.nominal_body_outline_cm(),
         imu_position_cm: imu_mount_position_cm,
         imu_mount_configured,
         legs,
@@ -5695,11 +5836,12 @@ mod tests {
         ImuReferenceFrame, LegPoseAngles, ManualControlState, MotionCommand, MotionRuntime,
         SemanticCalibrationState, TelemetryImuState, TelemetryServoState, arm_joint_infos,
         arm_motion_from_current_pose, arm_relative_degrees_between_ticks,
-        body_attitude_fault_reason, build_body_scene, clamp_tilted_stand_pitch_deg,
-        clamp_tilted_stand_roll_deg, derive_leg_lift_deltas, estimate_roll_pitch_deg,
-        named_pose_with_calibration, relative_ticks_for_degrees, semantic_pose_from_base_pose,
-        stand_pose_labels, sync_arm_mode_state, sync_manual_mode_state,
-        sync_target_pose_to_live_servo_positions, tilted_stand_leg_geometry, tilted_stand_pose,
+        body_attitude_fault_reason, build_body_scene, build_robot_snapshot,
+        clamp_tilted_stand_pitch_deg, clamp_tilted_stand_roll_deg, derive_leg_lift_deltas,
+        estimate_roll_pitch_deg, named_pose_with_calibration, relative_ticks_for_degrees,
+        semantic_pose_from_base_pose, stand_pose_labels, sync_arm_mode_state,
+        sync_manual_mode_state, sync_target_pose_to_live_servo_positions,
+        tilted_stand_leg_geometry, tilted_stand_pose,
     };
     use arachno_core::{LegConfig, RobotConfig, SafetyConfig, SemanticPoseKind};
     use arachno_hal::{HalResult, ServoBus};
@@ -5770,7 +5912,14 @@ mod tests {
             observed_who_am_i: None,
             description: None,
             last_error: None,
-            telemetry: None,
+            telemetry: Some(arachno_msg::ImuTelemetry {
+                timestamp_ms: 1_000,
+                accel_mps2: [0.0, 0.0, 9.81],
+                gyro_rad_s: [0.0, 0.0, 0.0],
+                temperature_c: Some(25.0),
+                status_bits: None,
+                faults: Vec::new(),
+            }),
             roll_deg,
             pitch_deg,
             accel_norm_mps2: Some(9.81),
@@ -5805,6 +5954,33 @@ mod tests {
             faults: Vec::new(),
             moving: false,
         }
+    }
+
+    #[test]
+    fn robot_snapshot_uses_live_servo_feedback_and_imu() {
+        let motion = MotionRuntime::new(BrainMode::Stand, None);
+        let servo_states = BTreeMap::from([
+            (
+                11,
+                TelemetryServoState::online(
+                    "front-left coxa".to_owned(),
+                    test_servo_telemetry(11, 1500),
+                ),
+            ),
+            (
+                12,
+                TelemetryServoState::offline(12, "front-left femur".to_owned(), "no reply"),
+            ),
+        ]);
+        let imu = make_test_imu_state(Some(1.5), Some(-2.0));
+
+        let snapshot = build_robot_snapshot(&motion, &[11, 12], &servo_states, Some(&imu));
+
+        assert_eq!(snapshot.body_mode, "stand");
+        assert_eq!(snapshot.telemetry.len(), 1);
+        assert_eq!(snapshot.telemetry[0].servo_id, 11);
+        assert!(snapshot.camera.is_none());
+        assert!(snapshot.imu.is_some());
     }
 
     #[test]

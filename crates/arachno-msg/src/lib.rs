@@ -49,6 +49,40 @@ pub struct RobotSnapshot {
     pub imu: Option<ImuTelemetry>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct TrajectoryHeader {
+    pub format_version: u32,
+    pub recorded_at_ms: u64,
+    pub robot_name: String,
+    pub deployment_profile: String,
+    pub control_hz: u16,
+    pub command_hz: u16,
+    pub config_path: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct TrajectoryFrame {
+    pub elapsed_ms: u64,
+    pub snapshot: RobotSnapshot,
+    pub commands: Vec<JointCommand>,
+    pub motion_fault: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct TrajectoryEvent {
+    pub elapsed_ms: u64,
+    pub kind: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "record_type", content = "record", rename_all = "snake_case")]
+pub enum TrajectoryRecord {
+    Header(TrajectoryHeader),
+    Frame(TrajectoryFrame),
+    Event(TrajectoryEvent),
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -181,5 +215,105 @@ mod tests {
             camera: Some(cam),
             imu: Some(imu),
         });
+    }
+
+    // TrajectoryHeader ---------------------------------------------------
+
+    #[test]
+    fn trajectory_header_default_roundtrip() {
+        roundtrip(&TrajectoryHeader::default());
+    }
+
+    #[test]
+    fn trajectory_header_populated_roundtrip() {
+        roundtrip(&TrajectoryHeader {
+            format_version: 1,
+            recorded_at_ms: 1234,
+            robot_name: "arachno-pilot".to_owned(),
+            deployment_profile: "host-usb".to_owned(),
+            control_hz: 150,
+            command_hz: 20,
+            config_path: Some("config/robot/default.toml".to_owned()),
+        });
+    }
+
+    // TrajectoryFrame ----------------------------------------------------
+
+    #[test]
+    fn trajectory_frame_default_roundtrip() {
+        roundtrip(&TrajectoryFrame::default());
+    }
+
+    #[test]
+    fn trajectory_frame_populated_roundtrip() {
+        roundtrip(&TrajectoryFrame {
+            elapsed_ms: 250,
+            snapshot: RobotSnapshot {
+                timestamp_ms: 999_999,
+                body_mode: "stand_reference".to_string(),
+                telemetry: vec![ServoTelemetry {
+                    servo_id: 1,
+                    present_position_ticks: 2048,
+                    ..ServoTelemetry::default()
+                }],
+                camera: None,
+                imu: None,
+            },
+            commands: vec![JointCommand {
+                servo_id: 1,
+                position_ticks: 2100,
+                speed_ticks: 200,
+                acceleration: 10,
+            }],
+            motion_fault: Some("voltage dip".to_owned()),
+        });
+    }
+
+    // TrajectoryEvent ----------------------------------------------------
+
+    #[test]
+    fn trajectory_event_default_roundtrip() {
+        roundtrip(&TrajectoryEvent::default());
+    }
+
+    #[test]
+    fn trajectory_event_populated_roundtrip() {
+        roundtrip(&TrajectoryEvent {
+            elapsed_ms: 500,
+            kind: "mode_change".to_owned(),
+            message: "manual -> stand".to_owned(),
+        });
+    }
+
+    // TrajectoryRecord ---------------------------------------------------
+
+    #[test]
+    fn trajectory_record_roundtrips_all_variants() {
+        roundtrip(&TrajectoryRecord::Header(TrajectoryHeader {
+            format_version: 1,
+            recorded_at_ms: 10,
+            robot_name: "arachno-pilot".to_owned(),
+            deployment_profile: "host-usb".to_owned(),
+            control_hz: 150,
+            command_hz: 20,
+            config_path: None,
+        }));
+        roundtrip(&TrajectoryRecord::Frame(TrajectoryFrame {
+            elapsed_ms: 100,
+            snapshot: RobotSnapshot {
+                timestamp_ms: 100,
+                body_mode: "stand".to_owned(),
+                telemetry: vec![],
+                camera: None,
+                imu: None,
+            },
+            commands: vec![],
+            motion_fault: None,
+        }));
+        roundtrip(&TrajectoryRecord::Event(TrajectoryEvent {
+            elapsed_ms: 150,
+            kind: "fault".to_owned(),
+            message: "body roll exceeded limit".to_owned(),
+        }));
     }
 }

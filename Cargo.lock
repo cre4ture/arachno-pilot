@@ -73,6 +73,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "arachno-camera",
+ "arachno-control",
  "arachno-core",
  "arachno-feetech-sts",
  "arachno-hal",
@@ -119,9 +120,13 @@ dependencies = [
 name = "arachno-control"
 version = "0.1.0"
 dependencies = [
+ "arachno-camera",
  "arachno-core",
  "arachno-hal",
  "arachno-msg",
+ "arachno-sim-hal",
+ "serde_json",
+ "thiserror",
 ]
 
 [[package]]
@@ -201,6 +206,29 @@ dependencies = [
  "clap",
  "libc",
  "toml",
+]
+
+[[package]]
+name = "arachno-sim"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "arachno-camera",
+ "arachno-control",
+ "arachno-core",
+ "arachno-msg",
+ "arachno-sim-hal",
+ "clap",
+ "serde_json",
+]
+
+[[package]]
+name = "arachno-sim-hal"
+version = "0.1.0"
+dependencies = [
+ "arachno-core",
+ "arachno-hal",
+ "arachno-msg",
 ]
 
 [[package]]

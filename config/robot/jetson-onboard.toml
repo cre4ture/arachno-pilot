@@ -16,6 +16,9 @@ path = "arm-servo-config.toml"
 [pose_store]
 path = "servo-poses.toml"
 
+[workspace_store]
+path = "leg-workspace.toml"
+
 [semantic_calibration_store]
 path = "servo-semantic-calibration.toml"
 
@@ -42,3 +45,12 @@ reference_down_sensor = [-0.999980, 0.005598, -0.002893]
 mode = "shadow"
 policy_transport = "unix-socket"
 policy_path = "artifacts/policies/latest.onnx"
+
+[simulation]
+body_mass_kg = 1.8
+body_size_cm = [20.0, 15.0, 5.5]
+foot_radius_cm = 0.8
+ground_friction = 1.0
+joint_damping = 0.08
+servo_response_hz = 12.0
+max_servo_speed_deg_s = 240.0

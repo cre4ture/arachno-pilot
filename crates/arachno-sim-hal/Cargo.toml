@@ -1,5 +1,5 @@
 [package]
-name = "arachno-control"
+name = "arachno-sim-hal"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
@@ -8,9 +8,3 @@ license.workspace = true
 arachno-core = { path = "../arachno-core" }
 arachno-hal = { path = "../arachno-hal" }
 arachno-msg = { path = "../arachno-msg" }
-serde_json.workspace = true
-thiserror.workspace = true
-
-[dev-dependencies]
-arachno-camera = { path = "../arachno-camera" }
-arachno-sim-hal = { path = "../arachno-sim-hal" }

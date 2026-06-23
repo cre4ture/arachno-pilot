@@ -4,6 +4,7 @@ members = [
     "apps/arachno-calibrate",
     "apps/arachno-fw-info",
     "apps/arachno-probe",
+    "apps/arachno-sim",
     "crates/arachno-camera",
     "crates/arachno-control",
     "crates/arachno-core",
@@ -12,6 +13,7 @@ members = [
     "crates/arachno-imu-host",
     "crates/arachno-imu-proto",
     "crates/arachno-msg",
+    "crates/arachno-sim-hal",
 ]
 exclude = ["firmware"]
 resolver = "2"
