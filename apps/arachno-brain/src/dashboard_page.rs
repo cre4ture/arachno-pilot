@@ -3372,21 +3372,46 @@ pub const DASHBOARD_HTML: &str = r##"<!doctype html>
       return `#${toHexByte(r1 + (r2 - r1) * t)}${toHexByte(g1 + (g2 - g1) * t)}${toHexByte(b1 + (b2 - b1) * t)}`;
     }
 
+    function robotSceneJointTelemetry(servo, jointIndex) {
+      const telemetry = servo?.telemetry;
+      const loadPct = Math.abs(Number(telemetry?.present_load_pct));
+      const currentMa = Number(telemetry?.present_current_ma);
+      return {
+        jointIndex,
+        jointKey: JOINT_LABEL[jointIndex] ?? `joint ${jointIndex}`,
+        online: Boolean(servo?.online),
+        loadPct: servo?.online && Number.isFinite(loadPct) ? loadPct : 0,
+        currentMa: servo?.online && Number.isFinite(currentMa) ? currentMa : 0,
+        faultCount: servo?.online ? (telemetry?.faults?.length ?? 0) : 0,
+      };
+    }
+
+    function robotSceneEmptyLegFeedback() {
+      return {
+        onlineJointCount: 0,
+        avgLoadPct: 0,
+        maxLoadPct: 0,
+        avgCurrentMa: 0,
+        maxCurrentMa: 0,
+        faultCount: 0,
+        joints: [1, 2, 3].map((jointIndex) => robotSceneJointTelemetry(null, jointIndex)),
+        peakJointKey: null,
+        primaryFaultJointKey: null,
+      };
+    }
+
     function robotSceneLegTelemetryByKey(servos) {
       const grouped = groupServosByLeg(servos ?? []);
       return Object.fromEntries(LEG_ORDER.map((legKey) => {
         const legServos = grouped[legKey] ?? [];
-        const onlineServos = legServos.filter((servo) => servo.online);
-        const loads = onlineServos
-          .map((servo) => Math.abs(Number(servo.telemetry?.present_load_pct)))
-          .filter((value) => Number.isFinite(value));
-        const currents = onlineServos
-          .map((servo) => Number(servo.telemetry?.present_current_ma))
-          .filter((value) => Number.isFinite(value));
-        const faultCount = onlineServos.reduce(
-          (count, servo) => count + (servo.telemetry?.faults?.length ?? 0),
-          0,
+        const byJoint = servoByJoint(legServos);
+        const jointFeedback = [1, 2, 3].map((jointIndex) =>
+          robotSceneJointTelemetry(byJoint[jointIndex], jointIndex)
         );
+        const onlineJoints = jointFeedback.filter((joint) => joint.online);
+        const loads = onlineJoints.map((joint) => joint.loadPct);
+        const currents = onlineJoints.map((joint) => joint.currentMa);
+        const faultCount = onlineJoints.reduce((count, joint) => count + joint.faultCount, 0);
         const avgLoadPct = loads.length
           ? loads.reduce((sum, value) => sum + value, 0) / loads.length
           : 0;
@@ -3395,19 +3420,31 @@ pub const DASHBOARD_HTML: &str = r##"<!doctype html>
           ? currents.reduce((sum, value) => sum + value, 0) / currents.length
           : 0;
         const maxCurrentMa = currents.length ? Math.max(...currents) : 0;
+        const peakJoint = [...onlineJoints]
+          .sort((left, right) => right.loadPct - left.loadPct)[0] ?? null;
+        const primaryFaultJoint = [...onlineJoints]
+          .filter((joint) => joint.faultCount > 0)
+          .sort((left, right) => (
+            right.faultCount - left.faultCount
+              || right.loadPct - left.loadPct
+              || left.jointIndex - right.jointIndex
+          ))[0] ?? null;
         return [legKey, {
-          onlineJointCount: onlineServos.length,
+          onlineJointCount: onlineJoints.length,
           avgLoadPct,
           maxLoadPct,
           avgCurrentMa,
           maxCurrentMa,
           faultCount,
+          joints: jointFeedback,
+          peakJointKey: peakJoint?.jointKey ?? null,
+          primaryFaultJointKey: primaryFaultJoint?.jointKey ?? null,
         }];
       }));
     }
 
-    function robotSceneLegColor(feedback) {
-      if (!feedback || feedback.onlineJointCount === 0) {
+    function robotSceneJointColor(feedback) {
+      if (!feedback?.online) {
         return {
           segment: "#5a6775",
           joint: "#758292",
@@ -3426,12 +3463,7 @@ pub const DASHBOARD_HTML: &str = r##"<!doctype html>
         };
       }
 
-      const partialPenalty = feedback.onlineJointCount < 3 ? 0.28 : 0.0;
-      const loadRatio = clamp(
-        Math.max(feedback.avgLoadPct, feedback.maxLoadPct * 0.82) / 100 - partialPenalty,
-        0,
-        1,
-      );
+      const loadRatio = clamp(feedback.loadPct / 100, 0, 1);
       let segment = "#77e4b5";
       let foot = "#77e4b5";
       if (loadRatio > 0.55) {
@@ -3444,17 +3476,47 @@ pub const DASHBOARD_HTML: &str = r##"<!doctype html>
         foot = robotSceneMixHex("#95efc4", "#ffc26b", t);
       }
 
-      if (feedback.onlineJointCount < 3) {
-        segment = robotSceneMixHex(segment, "#9fd2ff", 0.48);
-        foot = robotSceneMixHex(foot, "#9fd2ff", 0.48);
-      }
-
       return {
         segment,
         joint: robotSceneMixHex("#eef3f7", segment, 0.32),
         foot,
         emissive: robotSceneMixHex("#6be6d2", foot, 0.58),
         emphasis: loadRatio,
+      };
+    }
+
+    function robotSceneJointNodeVisual(primarySegment, secondarySegment = null) {
+      const from = primarySegment ?? robotSceneJointColor(null);
+      const to = secondarySegment ?? from;
+      return {
+        color: robotSceneMixHex(from.joint, to.joint, secondarySegment ? 0.5 : 0),
+        emissive: robotSceneMixHex(from.emissive, to.emissive, secondarySegment ? 0.5 : 0),
+        emphasis: Math.max(from.emphasis, to.emphasis),
+      };
+    }
+
+    function robotSceneLegColor(feedback) {
+      const jointVisualsByKey = Object.fromEntries(
+        (feedback?.joints ?? []).map((joint) => [joint.jointKey, robotSceneJointColor(joint)])
+      );
+      const coxaVisual = jointVisualsByKey.coxa ?? robotSceneJointColor(null);
+      const femurVisual = jointVisualsByKey.femur ?? robotSceneJointColor(null);
+      const tibiaVisual = jointVisualsByKey.tibia ?? robotSceneJointColor(null);
+
+      return {
+        segments: [coxaVisual, femurVisual, tibiaVisual],
+        joints: [
+          robotSceneJointNodeVisual(coxaVisual),
+          robotSceneJointNodeVisual(coxaVisual, femurVisual),
+          robotSceneJointNodeVisual(femurVisual, tibiaVisual),
+        ],
+        foot: tibiaVisual.foot,
+        footEmissive: tibiaVisual.emissive,
+        emphasis: Math.max(
+          coxaVisual.emphasis,
+          femurVisual.emphasis,
+          tibiaVisual.emphasis,
+        ),
       };
     }
 
@@ -3471,13 +3533,17 @@ pub const DASHBOARD_HTML: &str = r##"<!doctype html>
         const feedback = feedbackByKey[legKey];
         const meta = LEG_META[legKey];
         const loadText = feedback?.onlineJointCount
-          ? `${fmt(feedback.maxLoadPct, 0)}% load`
+          ? feedback.primaryFaultJointKey
+            ? `${feedback.primaryFaultJointKey} fault`
+            : feedback.peakJointKey
+              ? `${feedback.peakJointKey} ${fmt(feedback.maxLoadPct, 0)}%`
+              : `${fmt(feedback.maxLoadPct, 0)}% load`
           : "offline";
         const currentText = feedback?.onlineJointCount
           ? `${Math.round(feedback.maxCurrentMa || 0)} mA`
           : "no current";
         const healthText = feedback?.faultCount
-          ? `${feedback.faultCount} fault${feedback.faultCount === 1 ? "" : "s"}`
+          ? `${feedback.faultCount} fault${feedback.faultCount === 1 ? "" : "s"} on ${feedback.primaryFaultJointKey ?? "leg"}`
           : `${feedback?.onlineJointCount ?? 0}/3 joints`;
         return `
           <div class="robot-scene-feedback-chip ${robotSceneFeedbackClass(feedback)}">
@@ -3619,7 +3685,7 @@ pub const DASHBOARD_HTML: &str = r##"<!doctype html>
 
       for (const leg of bodyScene.legs ?? []) {
         if (!leg.pose) continue;
-        const feedback = feedbackByKey[leg.leg_key] ?? { onlineJointCount: leg.online_joint_count, avgLoadPct: 0, maxLoadPct: 0, avgCurrentMa: 0, maxCurrentMa: 0, faultCount: 0 };
+        const feedback = feedbackByKey[leg.leg_key] ?? robotSceneEmptyLegFeedback();
         const color = robotSceneLegColor(feedback);
         const points = [
           robotSceneVector(leg.pose.anchor),
@@ -3627,28 +3693,32 @@ pub const DASHBOARD_HTML: &str = r##"<!doctype html>
           robotSceneVector(leg.pose.femur_end),
           robotSceneVector(leg.pose.tibia_end),
         ];
-        const segmentScale = 1.0 + color.emphasis * 0.38;
-        const segmentRadii = [0.24, 0.22, 0.20].map((radius) => radius * segmentScale);
+        const segmentRadii = [0.24, 0.22, 0.20].map((radius, index) => {
+          const segmentVisual = color.segments[index];
+          return radius * (1.0 + (segmentVisual?.emphasis ?? 0) * 0.38);
+        });
         for (let index = 0; index < points.length - 1; index += 1) {
+          const segmentVisual = color.segments[index];
           const segment = buildRobotSceneSegment(
             points[index],
             points[index + 1],
             segmentRadii[index] ?? 0.20,
-            color.segment,
-            color.emissive,
-            0.05 + color.emphasis * 0.22,
+            segmentVisual?.segment ?? "#5a6775",
+            segmentVisual?.emissive ?? "#3c4651",
+            0.05 + (segmentVisual?.emphasis ?? 0) * 0.22,
           );
           if (segment) {
             rollGroup.add(segment);
           }
         }
-        for (const point of points.slice(0, -1)) {
+        for (const [index, point] of points.slice(0, -1).entries()) {
+          const jointVisual = color.joints[index] ?? robotSceneJointNodeVisual(null);
           const joint = new THREE_NS.Mesh(
             new THREE_NS.SphereGeometry(0.30, 14, 12),
             new THREE_NS.MeshStandardMaterial({
-              color: color.joint,
-              emissive: color.emissive,
-              emissiveIntensity: 0.02 + color.emphasis * 0.16,
+              color: jointVisual.color,
+              emissive: jointVisual.emissive,
+              emissiveIntensity: 0.02 + jointVisual.emphasis * 0.16,
               roughness: 0.24,
               metalness: 0.04,
             }),
@@ -3660,7 +3730,7 @@ pub const DASHBOARD_HTML: &str = r##"<!doctype html>
           new THREE_NS.SphereGeometry(0.36 + color.emphasis * 0.12, 16, 14),
           new THREE_NS.MeshStandardMaterial({
             color: color.foot,
-            emissive: color.emissive,
+            emissive: color.footEmissive,
             emissiveIntensity: 0.10 + color.emphasis * 0.34,
             roughness: 0.18,
             metalness: 0.02,
@@ -3801,7 +3871,7 @@ pub const DASHBOARD_HTML: &str = r##"<!doctype html>
         .sort((left, right) => (right.feedback.maxLoadPct ?? 0) - (left.feedback.maxLoadPct ?? 0))[0];
       document.getElementById("robot-scene-summary").textContent = bodyScene
         ? strongestLeg
-          ? `${liveLegs}/${totalLegs} live · max load ${LEG_META[strongestLeg.legKey].label} ${fmt(strongestLeg.feedback.maxLoadPct, 0)}%`
+          ? `${liveLegs}/${totalLegs} live · max load ${LEG_META[strongestLeg.legKey].label} ${strongestLeg.feedback.peakJointKey ?? "leg"} ${fmt(strongestLeg.feedback.maxLoadPct, 0)}%`
           : `${liveLegs}/${totalLegs} legs live`
         : "ROS body frame";
       if (robotSceneModuleError) {
@@ -3847,8 +3917,8 @@ pub const DASHBOARD_HTML: &str = r##"<!doctype html>
       }
 
       document.getElementById("robot-scene-note").textContent = bodyScene.imu_mount_configured
-        ? "The WebGL body view follows the ROS body frame and uses the configured IMU mount offset. Leg tint and glow now reflect live servo load and resistance."
-        : "The WebGL body view follows the ROS body frame. Leg tint and glow now reflect live servo load and resistance; the IMU marker stays at the body origin until an IMU mount offset is configured.";
+        ? "The WebGL body view follows the ROS body frame and uses the configured IMU mount offset. Leg segments and glow now reflect live servo load and resistance."
+        : "The WebGL body view follows the ROS body frame. Leg segments and glow now reflect live servo load and resistance; the IMU marker stays at the body origin until an IMU mount offset is configured.";
       document.getElementById("robot-scene-feedback").innerHTML = renderRobotSceneFeedback(servos);
     }
 
@@ -4363,11 +4433,26 @@ mod tests {
             "present_load_pct",
             "present_current_ma",
             "max load",
-            "Leg tint and glow now reflect live servo load and resistance.",
+            "Leg segments and glow now reflect live servo load and resistance.",
         ] {
             assert!(
                 DASHBOARD_HTML.contains(needle),
                 "dashboard html should contain {needle}"
+            );
+        }
+    }
+
+    #[test]
+    fn dashboard_html_robot_scene_tracks_load_per_leg_segment() {
+        for needle in [
+            "peakJointKey",
+            "primaryFaultJointKey",
+            "robotSceneJointColor",
+            "color.segments[index]",
+        ] {
+            assert!(
+                DASHBOARD_HTML.contains(needle),
+                "dashboard html should contain per-joint scene feedback fragment {needle}"
             );
         }
     }
