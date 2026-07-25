@@ -107,7 +107,8 @@ reads `3E:5449` and a `3F:228x` device ID.
 The power-monitor section is intentionally a diagnostic view. It shows the identity pairs, then
 the raw configuration, shunt-voltage, and bus-voltage register pairs. For an INA226 this is
 `00:xxxx`, `01:xxxx`, and `02:xxxx`; `01:8000` is the negative shunt-voltage full scale. The last
-line continues to show the current and power calculated from those raw values.
+line shows the converted bus voltage (`V`), current (`I`), and power (`P`) while retaining the raw
+register values above it.
 
 When no values are available, the LCD distinguishes these probe outcomes:
 

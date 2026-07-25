@@ -566,10 +566,15 @@ pub fn format_display_status(sample: ImuSample, power: PowerMonitorStatus) -> Di
                 .expect("INA228 raw registers fit display line"),
             }
 
-            push_text(&mut lines[9], "I");
-            push_signed_milli(&mut lines[9], measurement.current_milliamps);
+            // Keep the register values above for diagnosis while also showing the
+            // converted bus voltage. The compact units leave room for all three
+            // measurements within the LCD's 20-column line.
+            push_text(&mut lines[9], "V");
+            push_unsigned_centi(&mut lines[9], measurement.bus_millivolts / 10);
+            push_text(&mut lines[9], " I");
+            push_signed_tenths(&mut lines[9], measurement.current_milliamps / 100);
             push_text(&mut lines[9], " P");
-            push_signed_tenths(&mut lines[9], measurement.power_milliwatts / 100);
+            push_signed_whole(&mut lines[9], measurement.power_milliwatts / 1_000);
             push_text(&mut lines[9], "W");
         }
         PowerMonitorStatus::NoResponse => {
@@ -638,6 +643,16 @@ fn push_signed_tenths(line: &mut DisplayLine, value: i32) {
     push_signed_fixed(line, i64::from(value), 10, 1);
 }
 
+fn push_signed_whole(line: &mut DisplayLine, value: i32) {
+    push_signed_fixed(line, i64::from(value), 1, 0);
+}
+
+fn push_unsigned_centi(line: &mut DisplayLine, value: u32) {
+    let whole = value / 100;
+    let fraction = value % 100;
+    write!(line, "{whole}.{fraction:02}").expect("display line has fixed capacity");
+}
+
 fn push_signed_fixed(line: &mut DisplayLine, value: i64, scale: u64, decimals: u8) {
     let magnitude = value.unsigned_abs();
     let whole = magnitude / scale;
@@ -645,10 +660,11 @@ fn push_signed_fixed(line: &mut DisplayLine, value: i64, scale: u64, decimals: u
     let sign = if value < 0 { '-' } else { '+' };
 
     match decimals {
+        0 => write!(line, "{sign}{whole}"),
         1 => write!(line, "{sign}{whole}.{fraction:01}"),
         2 => write!(line, "{sign}{whole}.{fraction:02}"),
         3 => write!(line, "{sign}{whole}.{fraction:03}"),
-        _ => unreachable!("display format only uses one to three decimal places"),
+        _ => unreachable!("display format only uses zero to three decimal places"),
     }
     .expect("display line has fixed capacity");
 }
@@ -830,7 +846,7 @@ mod tests {
         assert_eq!(status.lines[6].as_str(), "INA228 40 3E:5449");
         assert_eq!(status.lines[7].as_str(), "3F:2281 00:4127");
         assert_eq!(status.lines[8].as_str(), "04:00A00 05:0FA00");
-        assert_eq!(status.lines[9].as_str(), "I+0.080 P+1.0W");
+        assert_eq!(status.lines[9].as_str(), "V12.50 I+0.0 P+1W");
         assert!(
             status
                 .lines
@@ -868,7 +884,7 @@ mod tests {
         assert_eq!(status.lines[6].as_str(), "INA226 45 FE:5449");
         assert_eq!(status.lines[7].as_str(), "FF:2260 00:4127");
         assert_eq!(status.lines[8].as_str(), "01:0140 02:2710");
-        assert_eq!(status.lines[9].as_str(), "I+0.400 P+5.0W");
+        assert_eq!(status.lines[9].as_str(), "V12.50 I+0.4 P+5W");
     }
 
     #[test]
