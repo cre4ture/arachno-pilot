@@ -8,9 +8,12 @@ mod ina228;
 use core::mem::MaybeUninit;
 
 use arachno_imu_proto::{
-    CAP_ACCEL, CAP_GYRO, CAP_TEMP, CAP_USB_BOOT, DeviceInfo, Frame, FrameParser, ImuSample,
-    MAX_FRAME_LEN, SENSOR_FAULT_NONE, SENSOR_FAULT_PROBE_NO_RESPONSE, SENSOR_FAULT_READ,
-    SPI_MODE_UNKNOWN, SensorKind, encode_device_info_frame, encode_sample_frame,
+    CAP_ACCEL, CAP_GYRO, CAP_POWER_MONITOR_REGISTERS, CAP_TEMP, CAP_USB_BOOT, DeviceInfo, Frame,
+    FrameParser, ImuSample, MAX_FRAME_LEN, POWER_MONITOR_REGISTER_STATUS_I2C_ERROR,
+    POWER_MONITOR_REGISTER_STATUS_NOT_FOUND, POWER_MONITOR_REGISTER_STATUS_OK,
+    PowerMonitorRegisterValue, SENSOR_FAULT_NONE, SENSOR_FAULT_PROBE_NO_RESPONSE,
+    SENSOR_FAULT_READ, SPI_MODE_UNKNOWN, SensorKind, encode_device_info_frame,
+    encode_power_monitor_register_frame, encode_sample_frame,
 };
 use defmt::{info, panic, unwrap, warn};
 use display::St7789Display;
@@ -29,7 +32,7 @@ use embassy_time::{Duration, Instant, Ticker, Timer};
 use embassy_usb::UsbDevice;
 use embassy_usb::class::cdc_acm::{CdcAcmClass, Receiver, Sender, State};
 use embassy_usb::driver::EndpointError;
-use ina228::{INA228_SHUNT_MICRO_OHMS, InaPowerMonitor};
+use ina228::{INA228_SHUNT_MICRO_OHMS, InaPowerMonitor, PowerMonitorRawRegister};
 use rp2040_imu_bridge::{
     FaultInfo, MPU_I2C_ADDRESSES, MPU_MEASUREMENT_PAYLOAD_LEN, MPU_REG_ACCEL_XOUT_H,
     MPU_REG_WHO_AM_I, ProbeResult, SENSOR_STATUS_FAULT, format_display_status, init_steps,
@@ -48,6 +51,28 @@ const MPU9250_SPI_PROBE_HZ: u32 = 125_000;
 
 static DISPLAY_SAMPLES: Signal<CriticalSectionRawMutex, ImuSample> = Signal::new();
 static USB_SAMPLES: Channel<CriticalSectionRawMutex, ImuSample, 8> = Channel::new();
+static POWER_MONITOR_REGISTER_REQUESTS: Channel<
+    CriticalSectionRawMutex,
+    PowerMonitorRegisterRequest,
+    1,
+> = Channel::new();
+static POWER_MONITOR_REGISTER_RESPONSES: Channel<
+    CriticalSectionRawMutex,
+    PowerMonitorRegisterResponse,
+    1,
+> = Channel::new();
+
+#[derive(Clone, Copy)]
+struct PowerMonitorRegisterRequest {
+    sequence: u8,
+    register: u8,
+}
+
+#[derive(Clone, Copy)]
+struct PowerMonitorRegisterResponse {
+    sequence: u8,
+    value: PowerMonitorRegisterValue,
+}
 
 bind_interrupts!(struct Irqs {
     USBCTRL_IRQ => InterruptHandler<USB>;
@@ -171,6 +196,35 @@ async fn display_task(
             warn!("LCD update failed: {:?}", error);
         }
 
+        while let Ok(request) = POWER_MONITOR_REGISTER_REQUESTS.try_receive() {
+            let value = match power_monitor.read_raw_register(request.register) {
+                PowerMonitorRawRegister::Value { address, value } => PowerMonitorRegisterValue {
+                    status: POWER_MONITOR_REGISTER_STATUS_OK,
+                    address,
+                    register: request.register,
+                    value,
+                },
+                PowerMonitorRawRegister::NotFound => PowerMonitorRegisterValue {
+                    status: POWER_MONITOR_REGISTER_STATUS_NOT_FOUND,
+                    address: 0,
+                    register: request.register,
+                    value: 0,
+                },
+                PowerMonitorRawRegister::I2cError { address } => PowerMonitorRegisterValue {
+                    status: POWER_MONITOR_REGISTER_STATUS_I2C_ERROR,
+                    address,
+                    register: request.register,
+                    value: 0,
+                },
+            };
+            POWER_MONITOR_REGISTER_RESPONSES
+                .send(PowerMonitorRegisterResponse {
+                    sequence: request.sequence,
+                    value,
+                })
+                .await;
+        }
+
         // The display needs a comparatively large SPI transfer. Limit refreshes so the IMU
         // task continues to maintain its 200 Hz sampling cadence.
         Timer::after(Duration::from_millis(250)).await;
@@ -206,6 +260,11 @@ async fn usb_command_task(mut receiver: MyCdcReceiver) -> ! {
                             cortex_m::asm::wfi();
                         }
                     }
+                    Ok(Some(Frame::ReadPowerMonitorRegister { sequence, register })) => {
+                        POWER_MONITOR_REGISTER_REQUESTS
+                            .send(PowerMonitorRegisterRequest { sequence, register })
+                            .await;
+                    }
                     Ok(Some(_)) | Ok(None) | Err(_) => {}
                 }
             }
@@ -224,6 +283,10 @@ async fn stream_samples(
     send_device_info(class, device_info, sequence, frame_buf).await?;
 
     loop {
+        while let Ok(response) = POWER_MONITOR_REGISTER_RESPONSES.try_receive() {
+            send_power_monitor_register(class, response, frame_buf).await?;
+        }
+
         if samples_until_info == 0 {
             send_device_info(class, device_info, sequence, frame_buf).await?;
             samples_until_info = DEVICE_INFO_ANNOUNCE_INTERVAL_SAMPLES;
@@ -237,6 +300,18 @@ async fn stream_samples(
         *sequence = sequence.wrapping_add(1);
         samples_until_info = samples_until_info.saturating_sub(1);
     }
+}
+
+async fn send_power_monitor_register(
+    class: &mut MyCdcSender,
+    response: PowerMonitorRegisterResponse,
+    frame_buf: &mut [u8; MAX_FRAME_LEN],
+) -> Result<(), Disconnected> {
+    let frame_len =
+        encode_power_monitor_register_frame(response.sequence, response.value, frame_buf)
+            .expect("power-monitor register response fits in the shared protocol buffer");
+    class.write_packet(&frame_buf[..frame_len]).await?;
+    Ok(())
 }
 
 async fn send_device_info(
@@ -314,7 +389,11 @@ impl<'d> SensorState<'d> {
                 Self::Faulted(_) => SensorKind::Faulted,
             },
             sample_hz: SAMPLE_HZ as u16,
-            capabilities: CAP_ACCEL | CAP_GYRO | CAP_TEMP | CAP_USB_BOOT,
+            capabilities: CAP_ACCEL
+                | CAP_GYRO
+                | CAP_TEMP
+                | CAP_USB_BOOT
+                | CAP_POWER_MONITOR_REGISTERS,
             fault_code: match self {
                 Self::Real(_) => SENSOR_FAULT_NONE,
                 Self::Faulted(sensor) => sensor.fault_info.code,

@@ -1,4 +1,5 @@
 use std::{
+    collections::VecDeque,
     f32::consts::PI,
     io::{self, Read, Write},
     time::{Duration, Instant},
@@ -6,11 +7,16 @@ use std::{
 
 use arachno_hal::{HalError, HalResult, ImuSource};
 pub use arachno_imu_proto::{
-    CAP_ACCEL, CAP_GYRO, CAP_MAG, CAP_TEMP, CAP_USB_BOOT, DeviceInfo, SENSOR_FAULT_NONE,
+    CAP_ACCEL, CAP_GYRO, CAP_MAG, CAP_POWER_MONITOR_REGISTERS, CAP_TEMP, CAP_USB_BOOT, DeviceInfo,
+    POWER_MONITOR_REGISTER_STATUS_I2C_ERROR, POWER_MONITOR_REGISTER_STATUS_NOT_FOUND,
+    POWER_MONITOR_REGISTER_STATUS_OK, PowerMonitorRegisterValue, SENSOR_FAULT_NONE,
     SENSOR_FAULT_PROBE_NO_RESPONSE, SENSOR_FAULT_READ, SENSOR_FAULT_UNEXPECTED_WHO_AM_I,
     SPI_MODE_UNKNOWN, SensorKind,
 };
-use arachno_imu_proto::{Frame, FrameParser, ImuSample, encode_usb_boot_request_frame};
+use arachno_imu_proto::{
+    Frame, FrameParser, ImuSample, encode_power_monitor_register_request_frame,
+    encode_usb_boot_request_frame,
+};
 use arachno_msg::ImuTelemetry;
 use serialport::SerialPort;
 
@@ -25,13 +31,31 @@ pub enum DeviceInfoProbe {
     Silent,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PowerMonitorRegisterRead {
+    Value {
+        address: u8,
+        register: u8,
+        value: u16,
+    },
+    NotFound {
+        register: u8,
+    },
+    I2cError {
+        address: u8,
+        register: u8,
+    },
+}
+
 pub struct UsbImuBridge {
     port_path: String,
     baud_rate: u32,
     description: String,
     port: Box<dyn SerialPort>,
     parser: FrameParser,
+    pending_frames: VecDeque<Frame>,
     read_buf: [u8; 64],
+    control_sequence: u8,
 }
 
 impl UsbImuBridge {
@@ -53,7 +77,9 @@ impl UsbImuBridge {
             baud_rate,
             port,
             parser: FrameParser::new(),
+            pending_frames: VecDeque::new(),
             read_buf: [0; 64],
+            control_sequence: 0,
         })
     }
 
@@ -66,19 +92,23 @@ impl UsbImuBridge {
     }
 
     pub fn next_frame(&mut self) -> HalResult<Option<Frame>> {
+        if let Some(frame) = self.pending_frames.pop_front() {
+            return Ok(Some(frame));
+        }
+
         match self.port.read(&mut self.read_buf) {
             Ok(0) => Ok(None),
             Ok(read) => {
                 for &byte in &self.read_buf[..read] {
                     match self.parser.push(byte) {
-                        Ok(Some(frame)) => return Ok(Some(frame)),
+                        Ok(Some(frame)) => self.pending_frames.push_back(frame),
                         Ok(None) => {}
                         Err(_) => {
                             // Stay tolerant during bring-up and resync on the next frame.
                         }
                     }
                 }
-                Ok(None)
+                Ok(self.pending_frames.pop_front())
             }
             Err(err) if err.kind() == io::ErrorKind::TimedOut => Ok(None),
             Err(err) => Err(HalError::Communication(format!(
@@ -96,7 +126,9 @@ impl UsbImuBridge {
             match self.next_frame()? {
                 Some(Frame::DeviceInfo { info, .. }) => return Ok(DeviceInfoProbe::Info(info)),
                 Some(Frame::ImuSample { .. }) => saw_sample = true,
-                Some(Frame::EnterUsbBoot { .. }) => {}
+                Some(Frame::EnterUsbBoot { .. })
+                | Some(Frame::ReadPowerMonitorRegister { .. })
+                | Some(Frame::PowerMonitorRegister { .. }) => {}
                 None => {}
             }
         }
@@ -130,11 +162,80 @@ impl UsbImuBridge {
             ))
         })
     }
+
+    /// Requests one raw 16-bit power-monitor register from compatible firmware.
+    pub fn read_power_monitor_register(
+        &mut self,
+        register: u8,
+        timeout: Duration,
+    ) -> HalResult<PowerMonitorRegisterRead> {
+        let sequence = self.control_sequence;
+        self.control_sequence = self.control_sequence.wrapping_add(1);
+        let mut frame = [0u8; 9];
+        let frame_len = encode_power_monitor_register_request_frame(sequence, register, &mut frame)
+            .expect("the fixed power-monitor request fits in its buffer");
+
+        self.port.write_all(&frame[..frame_len]).map_err(|err| {
+            HalError::Communication(format!(
+                "failed requesting power-monitor register 0x{register:02x} from {}: {err}",
+                self.port_path
+            ))
+        })?;
+        self.port.flush().map_err(|err| {
+            HalError::Communication(format!(
+                "failed flushing power-monitor request to {}: {err}",
+                self.port_path
+            ))
+        })?;
+
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            match self.next_frame()? {
+                Some(Frame::PowerMonitorRegister {
+                    sequence: response_sequence,
+                    value,
+                }) if response_sequence == sequence && value.register == register => {
+                    return decode_power_monitor_register(value);
+                }
+                Some(_) | None => {}
+            }
+        }
+
+        Err(HalError::Communication(format!(
+            "timed out after {} ms waiting for power-monitor register 0x{register:02x} from {}",
+            timeout.as_millis(),
+            self.port_path
+        )))
+    }
+}
+
+fn decode_power_monitor_register(
+    value: PowerMonitorRegisterValue,
+) -> HalResult<PowerMonitorRegisterRead> {
+    match value.status {
+        POWER_MONITOR_REGISTER_STATUS_OK => Ok(PowerMonitorRegisterRead::Value {
+            address: value.address,
+            register: value.register,
+            value: value.value,
+        }),
+        POWER_MONITOR_REGISTER_STATUS_NOT_FOUND => Ok(PowerMonitorRegisterRead::NotFound {
+            register: value.register,
+        }),
+        POWER_MONITOR_REGISTER_STATUS_I2C_ERROR => Ok(PowerMonitorRegisterRead::I2cError {
+            address: value.address,
+            register: value.register,
+        }),
+        status => Err(HalError::Communication(format!(
+            "power-monitor register 0x{:02x} returned unknown status {status}",
+            value.register
+        ))),
+    }
 }
 
 impl ImuSource for UsbImuBridge {
     fn start(&mut self) -> HalResult<()> {
         self.parser.reset();
+        self.pending_frames.clear();
         Ok(())
     }
 
@@ -147,7 +248,9 @@ impl ImuSource for UsbImuBridge {
             match frame {
                 Frame::DeviceInfo { .. } => continue,
                 Frame::ImuSample { sample, .. } => return Ok(Some(convert_sample(sample))),
-                Frame::EnterUsbBoot { .. } => continue,
+                Frame::EnterUsbBoot { .. }
+                | Frame::ReadPowerMonitorRegister { .. }
+                | Frame::PowerMonitorRegister { .. } => continue,
             }
         }
     }

@@ -10,6 +10,8 @@ pub const CRC_LEN: usize = 2;
 pub const DEVICE_INFO_PAYLOAD_LEN_V1: usize = 8;
 pub const DEVICE_INFO_PAYLOAD_LEN: usize = 12;
 pub const IMU_SAMPLE_PAYLOAD_LEN: usize = 26;
+pub const POWER_MONITOR_REGISTER_REQUEST_PAYLOAD_LEN: usize = 1;
+pub const POWER_MONITOR_REGISTER_RESPONSE_PAYLOAD_LEN: usize = 5;
 pub const MAX_FRAME_LEN: usize = HEADER_LEN + IMU_SAMPLE_PAYLOAD_LEN + CRC_LEN;
 pub const CAP_ACCEL: u16 = 1 << 0;
 pub const CAP_GYRO: u16 = 1 << 1;
@@ -17,6 +19,11 @@ pub const CAP_TEMP: u16 = 1 << 2;
 pub const CAP_MAG: u16 = 1 << 3;
 /// The bridge accepts a CRC-validated request to enter the RP2040 USB bootloader.
 pub const CAP_USB_BOOT: u16 = 1 << 4;
+/// The bridge can read arbitrary 16-bit power-monitor registers on request.
+pub const CAP_POWER_MONITOR_REGISTERS: u16 = 1 << 5;
+pub const POWER_MONITOR_REGISTER_STATUS_OK: u8 = 0;
+pub const POWER_MONITOR_REGISTER_STATUS_NOT_FOUND: u8 = 1;
+pub const POWER_MONITOR_REGISTER_STATUS_I2C_ERROR: u8 = 2;
 pub const SENSOR_FAULT_NONE: u8 = 0;
 pub const SENSOR_FAULT_PROBE_NO_RESPONSE: u8 = 1;
 pub const SENSOR_FAULT_UNEXPECTED_WHO_AM_I: u8 = 2;
@@ -29,8 +36,12 @@ pub const SPI_MODE_UNKNOWN: u8 = 0xFF;
 pub enum FrameKind {
     ImuSample = 0x01,
     DeviceInfo = 0x02,
+    /// Device-to-host response containing one raw power-monitor register read.
+    PowerMonitorRegister = 0x03,
     /// Host-to-device control frame. Its payload is empty.
     EnterUsbBoot = 0x80,
+    /// Host-to-device request for one raw 16-bit power-monitor register.
+    ReadPowerMonitorRegister = 0x81,
 }
 
 impl TryFrom<u8> for FrameKind {
@@ -40,7 +51,9 @@ impl TryFrom<u8> for FrameKind {
         match value {
             0x01 => Ok(Self::ImuSample),
             0x02 => Ok(Self::DeviceInfo),
+            0x03 => Ok(Self::PowerMonitorRegister),
             0x80 => Ok(Self::EnterUsbBoot),
+            0x81 => Ok(Self::ReadPowerMonitorRegister),
             _ => Err(DecodeError::UnknownFrameKind(value)),
         }
     }
@@ -100,10 +113,35 @@ pub struct ImuSample {
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PowerMonitorRegisterValue {
+    pub status: u8,
+    pub address: u8,
+    pub register: u8,
+    pub value: u16,
+}
+
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Frame {
-    DeviceInfo { sequence: u8, info: DeviceInfo },
-    ImuSample { sequence: u8, sample: ImuSample },
-    EnterUsbBoot { sequence: u8 },
+    DeviceInfo {
+        sequence: u8,
+        info: DeviceInfo,
+    },
+    ImuSample {
+        sequence: u8,
+        sample: ImuSample,
+    },
+    PowerMonitorRegister {
+        sequence: u8,
+        value: PowerMonitorRegisterValue,
+    },
+    EnterUsbBoot {
+        sequence: u8,
+    },
+    ReadPowerMonitorRegister {
+        sequence: u8,
+        register: u8,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -345,6 +383,40 @@ pub fn encode_device_info_frame(
     Ok(frame_len)
 }
 
+pub fn encode_power_monitor_register_frame(
+    sequence: u8,
+    value: PowerMonitorRegisterValue,
+    out: &mut [u8],
+) -> Result<usize, EncodeError> {
+    let frame_len = frame_len(POWER_MONITOR_REGISTER_RESPONSE_PAYLOAD_LEN);
+    if out.len() < frame_len {
+        return Err(EncodeError::OutputTooSmall);
+    }
+
+    out[0] = SYNC_0;
+    out[1] = SYNC_1;
+    out[2] = PROTOCOL_VERSION;
+    out[3] = FrameKind::PowerMonitorRegister as u8;
+    out[4] = POWER_MONITOR_REGISTER_RESPONSE_PAYLOAD_LEN as u8;
+    out[5] = sequence;
+
+    let mut cursor = HEADER_LEN;
+    out[cursor] = value.status;
+    cursor += 1;
+    out[cursor] = value.address;
+    cursor += 1;
+    out[cursor] = value.register;
+    cursor += 1;
+    cursor = write_u16(out, cursor, value.value);
+
+    let crc = crc16_ccitt(&out[..cursor]);
+    let [crc_low, crc_high] = crc.to_le_bytes();
+    out[cursor] = crc_low;
+    out[cursor + 1] = crc_high;
+
+    Ok(frame_len)
+}
+
 /// Encodes the host-to-device request that switches the RP2040 into its ROM USB bootloader.
 ///
 /// The request has no payload, but it uses the same framing and CRC as telemetry frames so
@@ -366,6 +438,32 @@ pub fn encode_usb_boot_request_frame(sequence: u8, out: &mut [u8]) -> Result<usi
     let [crc_low, crc_high] = crc.to_le_bytes();
     out[HEADER_LEN] = crc_low;
     out[HEADER_LEN + 1] = crc_high;
+
+    Ok(frame_len)
+}
+
+pub fn encode_power_monitor_register_request_frame(
+    sequence: u8,
+    register: u8,
+    out: &mut [u8],
+) -> Result<usize, EncodeError> {
+    let frame_len = frame_len(POWER_MONITOR_REGISTER_REQUEST_PAYLOAD_LEN);
+    if out.len() < frame_len {
+        return Err(EncodeError::OutputTooSmall);
+    }
+
+    out[0] = SYNC_0;
+    out[1] = SYNC_1;
+    out[2] = PROTOCOL_VERSION;
+    out[3] = FrameKind::ReadPowerMonitorRegister as u8;
+    out[4] = POWER_MONITOR_REGISTER_REQUEST_PAYLOAD_LEN as u8;
+    out[5] = sequence;
+    out[HEADER_LEN] = register;
+
+    let crc = crc16_ccitt(&out[..HEADER_LEN + POWER_MONITOR_REGISTER_REQUEST_PAYLOAD_LEN]);
+    let [crc_low, crc_high] = crc.to_le_bytes();
+    out[HEADER_LEN + POWER_MONITOR_REGISTER_REQUEST_PAYLOAD_LEN] = crc_low;
+    out[HEADER_LEN + POWER_MONITOR_REGISTER_REQUEST_PAYLOAD_LEN + 1] = crc_high;
 
     Ok(frame_len)
 }
@@ -464,6 +562,25 @@ pub fn decode_frame(bytes: &[u8]) -> Result<Frame, DecodeError> {
                 },
             })
         }
+        FrameKind::PowerMonitorRegister => {
+            if payload_len != POWER_MONITOR_REGISTER_RESPONSE_PAYLOAD_LEN {
+                return Err(DecodeError::PayloadLengthMismatch {
+                    kind,
+                    length: payload_len,
+                });
+            }
+
+            let payload = &bytes[HEADER_LEN..bytes.len() - CRC_LEN];
+            Ok(Frame::PowerMonitorRegister {
+                sequence: bytes[5],
+                value: PowerMonitorRegisterValue {
+                    status: payload[0],
+                    address: payload[1],
+                    register: payload[2],
+                    value: u16::from_le_bytes([payload[3], payload[4]]),
+                },
+            })
+        }
         FrameKind::EnterUsbBoot => {
             if payload_len != 0 {
                 return Err(DecodeError::PayloadLengthMismatch {
@@ -473,6 +590,19 @@ pub fn decode_frame(bytes: &[u8]) -> Result<Frame, DecodeError> {
             }
 
             Ok(Frame::EnterUsbBoot { sequence: bytes[5] })
+        }
+        FrameKind::ReadPowerMonitorRegister => {
+            if payload_len != POWER_MONITOR_REGISTER_REQUEST_PAYLOAD_LEN {
+                return Err(DecodeError::PayloadLengthMismatch {
+                    kind,
+                    length: payload_len,
+                });
+            }
+
+            Ok(Frame::ReadPowerMonitorRegister {
+                sequence: bytes[5],
+                register: bytes[HEADER_LEN],
+            })
         }
     }
 }
@@ -504,7 +634,13 @@ const fn is_valid_payload_len(kind: FrameKind, payload_len: usize) -> bool {
             payload_len == DEVICE_INFO_PAYLOAD_LEN_V1 || payload_len == DEVICE_INFO_PAYLOAD_LEN
         }
         FrameKind::ImuSample => payload_len == IMU_SAMPLE_PAYLOAD_LEN,
+        FrameKind::PowerMonitorRegister => {
+            payload_len == POWER_MONITOR_REGISTER_RESPONSE_PAYLOAD_LEN
+        }
         FrameKind::EnterUsbBoot => payload_len == 0,
+        FrameKind::ReadPowerMonitorRegister => {
+            payload_len == POWER_MONITOR_REGISTER_REQUEST_PAYLOAD_LEN
+        }
     }
 }
 
@@ -621,6 +757,34 @@ mod tests {
         assert_eq!(
             parser.push_slice(&buf[3..written]).unwrap(),
             Some(Frame::EnterUsbBoot { sequence: 23 })
+        );
+    }
+
+    #[test]
+    fn power_monitor_register_frames_roundtrip() {
+        let mut buf = [0u8; MAX_FRAME_LEN];
+        let written = encode_power_monitor_register_request_frame(5, 0x01, &mut buf).unwrap();
+        assert_eq!(
+            decode_frame(&buf[..written]).unwrap(),
+            Frame::ReadPowerMonitorRegister {
+                sequence: 5,
+                register: 0x01,
+            }
+        );
+
+        let response = PowerMonitorRegisterValue {
+            status: POWER_MONITOR_REGISTER_STATUS_OK,
+            address: 0x40,
+            register: 0x01,
+            value: 0x06E0,
+        };
+        let written = encode_power_monitor_register_frame(5, response, &mut buf).unwrap();
+        assert_eq!(
+            decode_frame(&buf[..written]).unwrap(),
+            Frame::PowerMonitorRegister {
+                sequence: 5,
+                value: response,
+            }
         );
     }
 

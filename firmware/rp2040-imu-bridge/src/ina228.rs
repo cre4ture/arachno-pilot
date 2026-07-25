@@ -12,12 +12,14 @@ const INA228_I2C_HZ: u32 = 400_000;
 // R002 marking: 0.002 Ω = 2 mΩ.
 pub const INA228_SHUNT_MICRO_OHMS: u32 = 2_000;
 
+const REG_INA228_CONFIG: u8 = 0x00;
 const REG_INA228_ADC_CONFIG: u8 = 0x01;
 const REG_INA228_VSHUNT: u8 = 0x04;
 const REG_INA228_VBUS: u8 = 0x05;
 const REG_INA228_DIETEMP: u8 = 0x06;
 const REG_INA228_MANUFACTURER_ID: u8 = 0x3E;
 const REG_INA228_DEVICE_ID: u8 = 0x3F;
+const REG_INA226_CONFIG: u8 = 0x00;
 const REG_INA226_VSHUNT: u8 = 0x01;
 const REG_INA226_VBUS: u8 = 0x02;
 const REG_INA226_MANUFACTURER_ID: u8 = 0xFE;
@@ -91,6 +93,38 @@ impl<'d> InaPowerMonitor<'d> {
                 PowerMonitorStatus::IdentityMismatch { address }
             }
             Err(PowerMonitorError::I2c { address, .. }) => PowerMonitorStatus::BusError { address },
+        }
+    }
+
+    /// Reads one raw 16-bit monitor register for USB diagnostics.
+    ///
+    /// INA226 registers are all 16-bit. On INA228, this returns the first 16 bits of wider
+    /// measurement registers; the command is intended primarily for register-level bring-up.
+    pub fn read_raw_register(&mut self, register: u8) -> PowerMonitorRawRegister {
+        let monitor = match self.monitor {
+            Some(monitor) => monitor,
+            None => match self.probe() {
+                Ok(monitor) => monitor,
+                Err(PowerMonitorError::NotFound | PowerMonitorError::UnexpectedIdentity { .. }) => {
+                    return PowerMonitorRawRegister::NotFound;
+                }
+                Err(PowerMonitorError::I2c { address, .. }) => {
+                    return PowerMonitorRawRegister::I2cError { address };
+                }
+            },
+        };
+
+        match self.read_u16(monitor.address, register) {
+            Ok(value) => PowerMonitorRawRegister::Value {
+                address: monitor.address,
+                value,
+            },
+            Err(_) => {
+                self.monitor = None;
+                PowerMonitorRawRegister::I2cError {
+                    address: monitor.address,
+                }
+            }
         }
     }
 
@@ -172,6 +206,9 @@ impl<'d> InaPowerMonitor<'d> {
         &mut self,
         address: u8,
     ) -> Result<PowerMonitorMeasurement, PowerMonitorError> {
+        let config_register = self
+            .read_u16_bytes(address, REG_INA228_CONFIG)
+            .map_err(|error| PowerMonitorError::I2c { address, error })?;
         let shunt_register = self
             .read_u24(address, REG_INA228_VSHUNT)
             .map_err(|error| PowerMonitorError::I2c { address, error })?;
@@ -183,6 +220,7 @@ impl<'d> InaPowerMonitor<'d> {
             .map_err(|error| PowerMonitorError::I2c { address, error })?;
 
         Ok(ina228_measurement_from_registers(
+            config_register,
             shunt_register,
             bus_register,
             die_temperature_register,
@@ -194,6 +232,9 @@ impl<'d> InaPowerMonitor<'d> {
         &mut self,
         address: u8,
     ) -> Result<PowerMonitorMeasurement, PowerMonitorError> {
+        let config_register = self
+            .read_u16_bytes(address, REG_INA226_CONFIG)
+            .map_err(|error| PowerMonitorError::I2c { address, error })?;
         let shunt_register = self
             .read_u16_bytes(address, REG_INA226_VSHUNT)
             .map_err(|error| PowerMonitorError::I2c { address, error })?;
@@ -202,6 +243,7 @@ impl<'d> InaPowerMonitor<'d> {
             .map_err(|error| PowerMonitorError::I2c { address, error })?;
 
         Ok(ina226_measurement_from_registers(
+            config_register,
             shunt_register,
             bus_register,
             self.shunt_micro_ohms,
@@ -252,4 +294,11 @@ enum PowerMonitorError {
     I2c { address: u8, error: i2c::Error },
     NotFound,
     UnexpectedIdentity { address: u8 },
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum PowerMonitorRawRegister {
+    Value { address: u8, value: u16 },
+    NotFound,
+    I2cError { address: u8 },
 }

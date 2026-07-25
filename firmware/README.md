@@ -104,6 +104,11 @@ For a successful probe, the LCD also shows the actually read identity register/v
 example, a genuine INA226 reads `FE:5449` (manufacturer ID) and `FF:2260` (die ID); an INA228
 reads `3E:5449` and a `3F:228x` device ID.
 
+The power-monitor section is intentionally a diagnostic view. It shows the identity pairs, then
+the raw configuration, shunt-voltage, and bus-voltage register pairs. For an INA226 this is
+`00:xxxx`, `01:xxxx`, and `02:xxxx`; `01:8000` is the negative shunt-voltage full scale. The last
+line continues to show the current and power calculated from those raw values.
+
 When no values are available, the LCD distinguishes these probe outcomes:
 
 - `INA NACK 40-4F`: no device acknowledged at any standard power-monitor address.
@@ -206,6 +211,20 @@ The USB serial device disconnects and the `RPI-RP2` mass-storage device appears.
 UF2 to it; after flashing, the RP2040 automatically restarts the application. The first install
 of version `0.1.2` still requires the physical `BOOTSEL` procedure because earlier firmware
 cannot receive this command.
+
+### Raw power-monitor registers over USB
+
+The host CLI can query any 16-bit power-monitor register through the RP2040. This is useful for
+checking whether an observed LCD value comes from the I2C register or its conversion:
+
+```bash
+cargo run -p arachno-fw-info -- --config config/robot/jetson-onboard.toml \
+  --power-register 0x00 --power-register 0x01 --power-register 0x02
+```
+
+For the INA226, these are configuration, shunt voltage, and bus voltage respectively. The command
+can be repeated for any register index from `0x00` through `0xFF`. On INA228, wider measurement
+registers return their first 16 bits through this diagnostic command.
 
 ## Verify
 

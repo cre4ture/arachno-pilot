@@ -354,6 +354,12 @@ pub struct PowerMonitorMeasurement {
     pub power_milliwatts: i32,
     /// INA228 exposes a die temperature; INA226 does not.
     pub die_temperature_centi_c: Option<i16>,
+    /// Raw configuration register value read with this measurement.
+    pub config_raw: u16,
+    /// Raw shunt-voltage register value, before scaling.
+    pub shunt_raw: u32,
+    /// Raw bus-voltage register value, before scaling.
+    pub bus_raw: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -428,11 +434,14 @@ pub fn is_ina226_identity(manufacturer_id: u16, device_id: u16) -> bool {
 ///
 /// `shunt_micro_ohms` must be the actual resistance of the sense shunt fitted to the board.
 pub fn ina228_measurement_from_registers(
+    config_register: [u8; 2],
     shunt_register: [u8; 3],
     bus_register: [u8; 3],
     die_temperature_register: [u8; 2],
     shunt_micro_ohms: u32,
 ) -> PowerMonitorMeasurement {
+    let config_raw = u16::from_be_bytes(config_register);
+    let shunt_raw_unsigned = unsigned_20_bit(shunt_register);
     let shunt_raw = signed_20_bit(shunt_register);
     let bus_raw = unsigned_20_bit(bus_register);
     let die_temperature_raw = i16::from_be_bytes(die_temperature_register);
@@ -453,16 +462,21 @@ pub fn ina228_measurement_from_registers(
         current_milliamps,
         power_milliwatts,
         die_temperature_centi_c: Some(die_temperature_centi_c),
+        config_raw,
+        shunt_raw: shunt_raw_unsigned,
+        bus_raw,
     }
 }
 
 /// Converts INA226 register values. Current and power are calculated directly from the measured
 /// shunt voltage so this works without relying on the INA226 calibration register.
 pub fn ina226_measurement_from_registers(
+    config_register: [u8; 2],
     shunt_register: [u8; 2],
     bus_register: [u8; 2],
     shunt_micro_ohms: u32,
 ) -> PowerMonitorMeasurement {
+    let config_raw = u16::from_be_bytes(config_register);
     let shunt_raw = i16::from_be_bytes(shunt_register);
     let bus_raw = u16::from_be_bytes(bus_register);
 
@@ -480,6 +494,9 @@ pub fn ina226_measurement_from_registers(
         current_milliamps,
         power_milliwatts,
         die_temperature_centi_c: None,
+        config_raw,
+        shunt_raw: u16::from_be_bytes(shunt_register).into(),
+        bus_raw: u32::from(bus_raw),
     }
 }
 
@@ -529,27 +546,31 @@ pub fn format_display_status(sample: ImuSample, power: PowerMonitorStatus) -> Di
 
             write!(
                 &mut lines[7],
-                "{:02X}:{:04X} V",
-                identity.device_register, identity.device_id
+                "{:02X}:{:04X} 00:{:04X}",
+                identity.device_register, identity.device_id, measurement.config_raw
             )
             .expect("INA device ID fits display line");
-            push_unsigned_milli(&mut lines[7], measurement.bus_millivolts);
 
-            push_text(&mut lines[8], "I");
-            push_signed_milli(&mut lines[8], measurement.current_milliamps);
-            push_text(&mut lines[8], " P");
-            push_signed_tenths(&mut lines[8], measurement.power_milliwatts / 100);
-            push_text(&mut lines[8], "W");
-
-            push_text(&mut lines[9], "S");
-            push_signed_milli(&mut lines[9], measurement.shunt_microvolts);
-            push_text(&mut lines[9], "mV T");
-            match measurement.die_temperature_centi_c {
-                Some(temperature_centi_c) => {
-                    push_signed_centi(&mut lines[9], i32::from(temperature_centi_c));
-                }
-                None => push_text(&mut lines[9], "--"),
+            match kind {
+                PowerMonitorKind::Ina226 => write!(
+                    &mut lines[8],
+                    "01:{:04X} 02:{:04X}",
+                    measurement.shunt_raw, measurement.bus_raw
+                )
+                .expect("INA226 raw registers fit display line"),
+                PowerMonitorKind::Ina228 => write!(
+                    &mut lines[8],
+                    "04:{:05X} 05:{:05X}",
+                    measurement.shunt_raw, measurement.bus_raw
+                )
+                .expect("INA228 raw registers fit display line"),
             }
+
+            push_text(&mut lines[9], "I");
+            push_signed_milli(&mut lines[9], measurement.current_milliamps);
+            push_text(&mut lines[9], " P");
+            push_signed_tenths(&mut lines[9], measurement.power_milliwatts / 100);
+            push_text(&mut lines[9], "W");
         }
         PowerMonitorStatus::NoResponse => {
             push_text(&mut lines[6], "INA NACK 40-4F");
@@ -607,12 +628,6 @@ fn push_text(line: &mut DisplayLine, text: &str) {
 
 fn push_signed_milli(line: &mut DisplayLine, value: i32) {
     push_signed_fixed(line, i64::from(value), 1_000, 3);
-}
-
-fn push_unsigned_milli(line: &mut DisplayLine, value: u32) {
-    let whole = value / 1_000;
-    let fraction = value % 1_000;
-    write!(line, "{whole}.{fraction:03}").expect("display line has fixed capacity");
 }
 
 fn push_signed_centi(line: &mut DisplayLine, value: i32) {
@@ -704,6 +719,7 @@ mod tests {
     #[test]
     fn ina228_register_conversion_uses_r002_two_milliohm_shunt_resistance() {
         let measurement = ina228_measurement_from_registers(
+            [0x00, 0x00],       // CONFIG
             [0x00, 0xA0, 0x00], // 2,560 LSB = 800 µV
             [0x0F, 0xA0, 0x00], // 64,000 LSB = 12.500 V
             [0x0C, 0x80],       // 3,200 LSB = 25.00 °C
@@ -718,6 +734,9 @@ mod tests {
                 current_milliamps: 400,
                 power_milliwatts: 5_000,
                 die_temperature_centi_c: Some(2_500),
+                config_raw: 0,
+                shunt_raw: 2_560,
+                bus_raw: 64_000,
             }
         );
     }
@@ -736,6 +755,7 @@ mod tests {
         assert!(!is_ina226_identity(0x0000, 0x2260));
 
         let measurement = ina226_measurement_from_registers(
+            [0x41, 0x27], // CONFIG reset value
             [0x06, 0x40], // 1,600 LSB = 4,000 µV
             [0x27, 0x10], // 10,000 LSB = 12.500 V
             2_000,        // R002 = 2 mΩ
@@ -749,8 +769,25 @@ mod tests {
                 current_milliamps: 2_000,
                 power_milliwatts: 25_000,
                 die_temperature_centi_c: None,
+                config_raw: 0x4127,
+                shunt_raw: 1_600,
+                bus_raw: 10_000,
             }
         );
+    }
+
+    #[test]
+    fn ina226_negative_full_scale_reports_the_observed_minus_40_point_96_ampere_fault() {
+        let measurement = ina226_measurement_from_registers(
+            [0x41, 0x27],
+            [0x80, 0x00],
+            [0x13, 0x60], // 6.200 V
+            2_000,
+        );
+
+        assert_eq!(measurement.shunt_raw, 0x8000);
+        assert_eq!(measurement.shunt_microvolts, -81_920);
+        assert_eq!(measurement.current_milliamps, -40_960);
     }
 
     #[test]
@@ -768,6 +805,9 @@ mod tests {
             current_milliamps: 80,
             power_milliwatts: 1_000,
             die_temperature_centi_c: Some(2_500),
+            config_raw: 0x4127,
+            shunt_raw: 0x00A00,
+            bus_raw: 0x0FA00,
         };
 
         let status = format_display_status(
@@ -788,9 +828,9 @@ mod tests {
         assert_eq!(status.lines[1].as_str(), "A X+1.000 Y-0.020");
         assert_eq!(status.lines[3].as_str(), "G X+12.3 Y-0.4");
         assert_eq!(status.lines[6].as_str(), "INA228 40 3E:5449");
-        assert_eq!(status.lines[7].as_str(), "3F:2281 V12.500");
-        assert_eq!(status.lines[8].as_str(), "I+0.080 P+1.0W");
-        assert_eq!(status.lines[9].as_str(), "S+0.800mV T+25.00");
+        assert_eq!(status.lines[7].as_str(), "3F:2281 00:4127");
+        assert_eq!(status.lines[8].as_str(), "04:00A00 05:0FA00");
+        assert_eq!(status.lines[9].as_str(), "I+0.080 P+1.0W");
         assert!(
             status
                 .lines
@@ -818,13 +858,17 @@ mod tests {
                     current_milliamps: 400,
                     power_milliwatts: 5_000,
                     die_temperature_centi_c: None,
+                    config_raw: 0x4127,
+                    shunt_raw: 0x0140,
+                    bus_raw: 0x2710,
                 },
             ),
         );
 
         assert_eq!(status.lines[6].as_str(), "INA226 45 FE:5449");
-        assert_eq!(status.lines[7].as_str(), "FF:2260 V12.500");
-        assert_eq!(status.lines[9].as_str(), "S+0.800mV T--");
+        assert_eq!(status.lines[7].as_str(), "FF:2260 00:4127");
+        assert_eq!(status.lines[8].as_str(), "01:0140 02:2710");
+        assert_eq!(status.lines[9].as_str(), "I+0.400 P+5.0W");
     }
 
     #[test]
