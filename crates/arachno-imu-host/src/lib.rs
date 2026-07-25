@@ -1,16 +1,16 @@
 use std::{
     f32::consts::PI,
-    io::{self, Read},
+    io::{self, Read, Write},
     time::{Duration, Instant},
 };
 
 use arachno_hal::{HalError, HalResult, ImuSource};
 pub use arachno_imu_proto::{
-    CAP_ACCEL, CAP_GYRO, CAP_MAG, CAP_TEMP, DeviceInfo, SENSOR_FAULT_NONE,
+    CAP_ACCEL, CAP_GYRO, CAP_MAG, CAP_TEMP, CAP_USB_BOOT, DeviceInfo, SENSOR_FAULT_NONE,
     SENSOR_FAULT_PROBE_NO_RESPONSE, SENSOR_FAULT_READ, SENSOR_FAULT_UNEXPECTED_WHO_AM_I,
     SPI_MODE_UNKNOWN, SensorKind,
 };
-use arachno_imu_proto::{Frame, FrameParser, ImuSample};
+use arachno_imu_proto::{Frame, FrameParser, ImuSample, encode_usb_boot_request_frame};
 use arachno_msg::ImuTelemetry;
 use serialport::SerialPort;
 
@@ -96,6 +96,7 @@ impl UsbImuBridge {
             match self.next_frame()? {
                 Some(Frame::DeviceInfo { info, .. }) => return Ok(DeviceInfoProbe::Info(info)),
                 Some(Frame::ImuSample { .. }) => saw_sample = true,
+                Some(Frame::EnterUsbBoot { .. }) => {}
                 None => {}
             }
         }
@@ -105,6 +106,29 @@ impl UsbImuBridge {
         } else {
             Ok(DeviceInfoProbe::Silent)
         }
+    }
+
+    /// Requests that compatible firmware switch to the RP2040 ROM USB bootloader.
+    ///
+    /// The caller should wait for the serial port to disconnect and then copy a UF2 onto the
+    /// `RPI-RP2` mass-storage device which appears in its place.
+    pub fn request_usb_boot(&mut self) -> HalResult<()> {
+        let mut frame = [0u8; 8];
+        let frame_len = encode_usb_boot_request_frame(0, &mut frame)
+            .expect("the fixed USB boot control frame fits in its buffer");
+
+        self.port.write_all(&frame[..frame_len]).map_err(|err| {
+            HalError::Communication(format!(
+                "failed requesting USB boot from IMU bridge {}: {err}",
+                self.port_path
+            ))
+        })?;
+        self.port.flush().map_err(|err| {
+            HalError::Communication(format!(
+                "failed flushing USB boot request to IMU bridge {}: {err}",
+                self.port_path
+            ))
+        })
     }
 }
 
@@ -123,6 +147,7 @@ impl ImuSource for UsbImuBridge {
             match frame {
                 Frame::DeviceInfo { .. } => continue,
                 Frame::ImuSample { sample, .. } => return Ok(Some(convert_sample(sample))),
+                Frame::EnterUsbBoot { .. } => continue,
             }
         }
     }

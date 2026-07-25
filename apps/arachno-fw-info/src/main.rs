@@ -3,7 +3,7 @@ use std::{path::PathBuf, time::Duration};
 use anyhow::{Context, bail};
 use arachno_core::RobotConfig;
 use arachno_imu_host::{
-    CAP_ACCEL, CAP_GYRO, CAP_MAG, CAP_TEMP, DeviceInfoProbe, SENSOR_FAULT_NONE,
+    CAP_ACCEL, CAP_GYRO, CAP_MAG, CAP_TEMP, CAP_USB_BOOT, DeviceInfoProbe, SENSOR_FAULT_NONE,
     SENSOR_FAULT_PROBE_NO_RESPONSE, SENSOR_FAULT_READ, SENSOR_FAULT_UNEXPECTED_WHO_AM_I,
     SPI_MODE_UNKNOWN, SensorKind, UsbImuBridge,
 };
@@ -17,6 +17,9 @@ struct Args {
     device: Option<String>,
     #[arg(long, default_value_t = 1_000)]
     timeout_ms: u64,
+    /// Ask compatible firmware to restart into the RP2040 ROM USB bootloader.
+    #[arg(long)]
+    enter_usb_boot: bool,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -69,6 +72,18 @@ fn main() -> anyhow::Result<()> {
         );
     }
 
+    if args.enter_usb_boot {
+        if info.capabilities & CAP_USB_BOOT == 0 {
+            bail!(
+                "firmware on {} does not support USB boot requests; flash firmware 0.1.2 or later once using BOOTSEL",
+                device
+            );
+        }
+
+        println!("requesting RP2040 USB bootloader; the serial device will disconnect");
+        bridge.request_usb_boot()?;
+    }
+
     Ok(())
 }
 
@@ -107,6 +122,9 @@ fn capability_labels(bits: u16) -> String {
     }
     if bits & CAP_MAG != 0 {
         labels.push("mag");
+    }
+    if bits & CAP_USB_BOOT != 0 {
+        labels.push("usb_boot");
     }
 
     if labels.is_empty() {

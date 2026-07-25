@@ -8,9 +8,9 @@ mod ina228;
 use core::mem::MaybeUninit;
 
 use arachno_imu_proto::{
-    CAP_ACCEL, CAP_GYRO, CAP_TEMP, DeviceInfo, ImuSample, MAX_FRAME_LEN, SENSOR_FAULT_NONE,
-    SENSOR_FAULT_PROBE_NO_RESPONSE, SENSOR_FAULT_READ, SPI_MODE_UNKNOWN, SensorKind,
-    encode_device_info_frame, encode_sample_frame,
+    CAP_ACCEL, CAP_GYRO, CAP_TEMP, CAP_USB_BOOT, DeviceInfo, Frame, FrameParser, ImuSample,
+    MAX_FRAME_LEN, SENSOR_FAULT_NONE, SENSOR_FAULT_PROBE_NO_RESPONSE, SENSOR_FAULT_READ,
+    SPI_MODE_UNKNOWN, SensorKind, encode_device_info_frame, encode_sample_frame,
 };
 use defmt::{info, panic, unwrap, warn};
 use display::St7789Display;
@@ -21,13 +21,13 @@ use embassy_rp::gpio::{Level, Output};
 use embassy_rp::i2c::{self, AbortReason, I2c};
 use embassy_rp::peripherals::{I2C1, PIN_2, PIN_3, PIN_4, PIN_5, PIN_6, PIN_7, SPI0, USB};
 use embassy_rp::spi::{self, Blocking as SpiBlocking, Spi};
-use embassy_rp::usb::{Driver, Instance, InterruptHandler};
+use embassy_rp::usb::{Driver, InterruptHandler};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
 use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Instant, Ticker, Timer};
 use embassy_usb::UsbDevice;
-use embassy_usb::class::cdc_acm::{CdcAcmClass, State};
+use embassy_usb::class::cdc_acm::{CdcAcmClass, Receiver, Sender, State};
 use embassy_usb::driver::EndpointError;
 use ina228::{INA228_SHUNT_MICRO_OHMS, Ina228};
 use rp2040_imu_bridge::{
@@ -84,7 +84,7 @@ async fn main(spawner: Spawner) {
         )
     };
 
-    let mut class = unsafe {
+    let class = unsafe {
         let state = CDC_STATE.write(State::new());
         CdcAcmClass::new(&mut builder, state, 64)
     };
@@ -121,20 +121,25 @@ async fn main(spawner: Spawner) {
     spawner.spawn(unwrap!(imu_task(sensor)));
     spawner.spawn(unwrap!(display_task(display, ina228)));
 
+    let (mut sender, receiver) = class.split();
+    spawner.spawn(unwrap!(usb_command_task(receiver)));
+
     let mut sequence = 0u8;
     let mut frame_buf = [0u8; MAX_FRAME_LEN];
 
     loop {
-        class.wait_connection().await;
+        sender.wait_connection().await;
         info!("USB host connected");
 
-        let _ = stream_samples(&mut class, device_info, &mut sequence, &mut frame_buf).await;
+        let _ = stream_samples(&mut sender, device_info, &mut sequence, &mut frame_buf).await;
         info!("USB host disconnected");
     }
 }
 
 type MyUsbDriver = Driver<'static, USB>;
 type MyUsbDevice = UsbDevice<'static, MyUsbDriver>;
+type MyCdcSender = Sender<'static, MyUsbDriver>;
+type MyCdcReceiver = Receiver<'static, MyUsbDriver>;
 
 #[embassy_executor::task]
 async fn usb_task(mut usb: MyUsbDevice) -> ! {
@@ -172,8 +177,44 @@ async fn display_task(mut display: St7789Display<'static>, mut ina228: Ina228<'s
     }
 }
 
-async fn stream_samples<'d, T: Instance + 'd>(
-    class: &mut CdcAcmClass<'d, Driver<'d, T>>,
+#[embassy_executor::task]
+async fn usb_command_task(mut receiver: MyCdcReceiver) -> ! {
+    let mut parser = FrameParser::new();
+    let mut packet = [0u8; 64];
+
+    loop {
+        receiver.wait_connection().await;
+        parser.reset();
+
+        loop {
+            let received = match receiver.read_packet(&mut packet).await {
+                Ok(received) => received,
+                Err(EndpointError::Disabled) => break,
+                Err(EndpointError::BufferOverflow) => {
+                    warn!("USB control packet exceeded the CDC packet size");
+                    continue;
+                }
+            };
+
+            for &byte in &packet[..received] {
+                match parser.push(byte) {
+                    Ok(Some(Frame::EnterUsbBoot { .. })) => {
+                        info!("entering RP2040 USB bootloader on host request");
+                        Timer::after(Duration::from_millis(20)).await;
+                        embassy_rp::rom_data::reset_to_usb_boot(0, 0);
+                        loop {
+                            cortex_m::asm::wfi();
+                        }
+                    }
+                    Ok(Some(_)) | Ok(None) | Err(_) => {}
+                }
+            }
+        }
+    }
+}
+
+async fn stream_samples(
+    class: &mut MyCdcSender,
     device_info: DeviceInfo,
     sequence: &mut u8,
     frame_buf: &mut [u8; MAX_FRAME_LEN],
@@ -198,8 +239,8 @@ async fn stream_samples<'d, T: Instance + 'd>(
     }
 }
 
-async fn send_device_info<'d, T: Instance + 'd>(
-    class: &mut CdcAcmClass<'d, Driver<'d, T>>,
+async fn send_device_info(
+    class: &mut MyCdcSender,
     device_info: DeviceInfo,
     sequence: &mut u8,
     frame_buf: &mut [u8; MAX_FRAME_LEN],
@@ -273,7 +314,7 @@ impl<'d> SensorState<'d> {
                 Self::Faulted(_) => SensorKind::Faulted,
             },
             sample_hz: SAMPLE_HZ as u16,
-            capabilities: CAP_ACCEL | CAP_GYRO | CAP_TEMP,
+            capabilities: CAP_ACCEL | CAP_GYRO | CAP_TEMP | CAP_USB_BOOT,
             fault_code: match self {
                 Self::Real(_) => SENSOR_FAULT_NONE,
                 Self::Faulted(sensor) => sensor.fault_info.code,

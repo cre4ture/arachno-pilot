@@ -178,6 +178,21 @@ Recommended options:
 
 For `BOOTSEL + UF2`, hold `BOOT`, plug in the board, then copy the `.uf2` file onto the mounted `RPI-RP2` drive.
 
+### Subsequent USB-only updates
+
+Firmware version `0.1.2` and later supports an explicit CRC-protected USB control request that
+restarts the RP2040 in its ROM `RPI-RP2` USB bootloader. From a host with this workspace and the
+board's serial device configured, run:
+
+```bash
+cargo run -p arachno-fw-info -- --config config/robot/jetson-onboard.toml --enter-usb-boot
+```
+
+The USB serial device disconnects and the `RPI-RP2` mass-storage device appears. Copy the new
+UF2 to it; after flashing, the RP2040 automatically restarts the application. The first install
+of version `0.1.2` still requires the physical `BOOTSEL` procedure because earlier firmware
+cannot receive this command.
+
 ## Verify
 
 After reconnecting the board over USB, check the firmware and bring-up result from the repo root:

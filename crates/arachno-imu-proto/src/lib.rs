@@ -15,6 +15,8 @@ pub const CAP_ACCEL: u16 = 1 << 0;
 pub const CAP_GYRO: u16 = 1 << 1;
 pub const CAP_TEMP: u16 = 1 << 2;
 pub const CAP_MAG: u16 = 1 << 3;
+/// The bridge accepts a CRC-validated request to enter the RP2040 USB bootloader.
+pub const CAP_USB_BOOT: u16 = 1 << 4;
 pub const SENSOR_FAULT_NONE: u8 = 0;
 pub const SENSOR_FAULT_PROBE_NO_RESPONSE: u8 = 1;
 pub const SENSOR_FAULT_UNEXPECTED_WHO_AM_I: u8 = 2;
@@ -27,6 +29,8 @@ pub const SPI_MODE_UNKNOWN: u8 = 0xFF;
 pub enum FrameKind {
     ImuSample = 0x01,
     DeviceInfo = 0x02,
+    /// Host-to-device control frame. Its payload is empty.
+    EnterUsbBoot = 0x80,
 }
 
 impl TryFrom<u8> for FrameKind {
@@ -36,6 +40,7 @@ impl TryFrom<u8> for FrameKind {
         match value {
             0x01 => Ok(Self::ImuSample),
             0x02 => Ok(Self::DeviceInfo),
+            0x80 => Ok(Self::EnterUsbBoot),
             _ => Err(DecodeError::UnknownFrameKind(value)),
         }
     }
@@ -98,6 +103,7 @@ pub struct ImuSample {
 pub enum Frame {
     DeviceInfo { sequence: u8, info: DeviceInfo },
     ImuSample { sequence: u8, sample: ImuSample },
+    EnterUsbBoot { sequence: u8 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -339,6 +345,31 @@ pub fn encode_device_info_frame(
     Ok(frame_len)
 }
 
+/// Encodes the host-to-device request that switches the RP2040 into its ROM USB bootloader.
+///
+/// The request has no payload, but it uses the same framing and CRC as telemetry frames so
+/// arbitrary USB serial data cannot trigger a reset.
+pub fn encode_usb_boot_request_frame(sequence: u8, out: &mut [u8]) -> Result<usize, EncodeError> {
+    let frame_len = frame_len(0);
+    if out.len() < frame_len {
+        return Err(EncodeError::OutputTooSmall);
+    }
+
+    out[0] = SYNC_0;
+    out[1] = SYNC_1;
+    out[2] = PROTOCOL_VERSION;
+    out[3] = FrameKind::EnterUsbBoot as u8;
+    out[4] = 0;
+    out[5] = sequence;
+
+    let crc = crc16_ccitt(&out[..HEADER_LEN]);
+    let [crc_low, crc_high] = crc.to_le_bytes();
+    out[HEADER_LEN] = crc_low;
+    out[HEADER_LEN + 1] = crc_high;
+
+    Ok(frame_len)
+}
+
 pub fn decode_frame(bytes: &[u8]) -> Result<Frame, DecodeError> {
     if bytes.len() < HEADER_LEN + CRC_LEN {
         return Err(DecodeError::IncompleteFrame);
@@ -433,6 +464,16 @@ pub fn decode_frame(bytes: &[u8]) -> Result<Frame, DecodeError> {
                 },
             })
         }
+        FrameKind::EnterUsbBoot => {
+            if payload_len != 0 {
+                return Err(DecodeError::PayloadLengthMismatch {
+                    kind,
+                    length: payload_len,
+                });
+            }
+
+            Ok(Frame::EnterUsbBoot { sequence: bytes[5] })
+        }
     }
 }
 
@@ -463,6 +504,7 @@ const fn is_valid_payload_len(kind: FrameKind, payload_len: usize) -> bool {
             payload_len == DEVICE_INFO_PAYLOAD_LEN_V1 || payload_len == DEVICE_INFO_PAYLOAD_LEN
         }
         FrameKind::ImuSample => payload_len == IMU_SAMPLE_PAYLOAD_LEN,
+        FrameKind::EnterUsbBoot => payload_len == 0,
     }
 }
 
@@ -567,6 +609,19 @@ mod tests {
         let frame = decode_frame(&buf[..written]).unwrap();
 
         assert_eq!(frame, Frame::DeviceInfo { sequence: 3, info });
+    }
+
+    #[test]
+    fn usb_boot_request_roundtrips_across_fragmented_usb_packets() {
+        let mut buf = [0u8; MAX_FRAME_LEN];
+        let written = encode_usb_boot_request_frame(23, &mut buf).unwrap();
+        let mut parser = FrameParser::new();
+
+        assert!(parser.push_slice(&buf[..3]).unwrap().is_none());
+        assert_eq!(
+            parser.push_slice(&buf[3..written]).unwrap(),
+            Some(Frame::EnterUsbBoot { sequence: 23 })
+        );
     }
 
     #[test]
