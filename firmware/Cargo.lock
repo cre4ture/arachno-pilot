@@ -1236,16 +1236,19 @@ dependencies = [
 
 [[package]]
 name = "rp2040-imu-bridge"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "arachno-imu-proto",
+ "cortex-m",
  "cortex-m-rt",
  "defmt",
  "defmt-rtt",
  "embassy-executor",
  "embassy-rp",
+ "embassy-sync",
  "embassy-time",
  "embassy-usb",
+ "heapless 0.8.0",
  "panic-probe",
 ]
 

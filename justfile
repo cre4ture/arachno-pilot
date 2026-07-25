@@ -162,14 +162,14 @@ fw-version:
     cargo run -p arachno-fw-info -- --config config/robot/default.toml
 
 firmware-check:
-    cargo check --manifest-path firmware/Cargo.toml -p rp2040-imu-bridge --target thumbv6m-none-eabi
+    cargo check --manifest-path firmware/Cargo.toml -p rp2040-imu-bridge --target thumbv6m-none-eabi --target-dir firmware/target
 
 firmware-build:
-    cargo build --manifest-path firmware/Cargo.toml -p rp2040-imu-bridge --target thumbv6m-none-eabi
+    cargo build --manifest-path firmware/Cargo.toml -p rp2040-imu-bridge --target thumbv6m-none-eabi --target-dir firmware/target
 
 firmware-build-release:
-    cargo build --manifest-path firmware/Cargo.toml -p rp2040-imu-bridge --release --target thumbv6m-none-eabi
+    cargo build --manifest-path firmware/Cargo.toml -p rp2040-imu-bridge --release --target thumbv6m-none-eabi --target-dir firmware/target
 
 firmware-uf2:
-    cargo build --manifest-path firmware/Cargo.toml -p rp2040-imu-bridge --release --target thumbv6m-none-eabi
+    cargo build --manifest-path firmware/Cargo.toml -p rp2040-imu-bridge --release --target thumbv6m-none-eabi --target-dir firmware/target
     elf2uf2-rs firmware/target/thumbv6m-none-eabi/release/rp2040-imu-bridge firmware/target/thumbv6m-none-eabi/release/rp2040-imu-bridge.uf2

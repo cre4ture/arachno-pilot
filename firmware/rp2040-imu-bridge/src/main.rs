@@ -2,14 +2,21 @@
 #![no_main]
 #![allow(static_mut_refs)]
 
+mod display;
+mod ina228;
+
 use core::mem::MaybeUninit;
 
 use arachno_imu_proto::{
-    CAP_ACCEL, CAP_GYRO, CAP_TEMP, DeviceInfo, ImuSample, MAX_FRAME_LEN, SENSOR_FAULT_NONE,
-    SENSOR_FAULT_PROBE_NO_RESPONSE, SENSOR_FAULT_READ, SPI_MODE_UNKNOWN, SensorKind,
-    encode_device_info_frame, encode_sample_frame,
+    CAP_ACCEL, CAP_GYRO, CAP_POWER_MONITOR_REGISTERS, CAP_TEMP, CAP_USB_BOOT, DeviceInfo, Frame,
+    FrameParser, ImuSample, MAX_FRAME_LEN, POWER_MONITOR_REGISTER_STATUS_I2C_ERROR,
+    POWER_MONITOR_REGISTER_STATUS_NOT_FOUND, POWER_MONITOR_REGISTER_STATUS_OK,
+    PowerMonitorRegisterValue, SENSOR_FAULT_NONE, SENSOR_FAULT_PROBE_NO_RESPONSE,
+    SENSOR_FAULT_READ, SPI_MODE_UNKNOWN, SensorKind, encode_device_info_frame,
+    encode_power_monitor_register_frame, encode_sample_frame,
 };
 use defmt::{info, panic, unwrap, warn};
+use display::St7789Display;
 use embassy_executor::Spawner;
 use embassy_rp::Peri;
 use embassy_rp::bind_interrupts;
@@ -17,15 +24,19 @@ use embassy_rp::gpio::{Level, Output};
 use embassy_rp::i2c::{self, AbortReason, I2c};
 use embassy_rp::peripherals::{I2C1, PIN_2, PIN_3, PIN_4, PIN_5, PIN_6, PIN_7, SPI0, USB};
 use embassy_rp::spi::{self, Blocking as SpiBlocking, Spi};
-use embassy_rp::usb::{Driver, Instance, InterruptHandler};
+use embassy_rp::usb::{Driver, InterruptHandler};
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::channel::Channel;
+use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Instant, Ticker, Timer};
 use embassy_usb::UsbDevice;
-use embassy_usb::class::cdc_acm::{CdcAcmClass, State};
+use embassy_usb::class::cdc_acm::{CdcAcmClass, Receiver, Sender, State};
 use embassy_usb::driver::EndpointError;
+use ina228::{INA228_SHUNT_MICRO_OHMS, InaPowerMonitor, PowerMonitorRawRegister};
 use rp2040_imu_bridge::{
     FaultInfo, MPU_I2C_ADDRESSES, MPU_MEASUREMENT_PAYLOAD_LEN, MPU_REG_ACCEL_XOUT_H,
-    MPU_REG_WHO_AM_I, ProbeResult, SENSOR_STATUS_FAULT, init_steps, sample_from_payload,
-    sensor_kind_from_who_am_i, validate_who_am_i,
+    MPU_REG_WHO_AM_I, ProbeResult, SENSOR_STATUS_FAULT, format_display_status, init_steps,
+    sample_from_payload, sensor_kind_from_who_am_i, validate_who_am_i,
 };
 use {defmt_rtt as _, panic_probe as _};
 
@@ -38,8 +49,34 @@ const MPU_I2C_HZ: u32 = 400_000;
 const MPU9250_SPI_HZ: u32 = 1_000_000;
 const MPU9250_SPI_PROBE_HZ: u32 = 125_000;
 
+static DISPLAY_SAMPLES: Signal<CriticalSectionRawMutex, ImuSample> = Signal::new();
+static USB_SAMPLES: Channel<CriticalSectionRawMutex, ImuSample, 8> = Channel::new();
+static POWER_MONITOR_REGISTER_REQUESTS: Channel<
+    CriticalSectionRawMutex,
+    PowerMonitorRegisterRequest,
+    1,
+> = Channel::new();
+static POWER_MONITOR_REGISTER_RESPONSES: Channel<
+    CriticalSectionRawMutex,
+    PowerMonitorRegisterResponse,
+    1,
+> = Channel::new();
+
+#[derive(Clone, Copy)]
+struct PowerMonitorRegisterRequest {
+    sequence: u8,
+    register: u8,
+}
+
+#[derive(Clone, Copy)]
+struct PowerMonitorRegisterResponse {
+    sequence: u8,
+    value: PowerMonitorRegisterValue,
+}
+
 bind_interrupts!(struct Irqs {
     USBCTRL_IRQ => InterruptHandler<USB>;
+    DMA_IRQ_0 => embassy_rp::dma::InterruptHandler<embassy_rp::peripherals::DMA_CH0>;
 });
 
 #[embassy_executor::main]
@@ -72,7 +109,7 @@ async fn main(spawner: Spawner) {
         )
     };
 
-    let mut class = unsafe {
+    let class = unsafe {
         let state = CDC_STATE.write(State::new());
         CdcAcmClass::new(&mut builder, state, 64)
     };
@@ -90,61 +127,195 @@ async fn main(spawner: Spawner) {
     // Independent I2C backend:
     //   GP6 -> MPU-6050 SDA
     //   GP7 -> MPU-6050 SCL
-    // GP8/GP9 remain free as an optional future second I2C pair.
-    let mut sensor = SensorState::new(
+    // INA226/INA228: GP8 -> SDA, GP9 -> SCL (I2C0)
+    // LCD: GP26 -> SPI1 SCK, GP27 -> SPI1 MOSI, GP0 -> CS, GP1 -> DC,
+    //      GP22 -> RST, GP28 -> BL.
+    let sensor = SensorState::new(
         p.I2C1, p.SPI0, p.PIN_2, p.PIN_3, p.PIN_4, p.PIN_5, p.PIN_6, p.PIN_7,
     )
     .await;
+    let device_info = sensor.device_info();
+    let display = unwrap!(
+        St7789Display::new(
+            p.SPI1, p.PIN_26, p.PIN_27, p.PIN_0, p.PIN_1, p.PIN_22, p.PIN_28, p.DMA_CH0, Irqs,
+        )
+        .await
+    );
+    let power_monitor = InaPowerMonitor::new(p.I2C0, p.PIN_9, p.PIN_8, INA228_SHUNT_MICRO_OHMS);
+
+    spawner.spawn(unwrap!(imu_task(sensor)));
+    spawner.spawn(unwrap!(display_task(display, power_monitor)));
+
+    let (mut sender, receiver) = class.split();
+    spawner.spawn(unwrap!(usb_command_task(receiver)));
+
     let mut sequence = 0u8;
     let mut frame_buf = [0u8; MAX_FRAME_LEN];
 
     loop {
-        class.wait_connection().await;
+        sender.wait_connection().await;
         info!("USB host connected");
 
-        let _ = stream_samples(&mut class, &mut sensor, &mut sequence, &mut frame_buf).await;
+        let _ = stream_samples(&mut sender, device_info, &mut sequence, &mut frame_buf).await;
         info!("USB host disconnected");
     }
 }
 
 type MyUsbDriver = Driver<'static, USB>;
 type MyUsbDevice = UsbDevice<'static, MyUsbDriver>;
+type MyCdcSender = Sender<'static, MyUsbDriver>;
+type MyCdcReceiver = Receiver<'static, MyUsbDriver>;
 
 #[embassy_executor::task]
 async fn usb_task(mut usb: MyUsbDevice) -> ! {
     usb.run().await
 }
 
-async fn stream_samples<'d, T: Instance + 'd>(
-    class: &mut CdcAcmClass<'d, Driver<'d, T>>,
-    sensor: &mut SensorState<'d>,
+#[embassy_executor::task]
+async fn imu_task(mut sensor: SensorState<'static>) -> ! {
+    let mut ticker = Ticker::every(Duration::from_millis(SAMPLE_PERIOD_MS));
+
+    loop {
+        let sample = sensor.next_sample();
+        DISPLAY_SAMPLES.signal(sample);
+        let _ = USB_SAMPLES.try_send(sample);
+        ticker.next().await;
+    }
+}
+
+#[embassy_executor::task]
+async fn display_task(
+    mut display: St7789Display<'static>,
+    mut power_monitor: InaPowerMonitor<'static>,
+) -> ! {
+    loop {
+        let sample = DISPLAY_SAMPLES.wait().await;
+        let power = power_monitor.read_status();
+        let status = format_display_status(sample, power);
+        if let Err(error) = display.draw_status(&status).await {
+            warn!("LCD update failed: {:?}", error);
+        }
+
+        while let Ok(request) = POWER_MONITOR_REGISTER_REQUESTS.try_receive() {
+            let value = match power_monitor.read_raw_register(request.register) {
+                PowerMonitorRawRegister::Value { address, value } => PowerMonitorRegisterValue {
+                    status: POWER_MONITOR_REGISTER_STATUS_OK,
+                    address,
+                    register: request.register,
+                    value,
+                },
+                PowerMonitorRawRegister::NotFound => PowerMonitorRegisterValue {
+                    status: POWER_MONITOR_REGISTER_STATUS_NOT_FOUND,
+                    address: 0,
+                    register: request.register,
+                    value: 0,
+                },
+                PowerMonitorRawRegister::I2cError { address } => PowerMonitorRegisterValue {
+                    status: POWER_MONITOR_REGISTER_STATUS_I2C_ERROR,
+                    address,
+                    register: request.register,
+                    value: 0,
+                },
+            };
+            POWER_MONITOR_REGISTER_RESPONSES
+                .send(PowerMonitorRegisterResponse {
+                    sequence: request.sequence,
+                    value,
+                })
+                .await;
+        }
+
+        // The display needs a comparatively large SPI transfer. Limit refreshes so the IMU
+        // task continues to maintain its 200 Hz sampling cadence.
+        Timer::after(Duration::from_millis(250)).await;
+    }
+}
+
+#[embassy_executor::task]
+async fn usb_command_task(mut receiver: MyCdcReceiver) -> ! {
+    let mut parser = FrameParser::new();
+    let mut packet = [0u8; 64];
+
+    loop {
+        receiver.wait_connection().await;
+        parser.reset();
+
+        loop {
+            let received = match receiver.read_packet(&mut packet).await {
+                Ok(received) => received,
+                Err(EndpointError::Disabled) => break,
+                Err(EndpointError::BufferOverflow) => {
+                    warn!("USB control packet exceeded the CDC packet size");
+                    continue;
+                }
+            };
+
+            for &byte in &packet[..received] {
+                match parser.push(byte) {
+                    Ok(Some(Frame::EnterUsbBoot { .. })) => {
+                        info!("entering RP2040 USB bootloader on host request");
+                        Timer::after(Duration::from_millis(20)).await;
+                        embassy_rp::rom_data::reset_to_usb_boot(0, 0);
+                        loop {
+                            cortex_m::asm::wfi();
+                        }
+                    }
+                    Ok(Some(Frame::ReadPowerMonitorRegister { sequence, register })) => {
+                        POWER_MONITOR_REGISTER_REQUESTS
+                            .send(PowerMonitorRegisterRequest { sequence, register })
+                            .await;
+                    }
+                    Ok(Some(_)) | Ok(None) | Err(_) => {}
+                }
+            }
+        }
+    }
+}
+
+async fn stream_samples(
+    class: &mut MyCdcSender,
+    device_info: DeviceInfo,
     sequence: &mut u8,
     frame_buf: &mut [u8; MAX_FRAME_LEN],
 ) -> Result<(), Disconnected> {
-    let mut ticker = Ticker::every(Duration::from_millis(SAMPLE_PERIOD_MS));
     let mut samples_until_info = 0u32;
 
-    send_device_info(class, sensor.device_info(), sequence, frame_buf).await?;
+    send_device_info(class, device_info, sequence, frame_buf).await?;
 
     loop {
+        while let Ok(response) = POWER_MONITOR_REGISTER_RESPONSES.try_receive() {
+            send_power_monitor_register(class, response, frame_buf).await?;
+        }
+
         if samples_until_info == 0 {
-            send_device_info(class, sensor.device_info(), sequence, frame_buf).await?;
+            send_device_info(class, device_info, sequence, frame_buf).await?;
             samples_until_info = DEVICE_INFO_ANNOUNCE_INTERVAL_SAMPLES;
         }
 
-        let sample = sensor.next_sample();
+        let sample = USB_SAMPLES.receive().await;
         let frame_len = encode_sample_frame(*sequence, &sample, frame_buf)
             .expect("IMU frame buffer is statically sized for the protocol");
 
         class.write_packet(&frame_buf[..frame_len]).await?;
         *sequence = sequence.wrapping_add(1);
         samples_until_info = samples_until_info.saturating_sub(1);
-        ticker.next().await;
     }
 }
 
-async fn send_device_info<'d, T: Instance + 'd>(
-    class: &mut CdcAcmClass<'d, Driver<'d, T>>,
+async fn send_power_monitor_register(
+    class: &mut MyCdcSender,
+    response: PowerMonitorRegisterResponse,
+    frame_buf: &mut [u8; MAX_FRAME_LEN],
+) -> Result<(), Disconnected> {
+    let frame_len =
+        encode_power_monitor_register_frame(response.sequence, response.value, frame_buf)
+            .expect("power-monitor register response fits in the shared protocol buffer");
+    class.write_packet(&frame_buf[..frame_len]).await?;
+    Ok(())
+}
+
+async fn send_device_info(
+    class: &mut MyCdcSender,
     device_info: DeviceInfo,
     sequence: &mut u8,
     frame_buf: &mut [u8; MAX_FRAME_LEN],
@@ -218,7 +389,11 @@ impl<'d> SensorState<'d> {
                 Self::Faulted(_) => SensorKind::Faulted,
             },
             sample_hz: SAMPLE_HZ as u16,
-            capabilities: CAP_ACCEL | CAP_GYRO | CAP_TEMP,
+            capabilities: CAP_ACCEL
+                | CAP_GYRO
+                | CAP_TEMP
+                | CAP_USB_BOOT
+                | CAP_POWER_MONITOR_REGISTERS,
             fault_code: match self {
                 Self::Real(_) => SENSOR_FAULT_NONE,
                 Self::Faulted(sensor) => sensor.fault_info.code,

@@ -3,9 +3,10 @@ use std::{path::PathBuf, time::Duration};
 use anyhow::{Context, bail};
 use arachno_core::RobotConfig;
 use arachno_imu_host::{
-    CAP_ACCEL, CAP_GYRO, CAP_MAG, CAP_TEMP, DeviceInfoProbe, SENSOR_FAULT_NONE,
-    SENSOR_FAULT_PROBE_NO_RESPONSE, SENSOR_FAULT_READ, SENSOR_FAULT_UNEXPECTED_WHO_AM_I,
-    SPI_MODE_UNKNOWN, SensorKind, UsbImuBridge,
+    CAP_ACCEL, CAP_GYRO, CAP_MAG, CAP_POWER_MONITOR_REGISTERS, CAP_TEMP, CAP_USB_BOOT,
+    DeviceInfoProbe, PowerMonitorRegisterRead, SENSOR_FAULT_NONE, SENSOR_FAULT_PROBE_NO_RESPONSE,
+    SENSOR_FAULT_READ, SENSOR_FAULT_UNEXPECTED_WHO_AM_I, SPI_MODE_UNKNOWN, SensorKind,
+    UsbImuBridge,
 };
 use clap::Parser;
 
@@ -17,6 +18,12 @@ struct Args {
     device: Option<String>,
     #[arg(long, default_value_t = 1_000)]
     timeout_ms: u64,
+    /// Ask compatible firmware to restart into the RP2040 ROM USB bootloader.
+    #[arg(long)]
+    enter_usb_boot: bool,
+    /// Read one raw 16-bit INA power-monitor register (hex, e.g. 0x01). May be repeated.
+    #[arg(long = "power-register", value_parser = parse_register)]
+    power_registers: Vec<u8>,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -69,7 +76,59 @@ fn main() -> anyhow::Result<()> {
         );
     }
 
+    if !args.power_registers.is_empty() {
+        if info.capabilities & CAP_POWER_MONITOR_REGISTERS == 0 {
+            bail!(
+                "firmware on {} does not support power-monitor register reads; flash the latest UF2",
+                device
+            );
+        }
+
+        for register in args.power_registers {
+            match bridge
+                .read_power_monitor_register(register, Duration::from_millis(args.timeout_ms))?
+            {
+                PowerMonitorRegisterRead::Value {
+                    address,
+                    register,
+                    value,
+                } => println!(
+                    "power_monitor[0x{address:02X}].register[0x{register:02X}] = 0x{value:04X}"
+                ),
+                PowerMonitorRegisterRead::NotFound { register } => {
+                    println!("power_monitor.register[0x{register:02X}] = no device")
+                }
+                PowerMonitorRegisterRead::I2cError { address, register } => println!(
+                    "power_monitor[0x{address:02X}].register[0x{register:02X}] = I2C error"
+                ),
+            }
+        }
+    }
+
+    if args.enter_usb_boot {
+        if info.capabilities & CAP_USB_BOOT == 0 {
+            bail!(
+                "firmware on {} does not support USB boot requests; flash firmware 0.1.2 or later once using BOOTSEL",
+                device
+            );
+        }
+
+        println!("requesting RP2040 USB bootloader; the serial device will disconnect");
+        bridge.request_usb_boot()?;
+    }
+
     Ok(())
+}
+
+fn parse_register(raw: &str) -> Result<u8, String> {
+    let number = raw.strip_prefix("0x").or_else(|| raw.strip_prefix("0X"));
+    let (radix, digits) = match number {
+        Some(digits) => (16, digits),
+        None => (10, raw),
+    };
+
+    u8::from_str_radix(digits, radix)
+        .map_err(|_| format!("{raw:?} is not a valid 8-bit register index"))
 }
 
 fn sensor_kind_label(kind: SensorKind) -> &'static str {
@@ -108,10 +167,28 @@ fn capability_labels(bits: u16) -> String {
     if bits & CAP_MAG != 0 {
         labels.push("mag");
     }
+    if bits & CAP_USB_BOOT != 0 {
+        labels.push("usb_boot");
+    }
+    if bits & CAP_POWER_MONITOR_REGISTERS != 0 {
+        labels.push("power_monitor_registers");
+    }
 
     if labels.is_empty() {
         "none".to_owned()
     } else {
         labels.join(",")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_register;
+
+    #[test]
+    fn parses_decimal_and_hex_power_monitor_registers() {
+        assert_eq!(parse_register("1").unwrap(), 0x01);
+        assert_eq!(parse_register("0xFE").unwrap(), 0xFE);
+        assert!(parse_register("0x100").is_err());
     }
 }
