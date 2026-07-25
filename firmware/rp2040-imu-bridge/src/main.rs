@@ -2,6 +2,9 @@
 #![no_main]
 #![allow(static_mut_refs)]
 
+mod display;
+mod ina228;
+
 use core::mem::MaybeUninit;
 
 use arachno_imu_proto::{
@@ -10,6 +13,7 @@ use arachno_imu_proto::{
     encode_device_info_frame, encode_sample_frame,
 };
 use defmt::{info, panic, unwrap, warn};
+use display::St7789Display;
 use embassy_executor::Spawner;
 use embassy_rp::Peri;
 use embassy_rp::bind_interrupts;
@@ -18,14 +22,18 @@ use embassy_rp::i2c::{self, AbortReason, I2c};
 use embassy_rp::peripherals::{I2C1, PIN_2, PIN_3, PIN_4, PIN_5, PIN_6, PIN_7, SPI0, USB};
 use embassy_rp::spi::{self, Blocking as SpiBlocking, Spi};
 use embassy_rp::usb::{Driver, Instance, InterruptHandler};
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::channel::Channel;
+use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Instant, Ticker, Timer};
 use embassy_usb::UsbDevice;
 use embassy_usb::class::cdc_acm::{CdcAcmClass, State};
 use embassy_usb::driver::EndpointError;
+use ina228::{INA228_SHUNT_MICRO_OHMS, Ina228};
 use rp2040_imu_bridge::{
     FaultInfo, MPU_I2C_ADDRESSES, MPU_MEASUREMENT_PAYLOAD_LEN, MPU_REG_ACCEL_XOUT_H,
-    MPU_REG_WHO_AM_I, ProbeResult, SENSOR_STATUS_FAULT, init_steps, sample_from_payload,
-    sensor_kind_from_who_am_i, validate_who_am_i,
+    MPU_REG_WHO_AM_I, PowerMonitorStatus, ProbeResult, SENSOR_STATUS_FAULT, format_display_status,
+    init_steps, sample_from_payload, sensor_kind_from_who_am_i, validate_who_am_i,
 };
 use {defmt_rtt as _, panic_probe as _};
 
@@ -38,8 +46,12 @@ const MPU_I2C_HZ: u32 = 400_000;
 const MPU9250_SPI_HZ: u32 = 1_000_000;
 const MPU9250_SPI_PROBE_HZ: u32 = 125_000;
 
+static DISPLAY_SAMPLES: Signal<CriticalSectionRawMutex, ImuSample> = Signal::new();
+static USB_SAMPLES: Channel<CriticalSectionRawMutex, ImuSample, 8> = Channel::new();
+
 bind_interrupts!(struct Irqs {
     USBCTRL_IRQ => InterruptHandler<USB>;
+    DMA_IRQ_0 => embassy_rp::dma::InterruptHandler<embassy_rp::peripherals::DMA_CH0>;
 });
 
 #[embassy_executor::main]
@@ -90,11 +102,25 @@ async fn main(spawner: Spawner) {
     // Independent I2C backend:
     //   GP6 -> MPU-6050 SDA
     //   GP7 -> MPU-6050 SCL
-    // GP8/GP9 remain free as an optional future second I2C pair.
-    let mut sensor = SensorState::new(
+    // INA228: GP8 -> SDA, GP9 -> SCL (I2C0)
+    // LCD: GP26 -> SPI1 SCK, GP27 -> SPI1 MOSI, GP0 -> CS, GP1 -> DC,
+    //      GP22 -> RST, GP28 -> BL.
+    let sensor = SensorState::new(
         p.I2C1, p.SPI0, p.PIN_2, p.PIN_3, p.PIN_4, p.PIN_5, p.PIN_6, p.PIN_7,
     )
     .await;
+    let device_info = sensor.device_info();
+    let display = unwrap!(
+        St7789Display::new(
+            p.SPI1, p.PIN_26, p.PIN_27, p.PIN_0, p.PIN_1, p.PIN_22, p.PIN_28, p.DMA_CH0, Irqs,
+        )
+        .await
+    );
+    let ina228 = Ina228::new(p.I2C0, p.PIN_9, p.PIN_8, INA228_SHUNT_MICRO_OHMS);
+
+    spawner.spawn(unwrap!(imu_task(sensor)));
+    spawner.spawn(unwrap!(display_task(display, ina228)));
+
     let mut sequence = 0u8;
     let mut frame_buf = [0u8; MAX_FRAME_LEN];
 
@@ -102,7 +128,7 @@ async fn main(spawner: Spawner) {
         class.wait_connection().await;
         info!("USB host connected");
 
-        let _ = stream_samples(&mut class, &mut sensor, &mut sequence, &mut frame_buf).await;
+        let _ = stream_samples(&mut class, device_info, &mut sequence, &mut frame_buf).await;
         info!("USB host disconnected");
     }
 }
@@ -115,31 +141,60 @@ async fn usb_task(mut usb: MyUsbDevice) -> ! {
     usb.run().await
 }
 
+#[embassy_executor::task]
+async fn imu_task(mut sensor: SensorState<'static>) -> ! {
+    let mut ticker = Ticker::every(Duration::from_millis(SAMPLE_PERIOD_MS));
+
+    loop {
+        let sample = sensor.next_sample();
+        DISPLAY_SAMPLES.signal(sample);
+        let _ = USB_SAMPLES.try_send(sample);
+        ticker.next().await;
+    }
+}
+
+#[embassy_executor::task]
+async fn display_task(mut display: St7789Display<'static>, mut ina228: Ina228<'static>) -> ! {
+    loop {
+        let sample = DISPLAY_SAMPLES.wait().await;
+        let power = match ina228.read_measurement() {
+            Ok((address, measurement)) => PowerMonitorStatus::online(address, measurement),
+            Err(_) => PowerMonitorStatus::offline(),
+        };
+        let status = format_display_status(sample, power);
+        if let Err(error) = display.draw_status(&status).await {
+            warn!("LCD update failed: {:?}", error);
+        }
+
+        // The display needs a comparatively large SPI transfer. Limit refreshes so the IMU
+        // task continues to maintain its 200 Hz sampling cadence.
+        Timer::after(Duration::from_millis(250)).await;
+    }
+}
+
 async fn stream_samples<'d, T: Instance + 'd>(
     class: &mut CdcAcmClass<'d, Driver<'d, T>>,
-    sensor: &mut SensorState<'d>,
+    device_info: DeviceInfo,
     sequence: &mut u8,
     frame_buf: &mut [u8; MAX_FRAME_LEN],
 ) -> Result<(), Disconnected> {
-    let mut ticker = Ticker::every(Duration::from_millis(SAMPLE_PERIOD_MS));
     let mut samples_until_info = 0u32;
 
-    send_device_info(class, sensor.device_info(), sequence, frame_buf).await?;
+    send_device_info(class, device_info, sequence, frame_buf).await?;
 
     loop {
         if samples_until_info == 0 {
-            send_device_info(class, sensor.device_info(), sequence, frame_buf).await?;
+            send_device_info(class, device_info, sequence, frame_buf).await?;
             samples_until_info = DEVICE_INFO_ANNOUNCE_INTERVAL_SAMPLES;
         }
 
-        let sample = sensor.next_sample();
+        let sample = USB_SAMPLES.receive().await;
         let frame_len = encode_sample_frame(*sequence, &sample, frame_buf)
             .expect("IMU frame buffer is statically sized for the protocol");
 
         class.write_packet(&frame_buf[..frame_len]).await?;
         *sequence = sequence.wrapping_add(1);
         samples_until_info = samples_until_info.saturating_sub(1);
-        ticker.next().await;
     }
 }
 

@@ -1244,8 +1244,10 @@ dependencies = [
  "defmt-rtt",
  "embassy-executor",
  "embassy-rp",
+ "embassy-sync",
  "embassy-time",
  "embassy-usb",
+ "heapless 0.8.0",
  "panic-probe",
 ]
 

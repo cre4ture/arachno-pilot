@@ -48,7 +48,8 @@ Recommended parallel-bus wiring for the Waveshare `RP2040-ETH`:
 
 - keep the existing `SPI0` IMU on `GPIO2-5`
 - use `GPIO6/7` as an independent primary `I2C1` IMU bus
-- keep `GPIO8/9` free as an optional future second `I2C0` bus
+- use `GPIO8/9` as the independent `I2C0` bus for the INA228 power monitor
+- use `GPIO26/27` as `SPI1` for the status LCD
 
 Recommended `SPI` wiring for a `GY-9250 / MPU-9250` breakout that exposes `SPI` pins:
 
@@ -71,12 +72,42 @@ Recommended `I2C` wiring for an `MPU-6050 / GY-521` style breakout:
 | `GPIO7` | `SCL` | `I2C1 SCL` |
 | `AD0` | `GND` or `3V3` | Selects `I2C` address `0x68` or `0x69` |
 
-Optional future second `I2C` bus for more identical sensors:
+### SPI1 status LCD and INA228 power monitor
+
+The firmware updates the ST7789B status LCD at roughly 4 Hz with the live IMU and INA228
+measurements. LCD pixel writes use SPI1 DMA so that display refreshes yield to the 200 Hz IMU
+sampling task. The IMU and display continue to run even while no USB host is connected.
+
+| RP2040-ETH | LCD / INA228 pin | Notes |
+| --- | --- | --- |
+| `3V3` | LCD `VCC`, INA228 `VCC` | Use 3.3 V logic and power |
+| `GND` | LCD `GND`, INA228 `GND` | Common ground |
+| `GPIO26` | LCD `SCL` / `CLK` | `SPI1 SCK` |
+| `GPIO27` | LCD `SDA` / `DIN` | `SPI1 MOSI`; the LCD has no MISO connection |
+| `GPIO0` | LCD `CS` | Active low |
+| `GPIO1` | LCD `DC` | Data/command selection |
+| `GPIO22` | LCD `RST` | Active low |
+| `GPIO28` | LCD `BL` / `BLK` | Backlight output, held on by the firmware |
+| `GPIO8` | INA228 `SDA` | `I2C0 SDA` |
+| `GPIO9` | INA228 `SCL` | `I2C0 SCL` |
+
+The INA228 driver probes all standard addresses from `0x40` through `0x4F`, verifies the TI
+manufacturer and INA228 device IDs, then reads bus voltage, shunt voltage, die temperature, and
+derives current and power. The default setting matches an **R002 / 2 mΩ** shunt; change
+[`INA228_SHUNT_MICRO_OHMS`](rp2040-imu-bridge/src/ina228.rs) if the resistor fitted to your board
+is different. The device must have I2C pull-ups to 3.3 V, either on its breakout or added
+externally.
+
+The display driver targets the ST7789B 240×280/284 panel family. If text is vertically displaced
+on the particular panel revision, adjust `DISPLAY_Y_OFFSET` in
+[`display.rs`](rp2040-imu-bridge/src/display.rs).
+
+Reserved `I2C0` bus allocation:
 
 | RP2040-ETH | Use | Notes |
 | --- | --- | --- |
-| `GPIO8` | `I2C0 SDA` | Not used by current firmware yet |
-| `GPIO9` | `I2C0 SCL` | Not used by current firmware yet |
+| `GPIO8` | `I2C0 SDA` | INA228 power monitor |
+| `GPIO9` | `I2C0 SCL` | INA228 power monitor |
 
 Leave these unconnected for the current firmware:
 
@@ -88,7 +119,8 @@ Important notes:
 
 - `SPI` breakouts still need `NCS` or `CS` exposed; modules that only break out `I2C` lines will use the `I2C` backend instead.
 - The non-overlapping pin assignment means an `SPI` IMU and an `I2C` IMU can now stay wired at the same time without bus conflicts.
-- The current bridge protocol still exposes one primary IMU stream. The separate `I2C0` pair on `GPIO8/9` is documented as future expansion space, not active firmware support yet.
+- The current USB bridge protocol still exposes one primary IMU stream. INA228 data is shown on
+  the local status LCD only for now; it is not part of the USB IMU packet format.
 - Even if the board is marketed as `3-5 V compatible`, the safe target for the RP2040 side is still `3.3 V`.
 - `GPIO17` to `GPIO21` are already tied into the onboard `CH9120` Ethernet side functions on the RP2040-ETH, so the firmware avoids them.
 - In `SPI` mode, `AD0` is used as `SDO/MISO`, not just as an `I2C` address strap.

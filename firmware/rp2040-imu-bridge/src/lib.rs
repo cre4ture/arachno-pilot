@@ -3,9 +3,12 @@
 #[cfg(test)]
 extern crate std;
 
+use core::fmt::Write;
+
 use arachno_imu_proto::{
     ImuSample, SENSOR_FAULT_PROBE_NO_RESPONSE, SENSOR_FAULT_UNEXPECTED_WHO_AM_I, SensorKind,
 };
+use heapless::String;
 
 pub const SENSOR_STATUS_FAULT: u16 = 0x0001;
 pub const SENSOR_STATUS_ACCEL_CLIPPED: u16 = 0x0002;
@@ -255,6 +258,211 @@ fn near_limit(values: &[i16; 3]) -> bool {
         .any(|value| value >= 32_000 || value <= -32_000)
 }
 
+pub const INA228_ADDRESS_MIN: u8 = 0x40;
+pub const INA228_ADDRESS_MAX: u8 = 0x4F;
+pub const INA228_MANUFACTURER_ID: u16 = 0x5449;
+pub const INA228_DEVICE_ID_MASK: u16 = 0xFFF0;
+pub const INA228_DEVICE_ID: u16 = 0x2280;
+
+pub const DISPLAY_STATUS_LINE_COUNT: usize = 10;
+pub const DISPLAY_STATUS_COLUMNS: usize = 20;
+pub type DisplayLine = String<24>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Ina228Measurement {
+    pub bus_millivolts: u32,
+    pub shunt_microvolts: i32,
+    pub current_milliamps: i32,
+    pub power_milliwatts: i32,
+    pub die_temperature_centi_c: i16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PowerMonitorStatus {
+    pub address: Option<u8>,
+    pub measurement: Option<Ina228Measurement>,
+}
+
+impl PowerMonitorStatus {
+    pub const fn offline() -> Self {
+        Self {
+            address: None,
+            measurement: None,
+        }
+    }
+
+    pub const fn online(address: u8, measurement: Ina228Measurement) -> Self {
+        Self {
+            address: Some(address),
+            measurement: Some(measurement),
+        }
+    }
+}
+
+pub struct DisplayStatus {
+    pub lines: [DisplayLine; DISPLAY_STATUS_LINE_COUNT],
+}
+
+pub fn is_ina228_identity(manufacturer_id: u16, device_id: u16) -> bool {
+    manufacturer_id == INA228_MANUFACTURER_ID
+        && (device_id & INA228_DEVICE_ID_MASK) == INA228_DEVICE_ID
+}
+
+/// Converts the INA228's left-aligned register values using its default ±163.84 mV shunt range.
+///
+/// `shunt_micro_ohms` must be the actual resistance of the sense shunt fitted to the board.
+pub fn ina228_measurement_from_registers(
+    shunt_register: [u8; 3],
+    bus_register: [u8; 3],
+    die_temperature_register: [u8; 2],
+    shunt_micro_ohms: u32,
+) -> Ina228Measurement {
+    let shunt_raw = signed_20_bit(shunt_register);
+    let bus_raw = unsigned_20_bit(bus_register);
+    let die_temperature_raw = i16::from_be_bytes(die_temperature_register);
+
+    // INA228 default ADCRANGE = 0: 312.5 nV/LSB, or 5/16 µV/LSB.
+    let shunt_microvolts = shunt_raw.saturating_mul(5) / 16;
+    // INA228 VBUS: 195.3125 µV/LSB, or 25/128 mV/LSB.
+    let bus_millivolts = ((u64::from(bus_raw) * 25) / 128) as u32;
+    // INA228 DIETEMP: 7.8125 m°C/LSB, or 25/32 centi°C/LSB.
+    let die_temperature_centi_c = ((i32::from(die_temperature_raw) * 25) / 32) as i16;
+    let current_milliamps = current_milliamps_from_shunt(shunt_microvolts, shunt_micro_ohms);
+    let power_milliwatts =
+        clamp_i64_to_i32((i64::from(bus_millivolts) * i64::from(current_milliamps)) / 1_000);
+
+    Ina228Measurement {
+        bus_millivolts,
+        shunt_microvolts,
+        current_milliamps,
+        power_milliwatts,
+        die_temperature_centi_c,
+    }
+}
+
+pub fn format_display_status(sample: ImuSample, power: PowerMonitorStatus) -> DisplayStatus {
+    let mut lines = core::array::from_fn(|_| DisplayLine::new());
+
+    push_text(&mut lines[0], "ARACHNO");
+
+    push_text(&mut lines[1], "A X");
+    push_signed_milli(&mut lines[1], i32::from(sample.accel_mg[0]));
+    push_text(&mut lines[1], " Y");
+    push_signed_milli(&mut lines[1], i32::from(sample.accel_mg[1]));
+
+    push_text(&mut lines[2], "  Z");
+    push_signed_milli(&mut lines[2], i32::from(sample.accel_mg[2]));
+    push_text(&mut lines[2], " G");
+
+    push_text(&mut lines[3], "G X");
+    push_signed_tenths(&mut lines[3], sample.gyro_mdps[0] / 100);
+    push_text(&mut lines[3], " Y");
+    push_signed_tenths(&mut lines[3], sample.gyro_mdps[1] / 100);
+
+    push_text(&mut lines[4], "  Z");
+    push_signed_tenths(&mut lines[4], sample.gyro_mdps[2] / 100);
+    push_text(&mut lines[4], " D/S");
+
+    push_text(&mut lines[5], "T ");
+    push_signed_centi(&mut lines[5], i32::from(sample.temperature_centi_c));
+    push_text(&mut lines[5], " C");
+
+    match (power.address, power.measurement) {
+        (Some(address), Some(measurement)) => {
+            push_text(&mut lines[6], "INA228 ");
+            write!(&mut lines[6], "{address:02X}").expect("INA address fits display line");
+
+            push_text(&mut lines[7], "V ");
+            push_unsigned_milli(&mut lines[7], measurement.bus_millivolts);
+            push_text(&mut lines[7], " I");
+            push_signed_milli(&mut lines[7], measurement.current_milliamps);
+
+            push_text(&mut lines[8], "P ");
+            push_signed_tenths(&mut lines[8], measurement.power_milliwatts / 100);
+            push_text(&mut lines[8], "W");
+
+            push_text(&mut lines[9], "S");
+            push_signed_milli(&mut lines[9], measurement.shunt_microvolts);
+            push_text(&mut lines[9], "mV T");
+            push_signed_centi(
+                &mut lines[9],
+                i32::from(measurement.die_temperature_centi_c),
+            );
+        }
+        _ => {
+            push_text(&mut lines[6], "INA228 --");
+            push_text(&mut lines[7], "V -- I --");
+            push_text(&mut lines[8], "P --");
+            push_text(&mut lines[9], "S -- T --");
+        }
+    }
+
+    DisplayStatus { lines }
+}
+
+fn unsigned_20_bit(register: [u8; 3]) -> u32 {
+    u32::from_be_bytes([0, register[0], register[1], register[2]]) >> 4
+}
+
+fn signed_20_bit(register: [u8; 3]) -> i32 {
+    let raw = unsigned_20_bit(register);
+    if raw & (1 << 19) == 0 {
+        raw as i32
+    } else {
+        raw as i32 - (1 << 20)
+    }
+}
+
+fn current_milliamps_from_shunt(shunt_microvolts: i32, shunt_micro_ohms: u32) -> i32 {
+    if shunt_micro_ohms == 0 {
+        return 0;
+    }
+
+    clamp_i64_to_i32((i64::from(shunt_microvolts) * 1_000) / i64::from(shunt_micro_ohms))
+}
+
+fn clamp_i64_to_i32(value: i64) -> i32 {
+    value.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
+}
+
+fn push_text(line: &mut DisplayLine, text: &str) {
+    line.push_str(text)
+        .expect("display line has fixed capacity");
+}
+
+fn push_signed_milli(line: &mut DisplayLine, value: i32) {
+    push_signed_fixed(line, i64::from(value), 1_000, 3);
+}
+
+fn push_unsigned_milli(line: &mut DisplayLine, value: u32) {
+    let whole = value / 1_000;
+    let fraction = value % 1_000;
+    write!(line, "{whole}.{fraction:03}").expect("display line has fixed capacity");
+}
+
+fn push_signed_centi(line: &mut DisplayLine, value: i32) {
+    push_signed_fixed(line, i64::from(value), 100, 2);
+}
+
+fn push_signed_tenths(line: &mut DisplayLine, value: i32) {
+    push_signed_fixed(line, i64::from(value), 10, 1);
+}
+
+fn push_signed_fixed(line: &mut DisplayLine, value: i64, scale: u64, decimals: u8) {
+    let magnitude = value.unsigned_abs();
+    let whole = magnitude / scale;
+    let fraction = magnitude % scale;
+    let sign = if value < 0 { '-' } else { '+' };
+
+    match decimals {
+        1 => write!(line, "{sign}{whole}.{fraction:01}"),
+        2 => write!(line, "{sign}{whole}.{fraction:02}"),
+        3 => write!(line, "{sign}{whole}.{fraction:03}"),
+        _ => unreachable!("display format only uses one to three decimal places"),
+    }
+    .expect("display line has fixed capacity");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -316,5 +524,65 @@ mod tests {
             SENSOR_STATUS_CALIBRATING | SENSOR_STATUS_ACCEL_CLIPPED | SENSOR_STATUS_GYRO_CLIPPED
         );
         assert_eq!(warmup_remaining, 0);
+    }
+
+    #[test]
+    fn ina228_register_conversion_uses_r002_two_milliohm_shunt_resistance() {
+        let measurement = ina228_measurement_from_registers(
+            [0x00, 0xA0, 0x00], // 2,560 LSB = 800 µV
+            [0x0F, 0xA0, 0x00], // 64,000 LSB = 12.500 V
+            [0x0C, 0x80],       // 3,200 LSB = 25.00 °C
+            2_000,              // R002 = 2 mΩ
+        );
+
+        assert_eq!(
+            measurement,
+            Ina228Measurement {
+                bus_millivolts: 12_500,
+                shunt_microvolts: 800,
+                current_milliamps: 400,
+                power_milliwatts: 5_000,
+                die_temperature_centi_c: 2_500,
+            }
+        );
+    }
+
+    #[test]
+    fn ina228_identity_requires_ti_manufacturer_and_ina228_device_bits() {
+        assert!(is_ina228_identity(0x5449, 0x2281));
+        assert!(!is_ina228_identity(0x5449, 0x2291));
+        assert!(!is_ina228_identity(0x0000, 0x2281));
+    }
+
+    #[test]
+    fn display_status_formats_imu_and_power_monitor_values_in_fixed_width_lines() {
+        let sample = ImuSample {
+            timestamp_us: 0,
+            accel_mg: [1_000, -20, 980],
+            gyro_mdps: [12_300, -400, 0],
+            temperature_centi_c: 2_500,
+            status: 0,
+        };
+        let measurement = Ina228Measurement {
+            bus_millivolts: 12_500,
+            shunt_microvolts: 800,
+            current_milliamps: 80,
+            power_milliwatts: 1_000,
+            die_temperature_centi_c: 2_500,
+        };
+
+        let status = format_display_status(sample, PowerMonitorStatus::online(0x40, measurement));
+
+        assert_eq!(status.lines[1].as_str(), "A X+1.000 Y-0.020");
+        assert_eq!(status.lines[3].as_str(), "G X+12.3 Y-0.4");
+        assert_eq!(status.lines[7].as_str(), "V 12.500 I+0.080");
+        assert_eq!(status.lines[8].as_str(), "P +1.0W");
+        assert_eq!(status.lines[9].as_str(), "S+0.800mV T+25.00");
+        assert!(
+            status
+                .lines
+                .iter()
+                .all(|line| line.len() <= DISPLAY_STATUS_COLUMNS)
+        );
     }
 }

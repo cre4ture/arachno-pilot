@@ -7,12 +7,14 @@ license.workspace = true
 [dependencies]
 arachno-imu-proto.workspace = true
 defmt.workspace = true
+heapless.workspace = true
 
 [target.'cfg(all(target_arch = "arm", target_os = "none"))'.dependencies]
 cortex-m-rt.workspace = true
 defmt-rtt.workspace = true
 embassy-executor.workspace = true
 embassy-rp.workspace = true
+embassy-sync.workspace = true
 embassy-time.workspace = true
 embassy-usb.workspace = true
 panic-probe.workspace = true
