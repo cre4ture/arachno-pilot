@@ -3,9 +3,9 @@ use embassy_rp::Peri;
 use embassy_rp::i2c::{self, I2c};
 use embassy_rp::peripherals::{I2C0, PIN_8, PIN_9};
 use rp2040_imu_bridge::{
-    INA228_ADDRESS_MAX, INA228_ADDRESS_MIN, PowerMonitorKind, PowerMonitorMeasurement,
-    PowerMonitorStatus, ina226_measurement_from_registers, ina228_measurement_from_registers,
-    is_ina226_identity, is_ina228_identity,
+    INA228_ADDRESS_MAX, INA228_ADDRESS_MIN, PowerMonitorIdentity, PowerMonitorKind,
+    PowerMonitorMeasurement, PowerMonitorStatus, ina226_measurement_from_registers,
+    ina228_measurement_from_registers, is_ina226_identity, is_ina228_identity,
 };
 
 const INA228_I2C_HZ: u32 = 400_000;
@@ -36,6 +36,7 @@ pub struct InaPowerMonitor<'d> {
 struct DetectedPowerMonitor {
     kind: PowerMonitorKind,
     address: u8,
+    identity: PowerMonitorIdentity,
 }
 
 impl<'d> InaPowerMonitor<'d> {
@@ -79,9 +80,12 @@ impl<'d> InaPowerMonitor<'d> {
 
     pub fn read_status(&mut self) -> PowerMonitorStatus {
         match self.read_measurement() {
-            Ok((monitor, measurement)) => {
-                PowerMonitorStatus::online(monitor.kind, monitor.address, measurement)
-            }
+            Ok((monitor, measurement)) => PowerMonitorStatus::online(
+                monitor.kind,
+                monitor.address,
+                monitor.identity,
+                measurement,
+            ),
             Err(PowerMonitorError::NotFound) => PowerMonitorStatus::NoResponse,
             Err(PowerMonitorError::UnexpectedIdentity { address }) => {
                 PowerMonitorStatus::IdentityMismatch { address }
@@ -94,13 +98,13 @@ impl<'d> InaPowerMonitor<'d> {
         let mut unexpected_identity_address = None;
 
         for address in INA228_ADDRESS_MIN..=INA228_ADDRESS_MAX {
-            let kind = match self.probe_address(address) {
+            let (kind, identity) = match self.probe_address(address) {
                 Ok(ProbeOutcome::NoResponse) => continue,
                 Ok(ProbeOutcome::UnexpectedIdentity) => {
                     unexpected_identity_address.get_or_insert(address);
                     continue;
                 }
-                Ok(ProbeOutcome::Found(kind)) => kind,
+                Ok(ProbeOutcome::Found { kind, identity }) => (kind, identity),
                 Err(error) => return Err(PowerMonitorError::I2c { address, error }),
             };
 
@@ -109,7 +113,11 @@ impl<'d> InaPowerMonitor<'d> {
                     .map_err(|error| PowerMonitorError::I2c { address, error })?;
             }
 
-            let monitor = DetectedPowerMonitor { kind, address };
+            let monitor = DetectedPowerMonitor {
+                kind,
+                address,
+                identity,
+            };
             self.monitor = Some(monitor);
             match kind {
                 PowerMonitorKind::Ina226 => info!("INA226 online at I2C address {=u8}", address),
@@ -132,13 +140,25 @@ impl<'d> InaPowerMonitor<'d> {
         };
         let ina228_device_id = self.read_u16(address, REG_INA228_DEVICE_ID)?;
         if is_ina228_identity(ina228_manufacturer_id, ina228_device_id) {
-            return Ok(ProbeOutcome::Found(PowerMonitorKind::Ina228));
+            return Ok(ProbeOutcome::Found {
+                kind: PowerMonitorKind::Ina228,
+                identity: PowerMonitorIdentity {
+                    manufacturer_id: ina228_manufacturer_id,
+                    device_id: ina228_device_id,
+                },
+            });
         }
 
         let ina226_manufacturer_id = self.read_u16(address, REG_INA226_MANUFACTURER_ID)?;
         let ina226_device_id = self.read_u16(address, REG_INA226_DIE_ID)?;
         if is_ina226_identity(ina226_manufacturer_id, ina226_device_id) {
-            return Ok(ProbeOutcome::Found(PowerMonitorKind::Ina226));
+            return Ok(ProbeOutcome::Found {
+                kind: PowerMonitorKind::Ina226,
+                identity: PowerMonitorIdentity {
+                    manufacturer_id: ina226_manufacturer_id,
+                    device_id: ina226_device_id,
+                },
+            });
         }
 
         Ok(ProbeOutcome::UnexpectedIdentity)
@@ -217,7 +237,10 @@ fn is_no_acknowledge(error: i2c::Error) -> bool {
 enum ProbeOutcome {
     NoResponse,
     UnexpectedIdentity,
-    Found(PowerMonitorKind),
+    Found {
+        kind: PowerMonitorKind,
+        identity: PowerMonitorIdentity,
+    },
 }
 
 #[derive(Debug, Clone, Copy, defmt::Format)]

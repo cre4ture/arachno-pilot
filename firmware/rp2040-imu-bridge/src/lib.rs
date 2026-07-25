@@ -372,10 +372,17 @@ impl PowerMonitorKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PowerMonitorIdentity {
+    pub manufacturer_id: u16,
+    pub device_id: u16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PowerMonitorStatus {
     Online {
         kind: PowerMonitorKind,
         address: u8,
+        identity: PowerMonitorIdentity,
         measurement: PowerMonitorMeasurement,
     },
     /// No device on any standard INA226/INA228 address acknowledged its I2C address.
@@ -390,11 +397,13 @@ impl PowerMonitorStatus {
     pub const fn online(
         kind: PowerMonitorKind,
         address: u8,
+        identity: PowerMonitorIdentity,
         measurement: PowerMonitorMeasurement,
     ) -> Self {
         Self::Online {
             kind,
             address,
+            identity,
             measurement,
         }
     }
@@ -503,18 +512,22 @@ pub fn format_display_status(sample: ImuSample, power: PowerMonitorStatus) -> Di
         PowerMonitorStatus::Online {
             kind,
             address,
+            identity,
             measurement,
         } => {
             push_text(&mut lines[6], kind.display_name());
             push_text(&mut lines[6], " ");
             write!(&mut lines[6], "{address:02X}").expect("INA address fits display line");
+            write!(&mut lines[6], " MID{:04X}", identity.manufacturer_id)
+                .expect("INA manufacturer ID fits display line");
 
-            push_text(&mut lines[7], "V ");
+            write!(&mut lines[7], "DID{:04X} V", identity.device_id)
+                .expect("INA device ID fits display line");
             push_unsigned_milli(&mut lines[7], measurement.bus_millivolts);
-            push_text(&mut lines[7], " I");
-            push_signed_milli(&mut lines[7], measurement.current_milliamps);
 
-            push_text(&mut lines[8], "P ");
+            push_text(&mut lines[8], "I");
+            push_signed_milli(&mut lines[8], measurement.current_milliamps);
+            push_text(&mut lines[8], " P");
             push_signed_tenths(&mut lines[8], measurement.power_milliwatts / 100);
             push_text(&mut lines[8], "W");
 
@@ -749,13 +762,22 @@ mod tests {
 
         let status = format_display_status(
             sample,
-            PowerMonitorStatus::online(PowerMonitorKind::Ina228, 0x40, measurement),
+            PowerMonitorStatus::online(
+                PowerMonitorKind::Ina228,
+                0x40,
+                PowerMonitorIdentity {
+                    manufacturer_id: 0x5449,
+                    device_id: 0x2281,
+                },
+                measurement,
+            ),
         );
 
         assert_eq!(status.lines[1].as_str(), "A X+1.000 Y-0.020");
         assert_eq!(status.lines[3].as_str(), "G X+12.3 Y-0.4");
-        assert_eq!(status.lines[7].as_str(), "V 12.500 I+0.080");
-        assert_eq!(status.lines[8].as_str(), "P +1.0W");
+        assert_eq!(status.lines[6].as_str(), "INA228 40 MID5449");
+        assert_eq!(status.lines[7].as_str(), "DID2281 V12.500");
+        assert_eq!(status.lines[8].as_str(), "I+0.080 P+1.0W");
         assert_eq!(status.lines[9].as_str(), "S+0.800mV T+25.00");
         assert!(
             status
@@ -772,6 +794,10 @@ mod tests {
             PowerMonitorStatus::online(
                 PowerMonitorKind::Ina226,
                 0x45,
+                PowerMonitorIdentity {
+                    manufacturer_id: 0x5449,
+                    device_id: 0x2260,
+                },
                 PowerMonitorMeasurement {
                     bus_millivolts: 12_500,
                     shunt_microvolts: 800,
@@ -782,7 +808,8 @@ mod tests {
             ),
         );
 
-        assert_eq!(status.lines[6].as_str(), "INA226 45");
+        assert_eq!(status.lines[6].as_str(), "INA226 45 MID5449");
+        assert_eq!(status.lines[7].as_str(), "DID2260 V12.500");
         assert_eq!(status.lines[9].as_str(), "S+0.800mV T--");
     }
 
