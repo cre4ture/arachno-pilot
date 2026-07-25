@@ -80,7 +80,7 @@ sampling task. The IMU and display continue to run even while no USB host is con
 
 | RP2040-ETH | LCD / INA228 pin | Notes |
 | --- | --- | --- |
-| `3V3` | LCD `VCC`, INA228 `VCC` | Use 3.3 V logic and power |
+| `3V3` | LCD `VCC`, INA228 `VCC` | Use 3.3 V logic and power; do **not** use USB 5 V for this LCD |
 | `GND` | LCD `GND`, INA228 `GND` | Common ground |
 | `GPIO26` | LCD `SCL` / `CLK` | `SPI1 SCK` |
 | `GPIO27` | LCD `SDA` / `DIN` | `SPI1 MOSI`; the LCD has no MISO connection |
@@ -121,7 +121,9 @@ Important notes:
 - The non-overlapping pin assignment means an `SPI` IMU and an `I2C` IMU can now stay wired at the same time without bus conflicts.
 - The current USB bridge protocol still exposes one primary IMU stream. INA228 data is shown on
   the local status LCD only for now; it is not part of the USB IMU packet format.
-- Even if the board is marketed as `3-5 V compatible`, the safe target for the RP2040 side is still `3.3 V`.
+- Although the LCD is marketed as `3-5 V compatible`, power its `VCC` from `3V3` in this
+  RP2040 installation. Supplying it from USB `5 V` can leave the backlight on while the
+  controller no longer recognizes the RP2040's 3.3 V SPI signals, resulting in a black panel.
 - `GPIO17` to `GPIO21` are already tied into the onboard `CH9120` Ethernet side functions on the RP2040-ETH, so the firmware avoids them.
 - In `SPI` mode, `AD0` is used as `SDO/MISO`, not just as an `I2C` address strap.
 
