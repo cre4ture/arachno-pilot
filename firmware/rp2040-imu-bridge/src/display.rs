@@ -4,14 +4,14 @@ use embassy_rp::peripherals::{PIN_0, PIN_1, PIN_22, PIN_26, PIN_27, PIN_28, SPI1
 use embassy_rp::spi::{self, Async as SpiAsync, Spi};
 use embassy_rp::{dma, interrupt};
 use embassy_time::{Duration, Timer};
-use rp2040_imu_bridge::{DISPLAY_STATUS_COLUMNS, DISPLAY_STATUS_LINE_COUNT, DisplayStatus};
+use rp2040_imu_bridge::{
+    DISPLAY_STATUS_COLUMNS, DISPLAY_STATUS_LINE_COUNT, DisplayStatus, WAVESHARE_1IN83_REV2_INIT,
+};
 
 const DISPLAY_SPI_HZ: u32 = 24_000_000;
 const DISPLAY_WIDTH: usize = 240;
 const DISPLAY_HEIGHT: usize = 284;
-// The 240×280 ST7789 variants use a 20-row controller-RAM offset. Keeping it here makes the
-// module's panel revision the only value to adjust if the status area is vertically displaced.
-const DISPLAY_Y_OFFSET: u16 = 20;
+const DISPLAY_Y_OFFSET: u16 = 0;
 
 const FONT_WIDTH: usize = 5;
 const FONT_HEIGHT: usize = 7;
@@ -83,38 +83,13 @@ impl<'d> St7789Display<'d> {
     }
 
     async fn initialize(&mut self) -> Result<(), DisplayError> {
-        self.command(0x01, &[])?; // Software reset
-        Timer::after(Duration::from_millis(150)).await;
+        for init in WAVESHARE_1IN83_REV2_INIT {
+            self.command(init.command, init.data)?;
+        }
         self.command(0x11, &[])?; // Sleep out
-        Timer::after(Duration::from_millis(120)).await;
-
-        self.command(0x36, &[0x00])?; // Portrait, RGB order
-        self.command(0x3A, &[0x55])?; // 16-bit RGB565
-        self.command(0xB2, &[0x0C, 0x0C, 0x00, 0x33, 0x33])?;
-        self.command(0xB7, &[0x35])?;
-        self.command(0xBB, &[0x19])?;
-        self.command(0xC0, &[0x2C])?;
-        self.command(0xC2, &[0x01])?;
-        self.command(0xC3, &[0x12])?;
-        self.command(0xC4, &[0x20])?;
-        self.command(0xC6, &[0x0F])?;
-        self.command(0xD0, &[0xA4, 0xA1])?;
-        self.command(
-            0xE0,
-            &[
-                0xD0, 0x04, 0x0D, 0x11, 0x13, 0x2B, 0x3F, 0x54, 0x4C, 0x18, 0x0D, 0x0B, 0x1F, 0x23,
-            ],
-        )?;
-        self.command(
-            0xE1,
-            &[
-                0xD0, 0x04, 0x0C, 0x11, 0x13, 0x2C, 0x3F, 0x44, 0x51, 0x2F, 0x1F, 0x1F, 0x20, 0x23,
-            ],
-        )?;
-        self.command(0x21, &[])?; // Display inversion on, required by this IPS panel family
-        self.command(0x13, &[])?; // Normal display mode
+        Timer::after(Duration::from_millis(200)).await;
         self.command(0x29, &[])?; // Display on
-        Timer::after(Duration::from_millis(20)).await;
+        Timer::after(Duration::from_millis(10)).await;
         Ok(())
     }
 

@@ -268,6 +268,82 @@ pub const DISPLAY_STATUS_LINE_COUNT: usize = 10;
 pub const DISPLAY_STATUS_COLUMNS: usize = 20;
 pub type DisplayLine = String<24>;
 
+/// A command and its parameter bytes for a write-only SPI LCD controller.
+///
+/// The profile is kept in this testable library crate because Waveshare's mechanically similar
+/// 1.83-inch LCD revisions use incompatible controller initialisation sequences.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LcdInitCommand {
+    pub command: u8,
+    pub data: &'static [u8],
+}
+
+/// Waveshare 1.83-inch LCD Module Rev2 (240×284, ST7789P) register profile.
+///
+/// The Rev1 240×280 NV3030B module is not compatible with this sequence.
+pub const WAVESHARE_1IN83_REV2_INIT: [LcdInitCommand; 14] = [
+    LcdInitCommand {
+        command: 0x36,
+        data: &[0x00],
+    },
+    LcdInitCommand {
+        command: 0x3A,
+        data: &[0x05],
+    },
+    LcdInitCommand {
+        command: 0xB2,
+        data: &[0x0C, 0x0C, 0x00, 0x33, 0x33],
+    },
+    LcdInitCommand {
+        command: 0xB7,
+        data: &[0x35],
+    },
+    LcdInitCommand {
+        command: 0xBB,
+        data: &[0x19],
+    },
+    LcdInitCommand {
+        command: 0xC0,
+        data: &[0x2C],
+    },
+    LcdInitCommand {
+        command: 0xC2,
+        data: &[0x01],
+    },
+    LcdInitCommand {
+        command: 0xC3,
+        data: &[0x12],
+    },
+    LcdInitCommand {
+        command: 0xC4,
+        data: &[0x20],
+    },
+    LcdInitCommand {
+        command: 0xC6,
+        data: &[0x0F],
+    },
+    LcdInitCommand {
+        command: 0xD0,
+        data: &[0xA4, 0xA1],
+    },
+    LcdInitCommand {
+        command: 0xE0,
+        data: &[
+            0xD0, 0x04, 0x0D, 0x11, 0x13, 0x2B, 0x3F, 0x54, 0x4C, 0x18, 0x0D, 0x0B, 0x1F, 0x23,
+        ],
+    },
+    LcdInitCommand {
+        command: 0xE1,
+        data: &[
+            0xD0, 0x04, 0x0C, 0x11, 0x13, 0x2C, 0x3F, 0x44, 0x51, 0x2F, 0x1F, 0x1F, 0x20, 0x23,
+        ],
+    },
+    LcdInitCommand {
+        command: 0x21,
+        data: &[],
+    },
+];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Ina228Measurement {
     pub bus_millivolts: u32,
@@ -584,5 +660,18 @@ mod tests {
                 .iter()
                 .all(|line| line.len() <= DISPLAY_STATUS_COLUMNS)
         );
+    }
+
+    #[test]
+    fn waveshare_rev2_lcd_profile_uses_the_documented_rgb565_setup() {
+        assert_eq!(WAVESHARE_1IN83_REV2_INIT[0].command, 0x36);
+        assert_eq!(WAVESHARE_1IN83_REV2_INIT[0].data, &[0x00]);
+        assert_eq!(WAVESHARE_1IN83_REV2_INIT[1].command, 0x3A);
+        assert_eq!(WAVESHARE_1IN83_REV2_INIT[1].data, &[0x05]);
+        assert_eq!(WAVESHARE_1IN83_REV2_INIT[2].command, 0xB2);
+        assert_eq!(WAVESHARE_1IN83_REV2_INIT[10].command, 0xD0);
+        assert_eq!(WAVESHARE_1IN83_REV2_INIT[11].command, 0xE0);
+        assert_eq!(WAVESHARE_1IN83_REV2_INIT[12].command, 0xE1);
+        assert_eq!(WAVESHARE_1IN83_REV2_INIT[13].command, 0x21);
     }
 }

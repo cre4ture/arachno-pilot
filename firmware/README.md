@@ -74,7 +74,7 @@ Recommended `I2C` wiring for an `MPU-6050 / GY-521` style breakout:
 
 ### SPI1 status LCD and INA228 power monitor
 
-The firmware updates the ST7789B status LCD at roughly 4 Hz with the live IMU and INA228
+The firmware updates a Waveshare **1.83-inch LCD Module Rev2** (240×284, ST7789P) at roughly 4 Hz with the live IMU and INA228
 measurements. LCD pixel writes use SPI1 DMA so that display refreshes yield to the 200 Hz IMU
 sampling task. The IMU and display continue to run even while no USB host is connected.
 
