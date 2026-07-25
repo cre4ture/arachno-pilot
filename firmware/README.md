@@ -100,9 +100,9 @@ The default setting matches an **R002 / 2 mΩ** shunt; change
 is different. The device must have I2C pull-ups to 3.3 V, either on its breakout or added
 externally.
 
-For a successful probe, the LCD also shows the actually read identity values: `MIDxxxx` is the
-manufacturer ID and `DIDxxxx` is the device/die ID. For example, a genuine INA226 reads
-`MID5449` and `DID2260`.
+For a successful probe, the LCD also shows the actually read identity register/value pairs. For
+example, a genuine INA226 reads `FE:5449` (manufacturer ID) and `FF:2260` (die ID); an INA228
+reads `3E:5449` and a `3F:228x` device ID.
 
 When no values are available, the LCD distinguishes these probe outcomes:
 

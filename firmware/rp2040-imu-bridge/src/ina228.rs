@@ -143,7 +143,9 @@ impl<'d> InaPowerMonitor<'d> {
             return Ok(ProbeOutcome::Found {
                 kind: PowerMonitorKind::Ina228,
                 identity: PowerMonitorIdentity {
+                    manufacturer_register: REG_INA228_MANUFACTURER_ID,
                     manufacturer_id: ina228_manufacturer_id,
+                    device_register: REG_INA228_DEVICE_ID,
                     device_id: ina228_device_id,
                 },
             });
@@ -155,7 +157,9 @@ impl<'d> InaPowerMonitor<'d> {
             return Ok(ProbeOutcome::Found {
                 kind: PowerMonitorKind::Ina226,
                 identity: PowerMonitorIdentity {
+                    manufacturer_register: REG_INA226_MANUFACTURER_ID,
                     manufacturer_id: ina226_manufacturer_id,
+                    device_register: REG_INA226_DIE_ID,
                     device_id: ina226_device_id,
                 },
             });

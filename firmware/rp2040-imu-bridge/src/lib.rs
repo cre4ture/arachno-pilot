@@ -373,7 +373,9 @@ impl PowerMonitorKind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PowerMonitorIdentity {
+    pub manufacturer_register: u8,
     pub manufacturer_id: u16,
+    pub device_register: u8,
     pub device_id: u16,
 }
 
@@ -518,11 +520,19 @@ pub fn format_display_status(sample: ImuSample, power: PowerMonitorStatus) -> Di
             push_text(&mut lines[6], kind.display_name());
             push_text(&mut lines[6], " ");
             write!(&mut lines[6], "{address:02X}").expect("INA address fits display line");
-            write!(&mut lines[6], " MID{:04X}", identity.manufacturer_id)
-                .expect("INA manufacturer ID fits display line");
+            write!(
+                &mut lines[6],
+                " {:02X}:{:04X}",
+                identity.manufacturer_register, identity.manufacturer_id
+            )
+            .expect("INA manufacturer ID fits display line");
 
-            write!(&mut lines[7], "DID{:04X} V", identity.device_id)
-                .expect("INA device ID fits display line");
+            write!(
+                &mut lines[7],
+                "{:02X}:{:04X} V",
+                identity.device_register, identity.device_id
+            )
+            .expect("INA device ID fits display line");
             push_unsigned_milli(&mut lines[7], measurement.bus_millivolts);
 
             push_text(&mut lines[8], "I");
@@ -766,7 +776,9 @@ mod tests {
                 PowerMonitorKind::Ina228,
                 0x40,
                 PowerMonitorIdentity {
+                    manufacturer_register: 0x3E,
                     manufacturer_id: 0x5449,
+                    device_register: 0x3F,
                     device_id: 0x2281,
                 },
                 measurement,
@@ -775,8 +787,8 @@ mod tests {
 
         assert_eq!(status.lines[1].as_str(), "A X+1.000 Y-0.020");
         assert_eq!(status.lines[3].as_str(), "G X+12.3 Y-0.4");
-        assert_eq!(status.lines[6].as_str(), "INA228 40 MID5449");
-        assert_eq!(status.lines[7].as_str(), "DID2281 V12.500");
+        assert_eq!(status.lines[6].as_str(), "INA228 40 3E:5449");
+        assert_eq!(status.lines[7].as_str(), "3F:2281 V12.500");
         assert_eq!(status.lines[8].as_str(), "I+0.080 P+1.0W");
         assert_eq!(status.lines[9].as_str(), "S+0.800mV T+25.00");
         assert!(
@@ -795,7 +807,9 @@ mod tests {
                 PowerMonitorKind::Ina226,
                 0x45,
                 PowerMonitorIdentity {
+                    manufacturer_register: 0xFE,
                     manufacturer_id: 0x5449,
+                    device_register: 0xFF,
                     device_id: 0x2260,
                 },
                 PowerMonitorMeasurement {
@@ -808,8 +822,8 @@ mod tests {
             ),
         );
 
-        assert_eq!(status.lines[6].as_str(), "INA226 45 MID5449");
-        assert_eq!(status.lines[7].as_str(), "DID2260 V12.500");
+        assert_eq!(status.lines[6].as_str(), "INA226 45 FE:5449");
+        assert_eq!(status.lines[7].as_str(), "FF:2260 V12.500");
         assert_eq!(status.lines[9].as_str(), "S+0.800mV T--");
     }
 
