@@ -135,19 +135,19 @@ Prerequisites:
 From the repo root:
 
 ```bash
-cargo check --manifest-path firmware/Cargo.toml -p rp2040-imu-bridge --target thumbv6m-none-eabi
-cargo build --manifest-path firmware/Cargo.toml -p rp2040-imu-bridge --target thumbv6m-none-eabi
-cargo build --manifest-path firmware/Cargo.toml -p rp2040-imu-bridge --release --target thumbv6m-none-eabi
+cargo check --manifest-path firmware/Cargo.toml -p rp2040-imu-bridge --target thumbv6m-none-eabi --target-dir firmware/target
+cargo build --manifest-path firmware/Cargo.toml -p rp2040-imu-bridge --target thumbv6m-none-eabi --target-dir firmware/target
+cargo build --manifest-path firmware/Cargo.toml -p rp2040-imu-bridge --release --target thumbv6m-none-eabi --target-dir firmware/target
 ```
 
 From inside `firmware/`, the local `.cargo/config.toml` already selects `thumbv6m-none-eabi`, so this also works:
 
 ```bash
-cargo build -p rp2040-imu-bridge
-cargo build -p rp2040-imu-bridge --release
+cargo build -p rp2040-imu-bridge --target-dir target
+cargo build -p rp2040-imu-bridge --release --target-dir target
 ```
 
-The important detail is that the RP2040 linker flags live in the repo-level `.cargo/config.toml`, so builds from the repo root and builds from inside `firmware/` use the same linker setup, including `defmt.x`, `link.x`, and `link-rp.x`.
+The explicit target directory keeps the ELF and generated UF2 together even when a user-level Cargo configuration selects another target directory. The RP2040 linker flags live in the repo-level `.cargo/config.toml`, so builds from the repo root and builds from inside `firmware/` use the same linker setup, including `defmt.x`, `link.x`, and `link-rp.x`.
 
 ## UF2 conversion
 
