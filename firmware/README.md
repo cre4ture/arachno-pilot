@@ -72,31 +72,39 @@ Recommended `I2C` wiring for an `MPU-6050 / GY-521` style breakout:
 | `GPIO7` | `SCL` | `I2C1 SCL` |
 | `AD0` | `GND` or `3V3` | Selects `I2C` address `0x68` or `0x69` |
 
-### SPI1 status LCD and INA228 power monitor
+### SPI1 status LCD and INA226/INA228 power monitor
 
-The firmware updates a Waveshare **1.83-inch LCD Module Rev2** (240×284, ST7789P) at roughly 4 Hz with the live IMU and INA228
+The firmware updates a Waveshare **1.83-inch LCD Module Rev2** (240×284, ST7789P) at roughly 4 Hz with the live IMU and INA226/INA228
 measurements. LCD pixel writes use SPI1 DMA so that display refreshes yield to the 200 Hz IMU
 sampling task. The IMU and display continue to run even while no USB host is connected.
 
-| RP2040-ETH | LCD / INA228 pin | Notes |
+| RP2040-ETH | LCD / INA226/INA228 pin | Notes |
 | --- | --- | --- |
-| `3V3` | LCD `VCC`, INA228 `VCC` | Use 3.3 V logic and power; do **not** use USB 5 V for this LCD |
-| `GND` | LCD `GND`, INA228 `GND` | Common ground |
+| `3V3` | LCD `VCC`, INA226/INA228 `VCC` | Use 3.3 V logic and power; do **not** use USB 5 V for this LCD |
+| `GND` | LCD `GND`, INA226/INA228 `GND` | Common ground |
 | `GPIO26` | LCD `SCL` / `CLK` | `SPI1 SCK` |
 | `GPIO27` | LCD `SDA` / `DIN` | `SPI1 MOSI`; the LCD has no MISO connection |
 | `GPIO0` | LCD `CS` | Active low |
 | `GPIO1` | LCD `DC` | Data/command selection |
 | `GPIO22` | LCD `RST` | Active low |
 | `GPIO28` | LCD `BL` / `BLK` | Backlight output, held on by the firmware |
-| `GPIO8` | INA228 `SDA` | `I2C0 SDA` |
-| `GPIO9` | INA228 `SCL` | `I2C0 SCL` |
+| `GPIO8` | INA226/INA228 `SDA` | `I2C0 SDA` |
+| `GPIO9` | INA226/INA228 `SCL` | `I2C0 SCL` |
 
-The INA228 driver probes all standard addresses from `0x40` through `0x4F`, verifies the TI
-manufacturer and INA228 device IDs, then reads bus voltage, shunt voltage, die temperature, and
-derives current and power. The default setting matches an **R002 / 2 mΩ** shunt; change
+The power-monitor driver probes all standard addresses from `0x40` through `0x4F`, recognizes
+both TI INA228 (`0x3E`/`0x3F`) and INA226 (`0xFE`/`0xFF`) identification registers, then reads
+bus voltage and shunt voltage to derive current and power. The INA228 additionally reports die
+temperature; the INA226 display line shows `T--` because that device has no temperature sensor.
+The default setting matches an **R002 / 2 mΩ** shunt; change
 [`INA228_SHUNT_MICRO_OHMS`](rp2040-imu-bridge/src/ina228.rs) if the resistor fitted to your board
 is different. The device must have I2C pull-ups to 3.3 V, either on its breakout or added
 externally.
+
+When no values are available, the LCD distinguishes these probe outcomes:
+
+- `INA NACK 40-4F`: no device acknowledged at any standard power-monitor address.
+- `INA ID MISMATCH`: a device acknowledged, but its TI identity registers match neither INA226 nor INA228.
+- `INA I2C ERR <address>`: I2C failed after a device had acknowledged; check the bus wiring and pull-ups.
 
 The display driver targets the ST7789B 240×280/284 panel family. If text is vertically displaced
 on the particular panel revision, adjust `DISPLAY_Y_OFFSET` in
@@ -106,8 +114,8 @@ Reserved `I2C0` bus allocation:
 
 | RP2040-ETH | Use | Notes |
 | --- | --- | --- |
-| `GPIO8` | `I2C0 SDA` | INA228 power monitor |
-| `GPIO9` | `I2C0 SCL` | INA228 power monitor |
+| `GPIO8` | `I2C0 SDA` | INA226/INA228 power monitor |
+| `GPIO9` | `I2C0 SCL` | INA226/INA228 power monitor |
 
 Leave these unconnected for the current firmware:
 
@@ -119,7 +127,7 @@ Important notes:
 
 - `SPI` breakouts still need `NCS` or `CS` exposed; modules that only break out `I2C` lines will use the `I2C` backend instead.
 - The non-overlapping pin assignment means an `SPI` IMU and an `I2C` IMU can now stay wired at the same time without bus conflicts.
-- The current USB bridge protocol still exposes one primary IMU stream. INA228 data is shown on
+- The current USB bridge protocol still exposes one primary IMU stream. INA226/INA228 data is shown on
   the local status LCD only for now; it is not part of the USB IMU packet format.
 - Although the LCD is marketed as `3-5 V compatible`, power its `VCC` from `3V3` in this
   RP2040 installation. Supplying it from USB `5 V` can leave the backlight on while the

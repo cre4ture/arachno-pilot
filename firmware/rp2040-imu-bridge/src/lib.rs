@@ -263,6 +263,8 @@ pub const INA228_ADDRESS_MAX: u8 = 0x4F;
 pub const INA228_MANUFACTURER_ID: u16 = 0x5449;
 pub const INA228_DEVICE_ID_MASK: u16 = 0xFFF0;
 pub const INA228_DEVICE_ID: u16 = 0x2280;
+pub const INA226_MANUFACTURER_ID: u16 = 0x5449;
+pub const INA226_DEVICE_ID: u16 = 0x2260;
 
 pub const DISPLAY_STATUS_LINE_COUNT: usize = 10;
 pub const DISPLAY_STATUS_COLUMNS: usize = 20;
@@ -345,32 +347,55 @@ pub const WAVESHARE_1IN83_REV2_INIT: [LcdInitCommand; 14] = [
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Ina228Measurement {
+pub struct PowerMonitorMeasurement {
     pub bus_millivolts: u32,
     pub shunt_microvolts: i32,
     pub current_milliamps: i32,
     pub power_milliwatts: i32,
-    pub die_temperature_centi_c: i16,
+    /// INA228 exposes a die temperature; INA226 does not.
+    pub die_temperature_centi_c: Option<i16>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PowerMonitorStatus {
-    pub address: Option<u8>,
-    pub measurement: Option<Ina228Measurement>,
+pub enum PowerMonitorKind {
+    Ina226,
+    Ina228,
+}
+
+impl PowerMonitorKind {
+    pub const fn display_name(self) -> &'static str {
+        match self {
+            Self::Ina226 => "INA226",
+            Self::Ina228 => "INA228",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PowerMonitorStatus {
+    Online {
+        kind: PowerMonitorKind,
+        address: u8,
+        measurement: PowerMonitorMeasurement,
+    },
+    /// No device on any standard INA226/INA228 address acknowledged its I2C address.
+    NoResponse,
+    /// An I2C device acknowledged but did not expose INA226 or INA228 manufacturer/device IDs.
+    IdentityMismatch { address: u8 },
+    /// A device address acknowledged, then a later I2C transaction failed.
+    BusError { address: u8 },
 }
 
 impl PowerMonitorStatus {
-    pub const fn offline() -> Self {
-        Self {
-            address: None,
-            measurement: None,
-        }
-    }
-
-    pub const fn online(address: u8, measurement: Ina228Measurement) -> Self {
-        Self {
-            address: Some(address),
-            measurement: Some(measurement),
+    pub const fn online(
+        kind: PowerMonitorKind,
+        address: u8,
+        measurement: PowerMonitorMeasurement,
+    ) -> Self {
+        Self::Online {
+            kind,
+            address,
+            measurement,
         }
     }
 }
@@ -384,6 +409,10 @@ pub fn is_ina228_identity(manufacturer_id: u16, device_id: u16) -> bool {
         && (device_id & INA228_DEVICE_ID_MASK) == INA228_DEVICE_ID
 }
 
+pub fn is_ina226_identity(manufacturer_id: u16, device_id: u16) -> bool {
+    manufacturer_id == INA226_MANUFACTURER_ID && device_id == INA226_DEVICE_ID
+}
+
 /// Converts the INA228's left-aligned register values using its default ±163.84 mV shunt range.
 ///
 /// `shunt_micro_ohms` must be the actual resistance of the sense shunt fitted to the board.
@@ -392,7 +421,7 @@ pub fn ina228_measurement_from_registers(
     bus_register: [u8; 3],
     die_temperature_register: [u8; 2],
     shunt_micro_ohms: u32,
-) -> Ina228Measurement {
+) -> PowerMonitorMeasurement {
     let shunt_raw = signed_20_bit(shunt_register);
     let bus_raw = unsigned_20_bit(bus_register);
     let die_temperature_raw = i16::from_be_bytes(die_temperature_register);
@@ -407,12 +436,39 @@ pub fn ina228_measurement_from_registers(
     let power_milliwatts =
         clamp_i64_to_i32((i64::from(bus_millivolts) * i64::from(current_milliamps)) / 1_000);
 
-    Ina228Measurement {
+    PowerMonitorMeasurement {
         bus_millivolts,
         shunt_microvolts,
         current_milliamps,
         power_milliwatts,
-        die_temperature_centi_c,
+        die_temperature_centi_c: Some(die_temperature_centi_c),
+    }
+}
+
+/// Converts INA226 register values. Current and power are calculated directly from the measured
+/// shunt voltage so this works without relying on the INA226 calibration register.
+pub fn ina226_measurement_from_registers(
+    shunt_register: [u8; 2],
+    bus_register: [u8; 2],
+    shunt_micro_ohms: u32,
+) -> PowerMonitorMeasurement {
+    let shunt_raw = i16::from_be_bytes(shunt_register);
+    let bus_raw = u16::from_be_bytes(bus_register);
+
+    // INA226 VSHUNT: 2.5 µV/LSB. Keep integer arithmetic with rounded-toward-zero halves.
+    let shunt_microvolts = (i32::from(shunt_raw) * 5) / 2;
+    // INA226 VBUS: 1.25 mV/LSB.
+    let bus_millivolts = (u32::from(bus_raw) * 5) / 4;
+    let current_milliamps = current_milliamps_from_shunt(shunt_microvolts, shunt_micro_ohms);
+    let power_milliwatts =
+        clamp_i64_to_i32((i64::from(bus_millivolts) * i64::from(current_milliamps)) / 1_000);
+
+    PowerMonitorMeasurement {
+        bus_millivolts,
+        shunt_microvolts,
+        current_milliamps,
+        power_milliwatts,
+        die_temperature_centi_c: None,
     }
 }
 
@@ -443,9 +499,14 @@ pub fn format_display_status(sample: ImuSample, power: PowerMonitorStatus) -> Di
     push_signed_centi(&mut lines[5], i32::from(sample.temperature_centi_c));
     push_text(&mut lines[5], " C");
 
-    match (power.address, power.measurement) {
-        (Some(address), Some(measurement)) => {
-            push_text(&mut lines[6], "INA228 ");
+    match power {
+        PowerMonitorStatus::Online {
+            kind,
+            address,
+            measurement,
+        } => {
+            push_text(&mut lines[6], kind.display_name());
+            push_text(&mut lines[6], " ");
             write!(&mut lines[6], "{address:02X}").expect("INA address fits display line");
 
             push_text(&mut lines[7], "V ");
@@ -460,14 +521,29 @@ pub fn format_display_status(sample: ImuSample, power: PowerMonitorStatus) -> Di
             push_text(&mut lines[9], "S");
             push_signed_milli(&mut lines[9], measurement.shunt_microvolts);
             push_text(&mut lines[9], "mV T");
-            push_signed_centi(
-                &mut lines[9],
-                i32::from(measurement.die_temperature_centi_c),
-            );
+            match measurement.die_temperature_centi_c {
+                Some(temperature_centi_c) => {
+                    push_signed_centi(&mut lines[9], i32::from(temperature_centi_c));
+                }
+                None => push_text(&mut lines[9], "--"),
+            }
         }
-        _ => {
-            push_text(&mut lines[6], "INA228 --");
-            push_text(&mut lines[7], "V -- I --");
+        PowerMonitorStatus::NoResponse => {
+            push_text(&mut lines[6], "INA NACK 40-4F");
+            push_text(&mut lines[7], "CHECK SDA SCL PWR");
+            push_text(&mut lines[8], "P --");
+            push_text(&mut lines[9], "S -- T --");
+        }
+        PowerMonitorStatus::IdentityMismatch { address } => {
+            push_text(&mut lines[6], "INA ID MISMATCH");
+            write!(&mut lines[7], "ADDR {address:02X}").expect("INA address fits display line");
+            push_text(&mut lines[8], "P --");
+            push_text(&mut lines[9], "S -- T --");
+        }
+        PowerMonitorStatus::BusError { address } => {
+            write!(&mut lines[6], "INA I2C ERR {address:02X}")
+                .expect("INA address fits display line");
+            push_text(&mut lines[7], "CHECK SDA SCL PWR");
             push_text(&mut lines[8], "P --");
             push_text(&mut lines[9], "S -- T --");
         }
@@ -613,12 +689,12 @@ mod tests {
 
         assert_eq!(
             measurement,
-            Ina228Measurement {
+            PowerMonitorMeasurement {
                 bus_millivolts: 12_500,
                 shunt_microvolts: 800,
                 current_milliamps: 400,
                 power_milliwatts: 5_000,
-                die_temperature_centi_c: 2_500,
+                die_temperature_centi_c: Some(2_500),
             }
         );
     }
@@ -631,6 +707,30 @@ mod tests {
     }
 
     #[test]
+    fn ina226_identity_and_register_conversion_are_supported_with_r002() {
+        assert!(is_ina226_identity(0x5449, 0x2260));
+        assert!(!is_ina226_identity(0x5449, 0x2281));
+        assert!(!is_ina226_identity(0x0000, 0x2260));
+
+        let measurement = ina226_measurement_from_registers(
+            [0x06, 0x40], // 1,600 LSB = 4,000 µV
+            [0x27, 0x10], // 10,000 LSB = 12.500 V
+            2_000,        // R002 = 2 mΩ
+        );
+
+        assert_eq!(
+            measurement,
+            PowerMonitorMeasurement {
+                bus_millivolts: 12_500,
+                shunt_microvolts: 4_000,
+                current_milliamps: 2_000,
+                power_milliwatts: 25_000,
+                die_temperature_centi_c: None,
+            }
+        );
+    }
+
+    #[test]
     fn display_status_formats_imu_and_power_monitor_values_in_fixed_width_lines() {
         let sample = ImuSample {
             timestamp_us: 0,
@@ -639,15 +739,18 @@ mod tests {
             temperature_centi_c: 2_500,
             status: 0,
         };
-        let measurement = Ina228Measurement {
+        let measurement = PowerMonitorMeasurement {
             bus_millivolts: 12_500,
             shunt_microvolts: 800,
             current_milliamps: 80,
             power_milliwatts: 1_000,
-            die_temperature_centi_c: 2_500,
+            die_temperature_centi_c: Some(2_500),
         };
 
-        let status = format_display_status(sample, PowerMonitorStatus::online(0x40, measurement));
+        let status = format_display_status(
+            sample,
+            PowerMonitorStatus::online(PowerMonitorKind::Ina228, 0x40, measurement),
+        );
 
         assert_eq!(status.lines[1].as_str(), "A X+1.000 Y-0.020");
         assert_eq!(status.lines[3].as_str(), "G X+12.3 Y-0.4");
@@ -660,6 +763,48 @@ mod tests {
                 .iter()
                 .all(|line| line.len() <= DISPLAY_STATUS_COLUMNS)
         );
+    }
+
+    #[test]
+    fn display_status_identifies_ina226_and_marks_its_temperature_unavailable() {
+        let status = format_display_status(
+            ImuSample::default(),
+            PowerMonitorStatus::online(
+                PowerMonitorKind::Ina226,
+                0x45,
+                PowerMonitorMeasurement {
+                    bus_millivolts: 12_500,
+                    shunt_microvolts: 800,
+                    current_milliamps: 400,
+                    power_milliwatts: 5_000,
+                    die_temperature_centi_c: None,
+                },
+            ),
+        );
+
+        assert_eq!(status.lines[6].as_str(), "INA226 45");
+        assert_eq!(status.lines[9].as_str(), "S+0.800mV T--");
+    }
+
+    #[test]
+    fn display_status_explains_ina228_probe_failures() {
+        let sample = ImuSample::default();
+
+        let no_response = format_display_status(sample, PowerMonitorStatus::NoResponse);
+        assert_eq!(no_response.lines[6].as_str(), "INA NACK 40-4F");
+        assert_eq!(no_response.lines[7].as_str(), "CHECK SDA SCL PWR");
+
+        let wrong_device = format_display_status(
+            sample,
+            PowerMonitorStatus::IdentityMismatch { address: 0x43 },
+        );
+        assert_eq!(wrong_device.lines[6].as_str(), "INA ID MISMATCH");
+        assert_eq!(wrong_device.lines[7].as_str(), "ADDR 43");
+
+        let bus_error =
+            format_display_status(sample, PowerMonitorStatus::BusError { address: 0x40 });
+        assert_eq!(bus_error.lines[6].as_str(), "INA I2C ERR 40");
+        assert_eq!(bus_error.lines[7].as_str(), "CHECK SDA SCL PWR");
     }
 
     #[test]

@@ -29,11 +29,11 @@ use embassy_time::{Duration, Instant, Ticker, Timer};
 use embassy_usb::UsbDevice;
 use embassy_usb::class::cdc_acm::{CdcAcmClass, Receiver, Sender, State};
 use embassy_usb::driver::EndpointError;
-use ina228::{INA228_SHUNT_MICRO_OHMS, Ina228};
+use ina228::{INA228_SHUNT_MICRO_OHMS, InaPowerMonitor};
 use rp2040_imu_bridge::{
     FaultInfo, MPU_I2C_ADDRESSES, MPU_MEASUREMENT_PAYLOAD_LEN, MPU_REG_ACCEL_XOUT_H,
-    MPU_REG_WHO_AM_I, PowerMonitorStatus, ProbeResult, SENSOR_STATUS_FAULT, format_display_status,
-    init_steps, sample_from_payload, sensor_kind_from_who_am_i, validate_who_am_i,
+    MPU_REG_WHO_AM_I, ProbeResult, SENSOR_STATUS_FAULT, format_display_status, init_steps,
+    sample_from_payload, sensor_kind_from_who_am_i, validate_who_am_i,
 };
 use {defmt_rtt as _, panic_probe as _};
 
@@ -102,7 +102,7 @@ async fn main(spawner: Spawner) {
     // Independent I2C backend:
     //   GP6 -> MPU-6050 SDA
     //   GP7 -> MPU-6050 SCL
-    // INA228: GP8 -> SDA, GP9 -> SCL (I2C0)
+    // INA226/INA228: GP8 -> SDA, GP9 -> SCL (I2C0)
     // LCD: GP26 -> SPI1 SCK, GP27 -> SPI1 MOSI, GP0 -> CS, GP1 -> DC,
     //      GP22 -> RST, GP28 -> BL.
     let sensor = SensorState::new(
@@ -116,10 +116,10 @@ async fn main(spawner: Spawner) {
         )
         .await
     );
-    let ina228 = Ina228::new(p.I2C0, p.PIN_9, p.PIN_8, INA228_SHUNT_MICRO_OHMS);
+    let power_monitor = InaPowerMonitor::new(p.I2C0, p.PIN_9, p.PIN_8, INA228_SHUNT_MICRO_OHMS);
 
     spawner.spawn(unwrap!(imu_task(sensor)));
-    spawner.spawn(unwrap!(display_task(display, ina228)));
+    spawner.spawn(unwrap!(display_task(display, power_monitor)));
 
     let (mut sender, receiver) = class.split();
     spawner.spawn(unwrap!(usb_command_task(receiver)));
@@ -159,13 +159,13 @@ async fn imu_task(mut sensor: SensorState<'static>) -> ! {
 }
 
 #[embassy_executor::task]
-async fn display_task(mut display: St7789Display<'static>, mut ina228: Ina228<'static>) -> ! {
+async fn display_task(
+    mut display: St7789Display<'static>,
+    mut power_monitor: InaPowerMonitor<'static>,
+) -> ! {
     loop {
         let sample = DISPLAY_SAMPLES.wait().await;
-        let power = match ina228.read_measurement() {
-            Ok((address, measurement)) => PowerMonitorStatus::online(address, measurement),
-            Err(_) => PowerMonitorStatus::offline(),
-        };
+        let power = power_monitor.read_status();
         let status = format_display_status(sample, power);
         if let Err(error) = display.draw_status(&status).await {
             warn!("LCD update failed: {:?}", error);
